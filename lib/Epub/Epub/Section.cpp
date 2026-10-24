@@ -113,7 +113,12 @@ namespace {
 //      (upstream #4142, its v67). The fork's v65 carries the same change
 //      upstream numbered v64 (explicit font inheritance), so the merged layout
 //      is max(65, 67) + 1 = v68 and both parents' caches are invalidated.
-constexpr uint8_t SECTION_FILE_VERSION = 68;
+// v69: Leave text below drop caps unsplit until it is laid out at full width
+//      (upstream #4173 hyphenation-with-dropcaps fix, its v68). The fork's v68
+//      carries the same change upstream numbered v67 (stretchable literal
+//      spaces), so the merged layout is max(68, 68) + 1 = v69 per the
+//      version-collision rule and both parents' caches are invalidated.
+constexpr uint8_t SECTION_FILE_VERSION = 69;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
