@@ -71,6 +71,8 @@ void ReaderActivity::onEnter() {
     // Cached progress belongs to the cleared book; drop it so the cover
     // screens recompute for the book being opened.
     APP_STATE.openBookProgressPercent = -1;
+    APP_STATE.openBookTimeLeftSeconds = 0;
+    APP_STATE.openBookPagesLeft = -1;
     APP_STATE.saveToFile();
   }
 

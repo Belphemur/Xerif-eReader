@@ -30,6 +30,13 @@ class CrossPointState : public PersistableStore<CrossPointState> {
   // the reader at exit so the cover sleep/shutdown screens skip the SD
   // metadata reload during those transitions.
   int8_t openBookProgressPercent = -1;
+  // Estimated reading time left (seconds; 0 = unknown) and whole-book pages
+  // left (-1 = unknown) for the book in openEpubPath — exit-time snapshots that
+  // ride the same cache as openBookProgressPercent so the sleep/shutdown
+  // progress line renders without touching SD. Never regenerated during
+  // reading; refreshed only when the reader exits and saves stats.
+  uint32_t openBookTimeLeftSeconds = 0;
+  int16_t openBookPagesLeft = -1;
 
   static const char* getFilePath() { return "/.crosspoint/state.json"; }
   void toJson(JsonDocument& doc) const;
