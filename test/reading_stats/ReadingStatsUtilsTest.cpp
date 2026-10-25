@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstring>
 #include <limits>
 
 #include "BookReadingStats.h"
@@ -523,4 +524,59 @@ TEST(ReadingStatsUtilsTest, ProgressLineFormatZeroTimeLeftReturnsDash) {
   char buf[48];
   formatHomeProgressLine(book, buf, sizeof(buf));
   EXPECT_STREQ(buf, "14% \xE2\x80\xA2 --");
+}
+
+TEST(ReadingStatsUtilsTest, SleepProgressLineAllSegments) {
+  char buf[48];
+  formatSleepProgressLine(42, 2u * 3600u + 15u * 60u, 134, buf, sizeof(buf));
+  EXPECT_STREQ(buf, "42% \xE2\x80\xA2 ~2h 15m \xE2\x80\xA2 134 pages left");
+}
+
+TEST(ReadingStatsUtilsTest, SleepProgressLineSubMinuteHasNoTilde) {
+  char buf[48];
+  // formatCompactReadingDuration renders sub-minute estimates as "<1m"; the
+  // design lists that bare, without the "~" approximation marker.
+  formatSleepProgressLine(42, 30, -1, buf, sizeof(buf));
+  EXPECT_STREQ(buf, "42% \xE2\x80\xA2 <1m");
+
+  // One minute exactly crosses into the tilde form.
+  formatSleepProgressLine(42, 60, -1, buf, sizeof(buf));
+  EXPECT_STREQ(buf, "42% \xE2\x80\xA2 ~1m");
+}
+
+TEST(ReadingStatsUtilsTest, SleepProgressLineDropsTimeWhenZero) {
+  char buf[48];
+  formatSleepProgressLine(42, 0, 134, buf, sizeof(buf));
+  EXPECT_STREQ(buf, "42% \xE2\x80\xA2 134 pages left");
+}
+
+TEST(ReadingStatsUtilsTest, SleepProgressLineDropsPagesWhenNegative) {
+  char buf[48];
+  formatSleepProgressLine(42, 45u * 60u, -1, buf, sizeof(buf));
+  EXPECT_STREQ(buf, "42% \xE2\x80\xA2 ~45m");
+}
+
+TEST(ReadingStatsUtilsTest, SleepProgressLinePercentOnly) {
+  char buf[48];
+  formatSleepProgressLine(42, 0, -1, buf, sizeof(buf));
+  EXPECT_STREQ(buf, "42%");
+}
+
+TEST(ReadingStatsUtilsTest, SleepProgressLineNegativePercentIsEmpty) {
+  char buf[48];
+  formatSleepProgressLine(-1, 45u * 60u, 134, buf, sizeof(buf));
+  EXPECT_STREQ(buf, "");
+}
+
+TEST(ReadingStatsUtilsTest, SleepProgressLineTruncationSafe) {
+  char buf[48];
+  // Worst realistic line: "100% • ~999h 59m • 32767 pages left" = 34 chars.
+  formatSleepProgressLine(100, 999u * 3600u + 59u * 60u, 32767, buf, sizeof(buf));
+  EXPECT_STREQ(buf, "100% \xE2\x80\xA2 ~999h 59m \xE2\x80\xA2 32767 pages left");
+
+  // Deliberately undersized buffer must never overflow and stays terminated.
+  char small[12];
+  formatSleepProgressLine(42, 2u * 3600u + 15u * 60u, 134, small, sizeof(small));
+  EXPECT_EQ(small[11], '\0');
+  EXPECT_LT(strlen(small), sizeof(small));
 }

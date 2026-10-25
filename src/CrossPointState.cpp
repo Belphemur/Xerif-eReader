@@ -55,6 +55,8 @@ void CrossPointState::toJson(JsonDocument& doc) const {
   doc["lastSleepFromReader"] = lastSleepFromReader;
   doc["showBootScreen"] = showBootScreen;
   doc["openBookProgressPercent"] = openBookProgressPercent;
+  doc["openBookTimeLeftSeconds"] = openBookTimeLeftSeconds;
+  doc["openBookPagesLeft"] = openBookPagesLeft;
 }
 
 bool CrossPointState::fromJson(JsonVariantConst doc) {
@@ -62,6 +64,14 @@ bool CrossPointState::fromJson(JsonVariantConst doc) {
   autoPowerOffCoverBmpPath = doc["autoPowerOffCoverBmpPath"] | "";
   const int cachedProgress = doc["openBookProgressPercent"] | -1;
   openBookProgressPercent = (cachedProgress >= -1 && cachedProgress <= 100) ? static_cast<int8_t>(cachedProgress) : -1;
+  openBookTimeLeftSeconds = doc["openBookTimeLeftSeconds"] | 0u;
+  const int cachedPagesLeft = doc["openBookPagesLeft"] | -1;
+  openBookPagesLeft =
+      (cachedPagesLeft >= -1 && cachedPagesLeft <= INT16_MAX) ? static_cast<int16_t>(cachedPagesLeft) : -1;
+  // Both cache fields shipped in one firmware change, so a state file missing
+  // either predates the cache: the sleep screens may then consult the book's
+  // persisted stats record for a time-left estimate.
+  openBookCacheLegacy = doc["openBookTimeLeftSeconds"].isNull() && doc["openBookPagesLeft"].isNull();
 
   memset(recentSleepImages, 0, sizeof(recentSleepImages));
   JsonArrayConst recentArr = doc["recentSleepImages"];

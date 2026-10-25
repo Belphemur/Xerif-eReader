@@ -1200,6 +1200,10 @@ void setup() {
     // Clear app state to avoid getting into a boot loop if the epub doesn't load
     const auto path = APP_STATE.openEpubPath;
     APP_STATE.openEpubPath = "";
+    APP_STATE.openBookProgressPercent = -1;
+    APP_STATE.openBookTimeLeftSeconds = 0;
+    APP_STATE.openBookPagesLeft = -1;
+    APP_STATE.openBookCacheLegacy = false;
     APP_STATE.readerActivityLoadCount++;
     APP_STATE.saveToFile();
     activityManager.goToReader(path, allowFastInitialReaderRefresh);

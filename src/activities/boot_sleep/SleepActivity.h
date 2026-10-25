@@ -22,12 +22,17 @@ class SleepActivity final : public Activity {
   void renderDefaultSleepScreen() const;
   void renderCustomSleepScreen() const;
   void renderCoverSleepScreen() const;
-  void renderBitmapSleepScreen(const Bitmap& bitmap, bool preserveBackground = false, int progressPercent = -1) const;
-  bool renderSleepOverlayFile(HalFile& file, const char* pathForLog, int progressPercent = -1) const;
-  bool renderTransparentOverlayPng(const std::string& path, int progressPercent = -1) const;
-  bool renderSleepOverlayPath(const std::string& path, int progressPercent = -1) const;
+  void renderBitmapSleepScreen(const Bitmap& bitmap, bool preserveBackground = false, int progressPercent = -1,
+                               uint32_t timeLeftSeconds = 0, int pagesLeft = -1) const;
+  bool renderSleepOverlayFile(HalFile& file, const char* pathForLog, int progressPercent = -1,
+                              uint32_t timeLeftSeconds = 0, int pagesLeft = -1) const;
+  bool renderTransparentOverlayPng(const std::string& path, int progressPercent = -1, uint32_t timeLeftSeconds = 0,
+                                   int pagesLeft = -1) const;
+  bool renderSleepOverlayPath(const std::string& path, int progressPercent = -1, uint32_t timeLeftSeconds = 0,
+                              int pagesLeft = -1) const;
   void renderLastScreenSleepScreen() const;
-  void renderTransparentCustomSleepScreen(int progressPercent = -1) const;
+  void renderTransparentCustomSleepScreen(int progressPercent = -1, uint32_t timeLeftSeconds = 0,
+                                          int pagesLeft = -1) const;
   void renderBlankSleepScreen() const;
 
   bool fromTimeout = false;

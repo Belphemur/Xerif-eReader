@@ -432,17 +432,36 @@ void EpubReaderActivity::onExit() {
       // not: the reader must save the current position like any other book.
       const bool preservesProgress = stats.isCompleted && completedThisSession;
       if (bookSize > 0 && chapterBytes > 0 && chapterPages > 0 && bookProgressPercent >= 0.0f &&
-          bookProgressPercent <= 100.0f && preservesProgress) {
+          bookProgressPercent <= 100.0f) {
         const uint64_t bookPagesEstimate = static_cast<uint64_t>(chapterPages) * bookSize / chapterBytes;
         const float bookProgress = bookProgressPercent / 100.0f;
         const uint32_t remainingPages =
             static_cast<uint32_t>((1.0f - bookProgress) * static_cast<float>(bookPagesEstimate));
         auto timeLeft = estimateBookTimeLeftSeconds(stats, globalStats, remainingPages, currentPageWordsOnPage);
+        // Cache the reading-status triple for the cover sleep/shutdown screens
+        // on EVERY valid exit — the seeds are the sleep screens' only fresh
+        // source for pages-left, so they must not be limited to completions.
+        // Pages-left clamps to INT16_MAX (the persisted cache field is
+        // int16_t); the time-left estimate only overwrites the cache when it
+        // exists — a nullopt estimate keeps the previous value rather than
+        // fabricating an unknown.
+        APP_STATE.openBookPagesLeft = static_cast<int16_t>(remainingPages > INT16_MAX ? INT16_MAX : remainingPages);
         if (timeLeft) {
-          stats.estimatedTimeLeftSeconds = *timeLeft;
+          APP_STATE.openBookTimeLeftSeconds = *timeLeft;
         }
-        stats.lastBookProgressPercent =
-            static_cast<uint8_t>(clampPercent(static_cast<int>(bookProgressPercent + 0.5f)));
+        if (preservesProgress) {
+          // A book completed in THIS session keeps the 100% the completion
+          // flow pinned at the confirm site (setBookCompleted) — recomputing
+          // here would report the pre-confirmation page's partial percent in
+          // the stats. A book completed in an EARLIER session and reopened
+          // for a reread does not: the reader must save the current position
+          // like any other book.
+          if (timeLeft) {
+            stats.estimatedTimeLeftSeconds = *timeLeft;
+          }
+          stats.lastBookProgressPercent =
+              static_cast<uint8_t>(clampPercent(static_cast<int>(bookProgressPercent + 0.5f)));
+        }
       }
     }
     // Two independent sequential-record writes (per-book + global). The global
@@ -2706,6 +2725,9 @@ void EpubReaderActivity::beginLoanTimeSync() {
     // New book: the cached progress belongs to the previous one, so let the
     // cover screens recompute for this book.
     APP_STATE.openBookProgressPercent = -1;
+    APP_STATE.openBookTimeLeftSeconds = 0;
+    APP_STATE.openBookPagesLeft = -1;
+    APP_STATE.openBookCacheLegacy = false;
     APP_STATE.saveToFile();
     // Reboot straight back into this book with a clean heap (no-op on touch
     // boards, which fall through to the in-place relaunch below).

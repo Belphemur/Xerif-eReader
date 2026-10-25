@@ -147,6 +147,9 @@ std::optional<uint32_t> avgSessionSeconds(uint16_t windowAvg, uint8_t windowCoun
 // unknown progress renders "-", a zero time-left estimate renders the
 // unavailable marker instead of a duration.
 void formatHomeProgressLine(const BookReadingStats& stats, char* buf, size_t len);
+// Sleep/shutdown info line: "42% • ~2h 15m • 134 pages left".
+// Segments with unknown data are dropped; percent always leads when known.
+void formatSleepProgressLine(int percent, uint32_t timeLeftSeconds, int pagesLeft, char* buf, size_t len);
 // CrossInk-style stat cell: decimal value, or the localized unavailable
 // marker when the value is missing (no data / feature disabled).
 std::string formatStatCell(uint32_t value, bool hasValue = true);
