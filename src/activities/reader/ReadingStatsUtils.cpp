@@ -578,6 +578,57 @@ void formatHomeProgressLine(const BookReadingStats& stats, char* buf, const size
   snprintf(buf, len, tr(STR_PROGRESS_LINE_FMT), static_cast<unsigned>(stats.lastBookProgressPercent), duration);
 }
 
+void formatSleepProgressLine(const int percent, const uint32_t timeLeftSeconds, const int pagesLeft, char* buf,
+                             const size_t len) {
+  if (!buf || len == 0) {
+    return;
+  }
+  buf[0] = '\0';
+  if (percent < 0) {
+    return;
+  }
+
+  char line[48];
+  size_t pos = 0;
+  line[0] = '\0';
+
+  char segment[32];
+  const auto append = [&](const char* text) {
+    if (pos > 0) {
+      const int written = snprintf(line + pos, sizeof(line) - pos, " • %s", text);
+      if (written < 0 || static_cast<size_t>(written) >= sizeof(line) - pos) {
+        return;
+      }
+      pos += static_cast<size_t>(written);
+    } else {
+      const int written = snprintf(line + pos, sizeof(line) - pos, "%s", text);
+      if (written < 0 || static_cast<size_t>(written) >= sizeof(line) - pos) {
+        return;
+      }
+      pos += static_cast<size_t>(written);
+    }
+  };
+
+  if (percent >= 0) {
+    snprintf(segment, sizeof(segment), "%d%%", percent);
+    append(segment);
+  }
+
+  if (timeLeftSeconds > 0) {
+    char duration[16];
+    formatCompactReadingDuration(timeLeftSeconds, duration, sizeof(duration));
+    snprintf(segment, sizeof(segment), "~%s", duration);
+    append(segment);
+  }
+
+  if (pagesLeft >= 0) {
+    snprintf(segment, sizeof(segment), tr(STR_SLEEP_PAGES_LEFT_FMT), static_cast<unsigned long>(pagesLeft));
+    append(segment);
+  }
+
+  snprintf(buf, len, "%s", line);
+}
+
 std::string formatStatCell(const uint32_t value, const bool hasValue) {
   if (!hasValue) {
     return tr(STR_STATS_VALUE_UNAVAILABLE);
