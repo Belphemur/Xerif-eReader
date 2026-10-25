@@ -143,6 +143,38 @@ pi implementer finds overflow on any board's panel width, drop the
 `pages left` segment on that width rather than shrinking the font — document
 the finding in the PR.
 
+## Pages-left semantics
+
+"134 pages left" is an **estimate of device screen pages** — the same kind of
+page the reader lays out (screen size, fonts, margins) — extrapolated for the
+whole book. It is NOT the book's print/page-index numbering: an EPUB has no
+fixed pages, and none of the book's page-map metadata (if any) is consulted.
+
+Computed once at reader exit (`EpubReaderActivity::onExit`, the same block that
+seeds `APP_STATE`):
+
+```
+bookPagesEstimate = chapterPages × bookSize / chapterBytes
+remainingPages    = (1 − bookProgress) × bookPagesEstimate
+```
+
+- `chapterPages` = `section->estimatedTotalPages()` — renderer-laid-out pages of
+  the **current chapter only**.
+- `bookSize` / `chapterBytes` = byte share of the whole book vs the chapter, so
+  the estimate assumes the book's bytes-per-page density matches the current
+  chapter's. Image-heavy or dialogue-heavy chapters skew the extrapolation, and
+  the value is re-estimated at every exit, so it can drift between chapters.
+- `bookProgress` is byte-based, matching the percent segment of the line.
+- Snapshot semantics: the value is written to `APP_STATE` and the stats record
+  at exit (see `e0a0e811` for the exact refresh rules) and is not recomputed
+  while the device sleeps.
+
+Difference from upstream `crosspoint-reader`: upstream's sleep/cover screens
+draw **no reading progress at all** (no percent, no time, no pages — its only
+progress display is the status-bar percent while reading,
+`statusBarBookProgressPercentage`). The cover progress line itself is a Xerif
+addition (#249: percent + time), and pages-left is Xerif-only (#252).
+
 ## i18n
 
 - `STR_SLEEP_PAGES_LEFT_FMT: "%lu pages left"` in `english.yaml` (printf style,

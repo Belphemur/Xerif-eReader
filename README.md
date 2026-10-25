@@ -220,6 +220,11 @@ releases. All fonts carry the SIL Open Font License (OFL).
 - **Power button: short press sleeps, long press shuts down.** 400 ms hold = proper
   shutdown with cover screen + rail cut. Short press keeps its own binding and
   defaults to Sleep.
+- **Reading stats on the sleep/shutdown cover** (Xerif only — stock CrossPoint
+  shows nothing on the cover): the cover and shutdown screens display your
+  reading progress — `42% • ~2h 15m • 134 pages left` — drawn slightly above
+  the bottom edge. Toggle the line in *Settings → Display → Sleep screen cover
+  progress*.
 - **Auto power off.** After a configurable idle (default 4 h, range 2–12 h, "12 h" =
   Off) the device wakes on the RTC, paints a shutdown screen, and cuts the peripheral
   rail instead of draining in deep sleep. Next power press is a cold boot.
