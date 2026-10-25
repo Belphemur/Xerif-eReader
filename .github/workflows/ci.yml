@@ -56,7 +56,7 @@ jobs:
     name: cppcheck
     # ubuntu-latest (26.x) dropped PCRE1 from the archive, and pioarduino's
     # cppcheck binary links against libpcre.so.3 — stay on the 24.04 image.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
         with:
