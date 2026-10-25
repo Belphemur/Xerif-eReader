@@ -449,13 +449,14 @@ void EpubReaderActivity::onExit() {
         if (timeLeft) {
           APP_STATE.openBookTimeLeftSeconds = *timeLeft;
         }
-        if (preservesProgress) {
+        if (!preservesProgress) {
           // A book completed in THIS session keeps the 100% the completion
           // flow pinned at the confirm site (setBookCompleted) — recomputing
           // here would report the pre-confirmation page's partial percent in
           // the stats. A book completed in an EARLIER session and reopened
           // for a reread does not: the reader must save the current position
-          // like any other book.
+          // like any other book. Every other exit (normal reading sessions)
+          // must refresh the record, or the home card shows stale values.
           if (timeLeft) {
             stats.estimatedTimeLeftSeconds = *timeLeft;
           }
@@ -792,10 +793,24 @@ void EpubReaderActivity::setBookCompleted(bool completed) {
     // compute it at the end-of-book state (no section). A completed book is
     // done: pin the percent. Re-reading it later overwrites with real values.
     stats.lastBookProgressPercent = 100;
+    // A finished book has no reading time left; without this the home card
+    // would pair the pinned 100% with a stale "~2h" from the last session.
+    stats.estimatedTimeLeftSeconds = 0;
+    // Same triple for the cover sleep/shutdown screens: at 100% the onExit
+    // seeds cannot run either (no section), so the pin site is the
+    // authoritative writer — no stale "pages left" on a finished book.
+    APP_STATE.openBookProgressPercent = 100;
+    APP_STATE.openBookTimeLeftSeconds = 0;
+    APP_STATE.openBookPagesLeft = 0;
     if (SETTINGS.removeReadBooksFromRecents) RECENT_BOOKS.removeByPath(epub->getPath());
     if (SETTINGS.moveFinishedToReadFolder && !isInReadFolder(epub->getPath())) pendingReadFolderMove = true;
     if (globalStats.completedBooks < UINT32_MAX) ++globalStats.completedBooks;
   } else {
+    // Un-completing invalidates the completion cache: the sleep screens must
+    // recompute on the next exit instead of showing 100% / no pages left.
+    APP_STATE.openBookProgressPercent = -1;
+    APP_STATE.openBookTimeLeftSeconds = 0;
+    APP_STATE.openBookPagesLeft = -1;
     if (SETTINGS.removeReadBooksFromRecents) {
       RECENT_BOOKS.addBook(epub->getPath(), epub->getTitle(), epub->getAuthor(), epub->getThumbBmpPath());
     }
