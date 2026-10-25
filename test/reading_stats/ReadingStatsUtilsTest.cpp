@@ -532,6 +532,18 @@ TEST(ReadingStatsUtilsTest, SleepProgressLineAllSegments) {
   EXPECT_STREQ(buf, "42% \xE2\x80\xA2 ~2h 15m \xE2\x80\xA2 134 pages left");
 }
 
+TEST(ReadingStatsUtilsTest, SleepProgressLineSubMinuteHasNoTilde) {
+  char buf[48];
+  // formatCompactReadingDuration renders sub-minute estimates as "<1m"; the
+  // design lists that bare, without the "~" approximation marker.
+  formatSleepProgressLine(42, 30, -1, buf, sizeof(buf));
+  EXPECT_STREQ(buf, "42% \xE2\x80\xA2 <1m");
+
+  // One minute exactly crosses into the tilde form.
+  formatSleepProgressLine(42, 60, -1, buf, sizeof(buf));
+  EXPECT_STREQ(buf, "42% \xE2\x80\xA2 ~1m");
+}
+
 TEST(ReadingStatsUtilsTest, SleepProgressLineDropsTimeWhenZero) {
   char buf[48];
   formatSleepProgressLine(42, 0, 134, buf, sizeof(buf));

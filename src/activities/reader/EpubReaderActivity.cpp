@@ -2727,6 +2727,7 @@ void EpubReaderActivity::beginLoanTimeSync() {
     APP_STATE.openBookProgressPercent = -1;
     APP_STATE.openBookTimeLeftSeconds = 0;
     APP_STATE.openBookPagesLeft = -1;
+    APP_STATE.openBookCacheLegacy = false;
     APP_STATE.saveToFile();
     // Reboot straight back into this book with a clean heap (no-op on touch
     // boards, which fall through to the in-place relaunch below).

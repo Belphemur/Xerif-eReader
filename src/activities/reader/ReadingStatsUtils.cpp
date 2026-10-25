@@ -616,7 +616,13 @@ void formatSleepProgressLine(const int percent, const uint32_t timeLeftSeconds, 
   if (timeLeftSeconds > 0) {
     char duration[16];
     formatCompactReadingDuration(timeLeftSeconds, duration, sizeof(duration));
-    snprintf(segment, sizeof(segment), "~%s", duration);
+    // Sub-minute estimates render as "<1m" — already approximate, so the "~"
+    // prefix applies only from one minute up (the design lists "<1m" bare).
+    if (timeLeftSeconds >= 60) {
+      snprintf(segment, sizeof(segment), "~%s", duration);
+    } else {
+      snprintf(segment, sizeof(segment), "%s", duration);
+    }
     append(segment);
   }
 

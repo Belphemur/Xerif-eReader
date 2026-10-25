@@ -1203,6 +1203,7 @@ void setup() {
     APP_STATE.openBookProgressPercent = -1;
     APP_STATE.openBookTimeLeftSeconds = 0;
     APP_STATE.openBookPagesLeft = -1;
+    APP_STATE.openBookCacheLegacy = false;
     APP_STATE.readerActivityLoadCount++;
     APP_STATE.saveToFile();
     activityManager.goToReader(path, allowFastInitialReaderRefresh);

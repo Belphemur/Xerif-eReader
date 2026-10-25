@@ -73,6 +73,9 @@ void ReaderActivity::onEnter() {
     APP_STATE.openBookProgressPercent = -1;
     APP_STATE.openBookTimeLeftSeconds = 0;
     APP_STATE.openBookPagesLeft = -1;
+    // A session under this firmware manages the cache triple itself; the
+    // pre-upgrade stats-record fallback no longer applies.
+    APP_STATE.openBookCacheLegacy = false;
     APP_STATE.saveToFile();
   }
 

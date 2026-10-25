@@ -25,6 +25,7 @@
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "activities/reader/BookCachePath.h"
 #include "activities/reader/BookReadingStats.h"
 #include "activities/reader/ReaderUtils.h"
 #include "activities/reader/ReadingStatsUtils.h"
@@ -693,21 +694,19 @@ void drawShutdownCaption(const GfxRenderer& renderer, const int captionY) {
   }
 }
 
-// Resolve the reading-stats cache directory for a book without allocating the
-// full Epub object (metadata objects exceed the sleep-path stack budget). This
-// mirrors Epub's constructor path derivation, so a mismatch here silently
-// degrades to an omitted time segment rather than a wrong reading.
-static std::string resolveBookStatsCachePath(const std::string& bookPath) {
-  return std::string("/.crosspoint") + "/epub_" + std::to_string(std::hash<std::string>{}(bookPath));
-}
-
 // Render-time fallback for state saved before the cache triple existed: a cold
 // time-left cache with a live book path reads the book's stats record (135 B
 // fixed record, no Epub allocation) to surface the persisted estimate. Pages
-// left has no pre-upgrade source, so it stays unknown.
+// left has no pre-upgrade source, so it stays unknown. Callers gate this on
+// APP_STATE.openBookCacheLegacy so post-upgrade sessions that leave the
+// estimate unknown never surface a stale record value, and the SD reads stay
+// confined to the first boot after the upgrade.
 static uint32_t loadTimeLeftFallback(const std::string& bookPath) {
-  if (bookPath.empty()) return 0;
-  const BookReadingStats stats = BookReadingStats::load(resolveBookStatsCachePath(bookPath));
+  // Shared helper: empty for non-book paths, and the correct epub_/xtc_ prefix
+  // per extension (a wrong prefix would only cost failed opens).
+  const std::string cachePath = cachePathForBookPath(bookPath);
+  if (cachePath.empty()) return 0;
+  const BookReadingStats stats = BookReadingStats::load(cachePath);
   return stats.estimatedTimeLeftSeconds;
 }
 
@@ -1147,10 +1146,14 @@ void SleepActivity::renderCoverSleepScreen() const {
         if (progressPercent < 0) progressPercent = loadBookProgress(APP_STATE.openEpubPath);
         timeLeftSeconds = APP_STATE.openBookTimeLeftSeconds;
         pagesLeft = APP_STATE.openBookPagesLeft;
-        // Fallback for pre-upgrade state: a cold time-left cache reads the
-        // book's stats record directly. Guarded so it never runs when the
-        // cached estimate is warm.
-        if (timeLeftSeconds == 0) timeLeftSeconds = loadTimeLeftFallback(APP_STATE.openEpubPath);
+        // Fallback for pre-upgrade state only: a cold time-left cache in a
+        // state file that predates the cache triple reads the book's stats
+        // record directly. A post-upgrade session that leaves the estimate
+        // unknown (tracking off, no pace yet) stays unknown instead of
+        // surfacing a stale record value.
+        if (timeLeftSeconds == 0 && APP_STATE.openBookCacheLegacy) {
+          timeLeftSeconds = loadTimeLeftFallback(APP_STATE.openEpubPath);
+        }
       }
       renderBitmapSleepScreen(bitmap, /*preserveBackground=*/false, progressPercent, timeLeftSeconds, pagesLeft);
       overlayCover = nullptr;
@@ -1241,8 +1244,10 @@ void SleepActivity::renderShutdownScreen(GfxRenderer& renderer) {
       timeLeftSeconds = APP_STATE.openBookTimeLeftSeconds;
       pagesLeft = APP_STATE.openBookPagesLeft;
       // Pre-upgrade fallback, same guard as the sleep path: only runs when
-      // the cached estimate is cold.
-      if (timeLeftSeconds == 0) timeLeftSeconds = loadTimeLeftFallback(APP_STATE.openEpubPath);
+      // the cached estimate is cold in a pre-cache state file.
+      if (timeLeftSeconds == 0 && APP_STATE.openBookCacheLegacy) {
+        timeLeftSeconds = loadTimeLeftFallback(APP_STATE.openEpubPath);
+      }
     }
     const std::string& coverPath = APP_STATE.autoPowerOffCoverBmpPath;
     HalFile file;

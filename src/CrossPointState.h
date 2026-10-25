@@ -37,6 +37,12 @@ class CrossPointState : public PersistableStore<CrossPointState> {
   // reading; refreshed only when the reader exits and saves stats.
   uint32_t openBookTimeLeftSeconds = 0;
   int16_t openBookPagesLeft = -1;
+  // True when the loaded state file predates the cache triple above (both
+  // fields absent): the only state where the sleep screens' stats-record
+  // fallback for time-left may run. Derived at load time, never serialized —
+  // the first post-upgrade save writes the fields, so the flag clears itself;
+  // the reader-entry reset sites also clear it once a session has begun.
+  bool openBookCacheLegacy = false;
 
   static const char* getFilePath() { return "/.crosspoint/state.json"; }
   void toJson(JsonDocument& doc) const;
