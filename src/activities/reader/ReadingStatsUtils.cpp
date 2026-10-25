@@ -609,10 +609,9 @@ void formatSleepProgressLine(const int percent, const uint32_t timeLeftSeconds, 
     }
   };
 
-  if (percent >= 0) {
-    snprintf(segment, sizeof(segment), "%d%%", percent);
-    append(segment);
-  }
+  // percent >= 0 is guaranteed by the early return above.
+  snprintf(segment, sizeof(segment), "%d%%", percent);
+  append(segment);
 
   if (timeLeftSeconds > 0) {
     char duration[16];
