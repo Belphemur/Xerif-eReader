@@ -228,9 +228,9 @@ void LibraryListActivity::openBookByPath(const std::string& path) {
   onSelectBook(path);
 }
 
-void LibraryListActivity::activateIndex(const int index) {
+void LibraryListActivity::activateIndex(const int row) {
   if (groupsCollapsed) {
-    expandGroup(index);
+    expandGroup(row);
   } else {
     openSelectedBook();
   }
@@ -242,15 +242,15 @@ void LibraryListActivity::activateIndex(const int index) {
 // collapse-to-groups. The Recent shelf always opens the row options menu.
 bool LibraryListActivity::deleteEligible() const { return !groupsCollapsed && (!query.empty() || !groupable()); }
 
-void LibraryListActivity::onRowLongPress(const int index) {
+void LibraryListActivity::onRowLongPress(const int row) {
   if (isRecentSort(sortOrder)) {
-    showRecentBookOptions(index);
+    showRecentBookOptions(row);
   } else if (deleteEligible()) {
-    promptDeleteBook(index);
+    promptDeleteBook(row);
   } else if (!groupsCollapsed && groupable()) {
-    collapseGroups(index);
+    collapseGroups(row);
   } else {
-    activateIndex(index);
+    activateIndex(row);
   }
 }
 
@@ -470,22 +470,22 @@ void LibraryListActivity::stepTab(const int direction) {
   selectTab(next, false);
 }
 
-void LibraryListActivity::onTabAction(const int index) {
+void LibraryListActivity::onTabAction(const int tab) {
   app.clearTapFlash();
-  selectTab(index, true);
+  selectTab(tab, true);
 }
 
-void LibraryListActivity::selectTab(const int index, const bool toggleIfActive) {
+void LibraryListActivity::selectTab(const int tab, const bool toggleIfActive) {
 #if FREEINK_CAP_TOUCH
   closeSwipeDelete();
 #endif
-  if (index < 0 || index >= TAB_SLOTS) return;
-  if (toggleIfActive && index == activeTab()) descendingTabs ^= static_cast<uint8_t>(1u << index);
-  sortOrder = orderForTab(index, descendingTabs);
+  if (tab < 0 || tab >= TAB_SLOTS) return;
+  if (toggleIfActive && tab == activeTab()) descendingTabs ^= static_cast<uint8_t>(1u << tab);
+  sortOrder = orderForTab(tab, descendingTabs);
   // The filter and the overlap rows hold positions in the old order, so they
   // must be rebuilt.
   applyFilter();
-  activeTabIndex = index;
+  activeTabIndex = tab;
   refreshOverlap();
   // Tab changes happen only while the bar owns focus. A tab's remembered row
   // must not pull focus back into the list after the switch.
@@ -501,10 +501,10 @@ int LibraryListActivity::tabCount() const { return TAB_SLOTS; }
 
 int LibraryListActivity::activeTab() const { return activeTabIndex; }
 
-const char* LibraryListActivity::tabLabel(const int index) const { return tabLabelFor(index); }
+const char* LibraryListActivity::tabLabel(const int tab) const { return tabLabelFor(tab); }
 
-fui::TabIndicator LibraryListActivity::tabIndicator(const int index) const {
-  if (index != activeTab()) return fui::TabIndicator::None;
+fui::TabIndicator LibraryListActivity::tabIndicator(const int tab) const {
+  if (tab != activeTab()) return fui::TabIndicator::None;
   return isDescending(sortOrder) ? fui::TabIndicator::Down : fui::TabIndicator::Up;
 }
 

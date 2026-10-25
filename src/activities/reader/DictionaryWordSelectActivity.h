@@ -67,21 +67,21 @@ class DictionaryWordSelectActivity final : public Activity {
   // Screen box of one selectable word. `text` points into the owned Page's
   // TextBlock arena (NUL-terminated), valid for this activity's lifetime.
   struct WordBox {
-    int16_t x;
-    int16_t y;
-    int16_t width;
-    uint16_t row;
-    const char* text;
-    uint16_t textOffset;
-    uint16_t textLength;
+    int16_t x = 0;
+    int16_t y = 0;
+    int16_t width = 0;
+    uint16_t row = 0;
+    const char* text = nullptr;
+    uint16_t textOffset = 0;
+    uint16_t textLength = 0;
     // The token's full raw span in `text` (pre-trim): footnote resolution must
     // see the parentheses the trim strips, since the parser stores footnote
     // numbers with them ([1] and (1) must not compare equal). rawLength starts
     // at offset 0 of `text`.
-    uint16_t rawLength;
-    EpdFontFamily::Style style;
-    uint32_t selectionGroup;
-    bool syntheticHyphen;
+    uint16_t rawLength = 0;
+    EpdFontFamily::Style style = EpdFontFamily::REGULAR;
+    uint32_t selectionGroup = 0;
+    bool syntheticHyphen = false;
     // Line-box height of this word's row: the legacy font's line height, or
     // the engine font's per-run height on the TTF path (headings differ).
     int16_t height = 0;

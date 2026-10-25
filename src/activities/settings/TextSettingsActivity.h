@@ -83,8 +83,8 @@ class TextSettingsActivity final : public UiTabListActivity {
 
   struct FontEntry {
     std::string name;
-    bool isBuiltin;
-    uint8_t settingIndex;
+    bool isBuiltin = false;
+    uint8_t settingIndex = 0;
     // TTF picker rows only (§12): a family failing the static gates
     // (PSRAM / per-face 2MB guard) is listed but disabled.
     bool available = true;
@@ -92,7 +92,7 @@ class TextSettingsActivity final : public UiTabListActivity {
 
   struct SizeEntry {
     std::string name;  // the point size, rendered for display ("14 pt")
-    uint8_t pointSize;
+    uint8_t pointSize = 0;
   };
 
   const SdCardFontRegistry* registry_;

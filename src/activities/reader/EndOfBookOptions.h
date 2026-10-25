@@ -39,7 +39,7 @@ class EndOfBookOptions : private UiAppHost {
   Action handleMenuInput(const MappedInputManager& input, std::string* openPath);
 
   // Draws the full end screen (plain title, or the suggestion menu) onto a cleared buffer.
-  void render(GfxRenderer& renderer, const MappedInputManager& input);
+  void render(GfxRenderer& gfx, const MappedInputManager& input);
 
  private:
   // The UiAppHost base hosts the suggestion list (themed rows, touch routing);

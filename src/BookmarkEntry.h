@@ -7,10 +7,10 @@
 struct BookmarkEntry {
   static constexpr std::size_t MAX_NAME_LENGTH = 128;
 
-  std::string xpath;    // XPath-like progress string
-  std::string summary;  // First few words of a page to help identify it
-  std::string name;     // Optional user-provided label
-  float percentage;     // Progress percentage (0.0 to 1.0)
+  std::string xpath;        // XPath-like progress string
+  std::string summary;      // First few words of a page to help identify it
+  std::string name;         // Optional user-provided label
+  float percentage = 0.0f;  // Progress percentage (0.0 to 1.0)
 
   uint16_t computedSpineIndex = 0;        // Spine index at the time of bookmarking
   uint16_t computedChapterPageCount = 0;  // Total page count of the chapter at the time of bookmarking

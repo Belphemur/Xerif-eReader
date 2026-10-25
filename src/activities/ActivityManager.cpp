@@ -217,7 +217,11 @@ void ActivityManager::loop() {
           handler(pendingResult);
         }
 
-        // Request an update to ensure the popped activity gets re-rendered
+        // The handler above may have started a new activity, in which case it
+        // already requested an update — skip the redundant one. cppcheck flags
+        // the condition as always-true because it cannot see into the opaque
+        // handler, but the handler is exactly what can change pendingAction.
+        // cppcheck-suppress knownConditionTrueFalse
         if (pendingAction == PendingAction::None) {
           requestUpdate();
         }

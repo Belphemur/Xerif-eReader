@@ -16,11 +16,11 @@ class GfxRenderer;
 class HalMemoryFile {
  public:
   HalMemoryFile() = default;
-  HalMemoryFile(const uint8_t* data, size_t size) : data_(data), size_(size) {}
+  HalMemoryFile(const uint8_t* data, size_t byteLength) : data_(data), size_(byteLength) {}
 
-  void attach(const uint8_t* data, size_t size) {
+  void attach(const uint8_t* data, size_t byteLength) {
     data_ = data;
-    size_ = size;
+    size_ = byteLength;
     pos_ = 0;
   }
 
@@ -63,8 +63,10 @@ struct ImageDimensions {
 };
 
 struct RenderConfig {
-  int x, y;
-  int maxWidth, maxHeight;
+  int x = 0;
+  int y = 0;
+  int maxWidth = 0;
+  int maxHeight = 0;
   bool useGrayscale = true;
   bool useDithering = true;
   bool performanceMode = false;

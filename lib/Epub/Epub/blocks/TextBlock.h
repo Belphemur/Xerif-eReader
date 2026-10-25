@@ -106,7 +106,7 @@ class TextBlock final : public Block {
   TextBlock(const TextBlock&) = delete;
   TextBlock& operator=(const TextBlock&) = delete;
 
-  void setBlockStyle(const BlockStyle& blockStyle) { this->blockStyle = blockStyle; }
+  void setBlockStyle(const BlockStyle& style) { blockStyle = style; }
   const BlockStyle& getBlockStyle() const { return blockStyle; }
   // The font this line was laid out in: a CSS font-size override, else the section font.
   int blockFontId(const int sectionFontId) const { return blockStyle.fontId ? blockStyle.fontId : sectionFontId; }

@@ -35,8 +35,8 @@ enum class SettingAction {
 };
 
 struct SettingInfo {
-  StrId nameId;
-  SettingType type;
+  StrId nameId = StrId::STR_NONE_OPT;
+  SettingType type = SettingType::TOGGLE;
   uint8_t CrossPointSettings::* valuePtr = nullptr;
   std::vector<StrId> enumValues;
   std::span<const StrId> staticEnumValues;

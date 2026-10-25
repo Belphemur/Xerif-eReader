@@ -930,17 +930,17 @@ void OpdsBookBrowserActivity::fillDetailInfo(const OpdsPublication& publication,
     if (av.copiesTotal >= 0) {
       char b[64];
       snprintf(b, sizeof(b), tr(STR_OPDS_COPIES), av.copiesAvailable < 0 ? 0 : av.copiesAvailable, av.copiesTotal);
-      spec.copies = b;
+      spec.copies = std::string(b);
     }
     // The reader's own queue position is more useful than the raw holds count.
     if (av.holdsPosition >= 0) {
       char b[48];
       snprintf(b, sizeof(b), tr(STR_OPDS_HOLD_POSITION), av.holdsPosition);
-      spec.holds = b;
+      spec.holds = std::string(b);
     } else if (av.holdsTotal >= 0) {
       char b[48];
       snprintf(b, sizeof(b), tr(STR_OPDS_HOLDS), av.holdsTotal);
-      spec.holds = b;
+      spec.holds = std::string(b);
     }
   }
 

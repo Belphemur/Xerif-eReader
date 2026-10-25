@@ -13,8 +13,8 @@
  * Progress position representation.
  */
 struct SavedProgressPosition {
-  std::string xpath;  // XPath-like progress string
-  float percentage;   // Progress percentage (0.0 to 1.0)
+  std::string xpath;        // XPath-like progress string
+  float percentage = 0.0f;  // Progress percentage (0.0 to 1.0)
 };
 
 /**

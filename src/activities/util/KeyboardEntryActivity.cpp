@@ -1021,8 +1021,8 @@ void KeyboardEntryActivity::render(RenderLock&&) {
   renderer.displayBuffer();
 }
 
-void KeyboardEntryActivity::onComplete(std::string text) {
-  setResult(KeyboardResult{std::move(text)});
+void KeyboardEntryActivity::onComplete(std::string finalText) {
+  setResult(KeyboardResult{std::move(finalText)});
   finish();
 }
 

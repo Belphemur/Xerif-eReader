@@ -18,8 +18,8 @@ class XtcReaderActivity final : public ReaderActivity {
 
   enum class StatusBarOverlayPosition { Bottom, Top };
   struct StatusBarInfo {
-    int currentPage;
-    int pageCount;
+    int currentPage = 0;
+    int pageCount = 0;
     std::string title;
   };
 

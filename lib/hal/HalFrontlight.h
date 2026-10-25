@@ -17,7 +17,14 @@ class HalFrontlight {
 
   void begin(uint8_t brightness, uint8_t warmth, bool on);
 
+  // Both getters are pure pass-throughs over the SDK manager. On boards whose
+  // build drops FREEINK_CAP_FRONTLIGHT the manager's implementations are
+  // constant `false`, so cppcheck value-flow folds these to a constant and
+  // flags knownConditionTrueFalse — intentional here (the HAL stays inert and
+  // callers stay board-agnostic), not a condition worth rewriting.
+  // cppcheck-suppress knownConditionTrueFalse
   bool present() const { return manager.present(); }
+  // cppcheck-suppress knownConditionTrueFalse
   bool hasColorTemperature() const { return manager.hasColorTemperature(); }
 
   void setBrightness(uint8_t percent);

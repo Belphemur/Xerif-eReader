@@ -40,17 +40,17 @@ class LibraryListActivity final : public UiTabListActivity {
   // --- UiListActivity / UiTabListActivity contract ---------------------------
   int listCount() const override;
   void buildScreen(UiScreen& screen) override;
-  void activateIndex(int index) override;
-  void onRowLongPress(int index) override;
+  void activateIndex(int row) override;
+  void onRowLongPress(int row) override;
 #if FREEINK_CAP_TOUCH
   bool canSwipeDelete(int index) const override { return !groupsCollapsed && index >= 0 && index < listCount(); }
   void swipeDelete(int index) override;
 #endif
   int tabCount() const override;
   int activeTab() const override;
-  const char* tabLabel(int index) const override;
-  freeink::ui::TabIndicator tabIndicator(int index) const override;
-  void onTabAction(int index) override;
+  const char* tabLabel(int tab) const override;
+  freeink::ui::TabIndicator tabIndicator(int tab) const override;
+  void onTabAction(int tab) override;
   void stepTab(int direction) override;
   bool handleCustomInput() override;
   bool handleButtons() override;
@@ -92,7 +92,7 @@ class LibraryListActivity final : public UiTabListActivity {
   bool collapseGroups(int bookEntry);
   void expandGroup(int groupEntry);
   void restoreExpandedList();
-  void selectTab(int index, bool toggleIfActive);
+  void selectTab(int tab, bool toggleIfActive);
   void toggleSortDirection();
   // Sub-screens act on button press, so a button still held when we resume must
   // not also act here. Records what to swallow on the next release.

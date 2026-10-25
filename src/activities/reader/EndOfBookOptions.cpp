@@ -179,14 +179,13 @@ void EndOfBookOptions::buildListScreen(UiScreen& screen) {
   screen.list(props);
 }
 
-void EndOfBookOptions::render(GfxRenderer& renderer, const MappedInputManager& input) {
+void EndOfBookOptions::render(GfxRenderer& gfx, const MappedInputManager& input) {
   const auto& metrics = UITheme::getInstance().getMetrics();
 
   if (!menuActive()) {
     // No suggestions: the historical plain end screen. 3/8 of the screen height matches
     // the previous fixed position on the 480x800 panel and scales to other resolutions.
-    renderer.drawCenteredText(UI_12_FONT_ID, renderer.getScreenHeight() * 3 / 8, tr(STR_END_OF_BOOK), true,
-                              EpdFontFamily::BOLD);
+    gfx.drawCenteredText(UI_12_FONT_ID, gfx.getScreenHeight() * 3 / 8, tr(STR_END_OF_BOOK), true, EpdFontFamily::BOLD);
     return;
   }
 
@@ -195,12 +194,12 @@ void EndOfBookOptions::render(GfxRenderer& renderer, const MappedInputManager& i
   // orientations — lay out inside the safe area so nothing hides behind them. Vertical
   // positions derive from the safe-area height and font line heights so other panel
   // resolutions scale (review request on #2532).
-  const Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  const Rect safe = UITheme::getInstance().getScreenSafeArea(gfx, true, false);
   const int titleY = safe.y + safe.height / 8;
-  const int subtitleY = titleY + renderer.getLineHeight(UI_12_FONT_ID) + metrics.verticalSpacing;
+  const int subtitleY = titleY + gfx.getLineHeight(UI_12_FONT_ID) + metrics.verticalSpacing;
 
-  UITheme::drawCenteredText(renderer, safe, UI_12_FONT_ID, titleY, tr(STR_END_OF_BOOK), true, EpdFontFamily::BOLD);
-  UITheme::drawCenteredText(renderer, safe, UI_10_FONT_ID, subtitleY, tr(STR_EOB_CONTINUE_WITH));
+  UITheme::drawCenteredText(gfx, safe, UI_12_FONT_ID, titleY, tr(STR_END_OF_BOOK), true, EpdFontFamily::BOLD);
+  UITheme::drawCenteredText(gfx, safe, UI_10_FONT_ID, subtitleY, tr(STR_EOB_CONTINUE_WITH));
 
   // The list renders through the FreeInkApp so its rows register touch hit
   // rects; renderUi re-derives the device context, picking up any rotation
@@ -208,5 +207,5 @@ void EndOfBookOptions::render(GfxRenderer& renderer, const MappedInputManager& i
   renderUi();
 
   const auto labels = input.mapLabels(tr(STR_BACK), tr(STR_OPEN), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  GUI.drawButtonHints(gfx, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }

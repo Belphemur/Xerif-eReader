@@ -6,9 +6,9 @@
  * CrossPoint position representation.
  */
 struct CrossPointPosition {
-  int spineIndex;                  // Current spine item (chapter) index
-  int pageNumber;                  // Current page within the spine item
-  int totalPages;                  // Total pages in the current spine item
+  int spineIndex = 0;              // Current spine item (chapter) index
+  int pageNumber = 0;              // Current page within the spine item
+  int totalPages = 0;              // Total pages in the spine item
   uint32_t visibleTextOffset = 0;  // Authoritative zero-based visible codepoint offset
   bool hasVisibleTextOffset = false;
   uint16_t paragraphIndex = 0;         // 1-based synthetic paragraph index from XPath p[N]

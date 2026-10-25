@@ -320,7 +320,7 @@ bool DictionaryDefinitionActivity::reserveLines(Definition& next, const size_t c
 }
 
 bool DictionaryDefinitionActivity::wrapText(Definition& next) {
-  auto& definition = next.text;
+  const auto& definition = next.text;
   auto& lines = next.lines;
   lines.clear();
   if (!reserveLines(next, definition.size() / 32 + 8)) return false;

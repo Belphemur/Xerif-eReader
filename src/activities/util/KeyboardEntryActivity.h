@@ -104,7 +104,7 @@ class KeyboardEntryActivity : public Activity {
   bool hintVisible = false;
   unsigned long hintShowTime = 0;
 
-  void onComplete(std::string text);
+  void onComplete(std::string finalText);
   void onCancel();
   bool cursorPositionFromPoint(int x, int y, size_t& position) const;
   std::string displayTextForCurrentState() const;

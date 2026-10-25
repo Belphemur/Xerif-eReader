@@ -180,7 +180,7 @@ class ParsedText {
   void ensureRubyCapacity();
   void suppressFirstLineIndent() { firstLineConsumed = true; }
   void resetFirstLineIndent() { firstLineConsumed = paragraphStartEmitted = false; }
-  void setBlockStyle(const BlockStyle& blockStyle) { this->blockStyle = blockStyle; }
+  void setBlockStyle(const BlockStyle& style) { blockStyle = style; }
   BlockStyle& getBlockStyle() { return blockStyle; }
   size_t size() const { return words.size(); }
   bool isEmpty() const { return words.empty(); }
