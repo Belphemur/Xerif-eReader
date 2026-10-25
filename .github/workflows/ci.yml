@@ -54,9 +54,9 @@ jobs:
 
   cppcheck:
     name: cppcheck
-    # ubuntu-latest (26.x) dropped PCRE1 from the archive, and pioarduino's
-    # cppcheck binary links against libpcre.so.3 — stay on the 24.04 image.
-    runs-on: ubuntu-24.04
+    # The pinned tool-cppcheck@~1.22200.0 (cppcheck 2.22) has no PCRE1
+    # dependency, so the standard ubuntu-latest (26.x) image works again.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
@@ -87,15 +87,18 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.platformio
-          key: pio-v3-${{ runner.os }}-cppcheck-${{ hashFiles('platformio.ini') }}
+          # pio-v4: cache regenerated with tool-cppcheck 2.22 (PCRE-free).
+          key: pio-v4-${{ runner.os }}-cppcheck-${{ hashFiles('platformio.ini') }}
           restore-keys: |
-            pio-v3-${{ runner.os }}-cppcheck-
+            pio-v4-${{ runner.os }}-cppcheck-
 
-      - name: Install cppcheck runtime dependency
+      - name: Install tool-cppcheck
         run: |
-          # pioarduino's Linux cppcheck binary links against libpcre.so.3.
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libpcre3
+          # PlatformIO Core does not install the check tool itself; the old
+          # 2.20.1 binary (via the cache) needed libpcre.so.3, which Ubuntu
+          # 26.x no longer ships. Pin the registry's latest 2.22 build, which
+          # links only against libc/libstdc++.
+          pio pkg install --global --tool "tool-cppcheck@~1.22200.0"
 
       - name: Run cppcheck
         run: pio check --fail-on-defect low --fail-on-defect medium --fail-on-defect high
