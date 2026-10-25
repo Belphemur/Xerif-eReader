@@ -104,6 +104,22 @@ struct UITheme {
 constexpr const char* STR_TEXT_SETTINGS = "Text Settings";
 constexpr const char* STR_PREVIEW = """ + english.split("STR_PREVIEW: ", 1)[1].splitlines()[0] + r""";
 constexpr int UI_10_FONT_ID = 0, TOUCH_TAB_BAR_HEIGHT = 50, ACTION_TAB = 1, ACTION_ROW = 2;
+// Fork: the Text-Rendering row is a two-mode ring (Smooth/Crisp) rendered as
+// value text, not a checkbox — the spliced buildRows fragment reads these.
+namespace CrossPointSettings {
+constexpr uint8_t TEXT_RENDER_SMOOTH = 0;
+constexpr uint8_t TEXT_RENDER_CRISP = 1;
+}  // namespace CrossPointSettings
+struct SettingsStub {
+  uint8_t textRenderMode = CrossPointSettings::TEXT_RENDER_SMOOTH;
+  uint8_t extraParagraphSpacing = 0;
+  // The fork's renderPreview computes textLeft/textWidth before the TTF
+  // branch (the TTF layout needs the pane geometry), so the spliced top
+  // fragment reads it — upstream computes it after the fontId cut point.
+  uint8_t screenMargin = 4;
+} SETTINGS;
+constexpr const char* STR_SMOOTH = "Smooth";
+constexpr const char* STR_CRISP = "Crisp";
 namespace textsettings {
   struct PreviewLayout {};
 """ + preview_caption + r"""
