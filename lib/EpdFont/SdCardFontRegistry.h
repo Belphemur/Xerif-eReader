@@ -13,9 +13,9 @@ struct SdCardFontFileInfo {
   // families keep no per-file heap strings and the entry is two pointers wide
   // (8 bytes on the ESP32-C3).
   std::unique_ptr<char[]> name;
-  uint8_t pointSize;  // parsed from filename: 14
-  uint8_t style;      // always 0 in v4 (all 4 styles bundled in one file);
-                      // kept for potential future formats
+  uint8_t pointSize = 0;  // parsed from filename: 14
+  uint8_t style = 0;      // always 0 in v4 (all 4 styles bundled in one file);
+                          // kept for potential future formats
 };
 
 struct SdCardFontFamilyInfo {

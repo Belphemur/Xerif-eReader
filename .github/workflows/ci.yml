@@ -54,8 +54,12 @@ jobs:
 
   cppcheck:
     name: cppcheck
-    # The pinned tool-cppcheck@~1.22200.0 (cppcheck 2.22) has no PCRE1
-    # dependency, so the standard ubuntu-latest (26.x) image works again.
+    # The pinned platformio/tool-cppcheck@~1.22200.0 (cppcheck 2.22) has no
+    # PCRE1 dependency, so the standard ubuntu-latest (26.x) image works
+    # again. The install step also syncs the tool's package.json version to
+    # the platform manifest's package-version (bin/cppcheck-tool-sync) —
+    # without it pioarduino's platform wipes any non-pioarduino tool-cppcheck
+    # during the check's idedata configure and the check dies.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -97,11 +101,24 @@ jobs:
           # PlatformIO Core does not install the check tool itself; the old
           # 2.20.1 binary (via the cache) needed libpcre.so.3, which Ubuntu
           # 26.x no longer ships. Pin the registry's latest 2.22 build, which
-          # links only against libc/libstdc++.
-          pio pkg install --global --tool "tool-cppcheck@~1.22200.0"
+          # links only against libc/libstdc++, and sync its package.json
+          # version so the platform's tool check does not wipe it mid-check
+          # (mechanism documented in bin/cppcheck-tool-sync).
+          ./bin/cppcheck-tool-sync
+
+      - name: Report cppcheck version
+        # Informational only: prove in the CI log that the resolved tool is
+        # the PCRE-free 2.22 build, not a stale cached 2.20 binary.
+        run: |
+          bin="${HOME}/.platformio/packages/tool-cppcheck/cppcheck"
+          if [[ -x "${bin}" ]]; then
+            "${bin}" --version
+          else
+            find "${HOME}/.platformio/packages/tool-cppcheck" -maxdepth 1 -type f -name 'cppcheck*' -print || true
+          fi
 
       - name: Run cppcheck
-        run: pio check --fail-on-defect low --fail-on-defect medium --fail-on-defect high
+        run: pio check -e cppcheck --fail-on-defect low --fail-on-defect medium --fail-on-defect high
 
   build:
     name: Build ${{ matrix.env }}

@@ -10,11 +10,19 @@
 # environment, not in tool versions. Always treat the CI cppcheck job as
 # authoritative before pushing.
 #
-# Tool facts (verified 2026-09-12):
-#   PlatformIO Core 6.1.19 (CI: uv pioarduino platformio-core v6.1.19 zip)
-#   tool-cppcheck package 2.20.1 (pioarduino registry); the binary
-#   self-reports "Cppcheck 2.20.0" on BOTH CI and local — the packaged
-#   build is identical everywhere (sha256 6191fdcf...).
+# Tool facts (verified 2026-10-25):
+#   PlatformIO Core 6.2.0 (CI: uv pioarduino platformio-core v6.2.0 zip)
+#   tool-cppcheck package 1.22200.0 (official PlatformIO registry, owner
+#   "platformio") = "Cppcheck 2.22.0" on BOTH CI and local; binary has no
+#   pcre linkage (only libc/libstdc++), so the CI job runs on the standard
+#   ubuntu-latest image (26.x). The old pioarduino 2.20.1 binary needed
+#   libpcre.so.3, which 26.x dropped (its exec failed with exit 127).
+#   The tool is pinned in platformio.ini [env:cppcheck] platform_packages
+#   and installed + version-synced by bin/cppcheck-tool-sync (see that
+#   script for why the sync is required before any pio check).
+#   The check runs in the dedicated [env:cppcheck] env (extends
+#   env:default) so the analyzer sees the same defines/includes as a real
+#   build while the tool pin stays out of the build envs.
 set -euo pipefail
 
 resolve_pio() {
@@ -41,7 +49,10 @@ if ! PIO="$(resolve_pio)"; then
   exit 127
 fi
 
-exec "${PIO}" check \
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"${SCRIPT_DIR}/cppcheck-tool-sync"
+
+exec "${PIO}" check -e cppcheck \
   --fail-on-defect low \
   --fail-on-defect medium \
   --fail-on-defect high

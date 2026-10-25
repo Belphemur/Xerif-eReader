@@ -20,7 +20,7 @@ void catalogScreenHeader(UiAppHost::UiScreen& screen, const GfxRenderer& rendere
 
 // One line of a centered message block; bold marks a heading line.
 struct CatalogLine {
-  const char* text;
+  const char* text = nullptr;
   bool bold = false;
 };
 

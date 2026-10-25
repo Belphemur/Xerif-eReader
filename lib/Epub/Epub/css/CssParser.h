@@ -179,7 +179,7 @@ class CssParser {
   // Provides string-like interface with fixed capacity
   struct StackBuffer {
     static constexpr size_t CAPACITY = 1024;
-    char data[CAPACITY];
+    char data[CAPACITY] = {};
     size_t len = 0;
 
     bool push_back(char c) {
@@ -200,8 +200,8 @@ class CssParser {
   // Loop-carried state for the CSS character state machine, shared by
   // loadFromStream() and loadFromMemory().
   struct CssParseState {
-    StackBuffer selector;
-    StackBuffer declBuffer;
+    StackBuffer selector{};
+    StackBuffer declBuffer{};
     bool inComment = false;
     bool maybeSlash = false;
     bool prevStar = false;

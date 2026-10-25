@@ -75,7 +75,7 @@ class QuickPageCapture {
   // past it are dropped and a run straddling it is truncated to its
   // leading codepoints (the synthetic-hyphen bit recomputed from the kept
   // bytes). 0 = no bound (untrimmed copy).
-  bool capture(const freeink::book::Page& page, uint32_t endChar = 0);
+  bool capture(const freeink::book::Page& pageData, uint32_t endChar = 0);
 
   // True when the last capture() succeeded.
   bool ready() const { return valid_; }

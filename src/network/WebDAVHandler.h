@@ -8,7 +8,7 @@ class WebDAVHandler : public RequestHandler {
   // RequestHandler interface
   bool canHandle(WebServer& server, HTTPMethod method, const String& uri) override;
   bool canRaw(WebServer& server, const String& uri) override;
-  void raw(WebServer& server, const String& uri, HTTPRaw& raw) override;
+  void raw(WebServer& server, const String& uri, HTTPRaw& rawData) override;
   bool handle(WebServer& server, HTTPMethod method, const String& uri) override;
 
  private:

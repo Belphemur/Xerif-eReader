@@ -31,107 +31,107 @@ struct Rect {
 };
 
 struct ThemeMetrics {
-  int batteryWidth;
-  int batteryHeight;
+  int batteryWidth = 0;
+  int batteryHeight = 0;
 
-  int topPadding;
-  int batteryBarHeight;
-  int headerHeight;
-  int verticalSpacing;
+  int topPadding = 0;
+  int batteryBarHeight = 0;
+  int headerHeight = 0;
+  int verticalSpacing = 0;
 
-  int previewPadding;
-  int previewHeightPercent;
+  int previewPadding = 0;
+  int previewHeightPercent = 0;
 
-  int contentSidePadding;
-  int listRowHeight;
-  int listWithSubtitleRowHeight;
+  int contentSidePadding = 0;
+  int listRowHeight = 0;
+  int listWithSubtitleRowHeight = 0;
   // FreeInkUI list shape, consumed by uiThemeTokens() for screens rendered
   // through FreeInkApp: the theme supplies geometry and selection style, the
   // uiScale fonts supply the sizes. Plain data by design — the eventual
   // SD-card theme files will provide exactly these values.
-  int listRowGap;          // vertical gap between rows
-  int listRowRadius;       // row corner radius (RoundedRaff cards, Lyra pill)
-  int listInset;           // horizontal inset of the whole list band
-  int listSidePadding;     // text inset within a row
-  int listSelectionStyle;  // 0=invert fill, 1=light pill, 2=underline, 3=triangle (fui::SelectionStyle order)
-  int listScrollWidth;     // scroll indicator thickness
-  int listScrollSide;      // 0 = right edge, 1 = left edge
-  bool listTitleBold;      // bold row titles (RoundedRaff)
+  int listRowGap = 0;          // vertical gap between rows
+  int listRowRadius = 0;       // row corner radius (RoundedRaff cards, Lyra pill)
+  int listInset = 0;           // horizontal inset of the whole list band
+  int listSidePadding = 0;     // text inset within a row
+  int listSelectionStyle = 0;  // 0=invert fill, 1=light pill, 2=underline, 3=triangle (fui::SelectionStyle order)
+  int listScrollWidth = 0;     // scroll indicator thickness
+  int listScrollSide = 0;      // 0 = right edge, 1 = left edge
+  bool listTitleBold = false;  // bold row titles (RoundedRaff)
   // FreeInkUI header shape, same contract as the list fields above.
-  int headerSidePadding;    // title text inset
-  int headerUnderlineSize;  // bottom rule thickness (Lyra), 0 = none
-  int headerTitleAlign;     // 0 = left, 1 = center, 2 = right (fui::TextAlign order)
-  int headerBatterySide;    // 0 = right edge, 1 = left edge
+  int headerSidePadding = 0;    // title text inset
+  int headerUnderlineSize = 0;  // bottom rule thickness (Lyra), 0 = none
+  int headerTitleAlign = 0;     // 0 = left, 1 = center, 2 = right (fui::TextAlign order)
+  int headerBatterySide = 0;    // 0 = right edge, 1 = left edge
   // Header clock opt-out for themes whose title layout can't spare the left
   // reserve (RoundedRaff); the user setting still governs the themes that can.
   bool headerShowsClock = true;
   // Clock slot: centered on the band, or on the left after the back arrow.
   bool headerClockCentered = true;
-  int menuRowHeight;
-  int menuSpacing;
+  int menuRowHeight = 0;
+  int menuSpacing = 0;
 
-  int tabSpacing;
-  int tabBarHeight;
+  int tabSpacing = 0;
+  int tabBarHeight = 0;
   int coverGridTabBarHeight = 72;
   // Selected-tab pill fills its equal-width slot (legacy RoundedRaff tabs)
   // instead of shrinking to hug the label (legacy Lyra tabs).
   bool tabPillFullSlot = false;
 
-  int scrollBarWidth;
-  int scrollBarRightOffset;
+  int scrollBarWidth = 0;
+  int scrollBarRightOffset = 0;
 
-  int homeTopPadding;
-  int homeCoverHeight;
-  int homeCoverTileHeight;
-  int homeRecentBooksCount;
-  bool homeContinueReadingInMenu;
-  int homeMenuTopOffset;
+  int homeTopPadding = 0;
+  int homeCoverHeight = 0;
+  int homeCoverTileHeight = 0;
+  int homeRecentBooksCount = 0;
+  bool homeContinueReadingInMenu = false;
+  int homeMenuTopOffset = 0;
 
-  int buttonHintsHeight;
-  int sideButtonHintsWidth;
+  int buttonHintsHeight = 0;
+  int sideButtonHintsWidth = 0;
 
-  int progressBarHeight;
-  int progressBarMarginTop;
-  int statusBarHorizontalMargin;
-  int statusBarVerticalMargin;
-  int keyboardKeyHeight;
-  int keyboardKeySpacing;
-  bool keyboardCenteredText;
-  int keyboardVerticalOffset;
-  int keyboardTextFieldWidthPercent;
-  int keyboardWidthPercent;
+  int progressBarHeight = 0;
+  int progressBarMarginTop = 0;
+  int statusBarHorizontalMargin = 0;
+  int statusBarVerticalMargin = 0;
+  int keyboardKeyHeight = 0;
+  int keyboardKeySpacing = 0;
+  bool keyboardCenteredText = false;
+  int keyboardVerticalOffset = 0;
+  int keyboardTextFieldWidthPercent = 0;
+  int keyboardWidthPercent = 0;
 
-  float popupTopOffsetRatio;
-  int popupMarginX;
-  int popupMarginY;
-  int popupFrameThickness;
-  int popupCornerRadius;
-  bool popupTextBold;
-  bool popupTextInverted;
-  int popupTextBaselineOffsetY;
-  int popupProgressBarHeight;
-  bool popupProgressDrawOutline;
-  bool popupProgressClampPercent;
-  bool popupProgressFillInverted;
-  bool popupProgressOutlineInverted;
+  float popupTopOffsetRatio = 0.0f;
+  int popupMarginX = 0;
+  int popupMarginY = 0;
+  int popupFrameThickness = 0;
+  int popupCornerRadius = 0;
+  bool popupTextBold = false;
+  bool popupTextInverted = false;
+  int popupTextBaselineOffsetY = 0;
+  int popupProgressBarHeight = 0;
+  bool popupProgressDrawOutline = false;
+  bool popupProgressClampPercent = false;
+  bool popupProgressFillInverted = false;
+  bool popupProgressOutlineInverted = false;
 
-  int optionPopupItemSpacing;
-  int optionPopupInnerPadding;
-  int optionPopupSelectionVPadding;
-  int optionPopupDialogSideMargin;
+  int optionPopupItemSpacing = 0;
+  int optionPopupInnerPadding = 0;
+  int optionPopupSelectionVPadding = 0;
+  int optionPopupDialogSideMargin = 0;
 
-  int textFieldHorizontalPadding;
-  int textFieldNormalThickness;
-  int textFieldCursorThickness;
-  int textFieldLineEndOffset;
+  int textFieldHorizontalPadding = 0;
+  int textFieldNormalThickness = 0;
+  int textFieldCursorThickness = 0;
+  int textFieldLineEndOffset = 0;
 
   // FreeInkUI control shape (the control center panel), same contract as the
   // list fields above: quick-setting tiles and slider step buttons, the
   // sheet's free-edge corners, and the capsule slider's corners (255 = full
   // stadium, i.e. radius = half the control height).
-  int controlRadius;
-  int sheetRadius;
-  int capsuleRadius;
+  int controlRadius = 0;
+  int sheetRadius = 0;
+  int capsuleRadius = 0;
 };
 
 enum UIIcon {

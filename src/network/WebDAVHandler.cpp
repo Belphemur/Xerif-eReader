@@ -45,9 +45,9 @@ bool WebDAVHandler::canRaw(WebServer& server, const String& uri) {
   return server.method() == HTTP_PUT;
 }
 
-void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
+void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& rawData) {
   (void)uri;
-  if (raw.status == RAW_START) {
+  if (rawData.status == RAW_START) {
     _putPath = getRequestPath(server);
     if (isProtectedPath(_putPath)) {
       _putOk = false;
@@ -83,25 +83,25 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
     _putOk = Storage.openFileForWrite("DAV", tempPath, _putFile);
     LOG_DBG("DAV", "PUT START: %s", _putPath.c_str());
 
-  } else if (raw.status == RAW_WRITE) {
+  } else if (rawData.status == RAW_WRITE) {
     if (_putFile && _putOk) {
       resetTaskWatchdogIfSubscribed();
-      size_t written = _putFile.write(raw.buf, raw.currentSize);
-      if (written != raw.currentSize) {
+      size_t written = _putFile.write(rawData.buf, rawData.currentSize);
+      if (written != rawData.currentSize) {
         _putOk = false;
       }
     }
 
-  } else if (raw.status == RAW_END) {
+  } else if (rawData.status == RAW_END) {
     if (_putFile) _putFile.close();
     if (_putOk) {
       String tempPath = _putPath + ".davtmp";
       _putOk = Storage.replaceFile(tempPath.c_str(), _putPath.c_str());
       if (!_putOk) Storage.remove(tempPath.c_str());
     }
-    LOG_DBG("DAV", "PUT END: %u bytes, ok=%d", raw.totalSize, _putOk);
+    LOG_DBG("DAV", "PUT END: %u bytes, ok=%d", rawData.totalSize, _putOk);
 
-  } else if (raw.status == RAW_ABORTED) {
+  } else if (rawData.status == RAW_ABORTED) {
     if (_putFile) _putFile.close();
     String tempPath = _putPath + ".davtmp";
     Storage.remove(tempPath.c_str());

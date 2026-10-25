@@ -28,12 +28,12 @@ uint32_t byteLenOfChars(const char* text, const uint32_t len, const uint32_t cha
 }
 }  // namespace
 
-bool QuickPageCapture::capture(const freeink::book::Page& page, const uint32_t endChar) {
+bool QuickPageCapture::capture(const freeink::book::Page& pageData, const uint32_t endChar) {
   valid_ = false;
   stringUsed_ = 0;
   if (buffer_ == nullptr) return false;
-  if (page.runCount > kMaxRuns || page.linkCount > kMaxLinks || page.imageCount > kMaxImages ||
-      page.ruleCount > kMaxRules || page.rubyCount > kMaxRubies) {
+  if (pageData.runCount > kMaxRuns || pageData.linkCount > kMaxLinks || pageData.imageCount > kMaxImages ||
+      pageData.ruleCount > kMaxRules || pageData.rubyCount > kMaxRubies) {
     return false;
   }
 
@@ -43,25 +43,25 @@ bool QuickPageCapture::capture(const freeink::book::Page& page, const uint32_t e
   // the bound check overflow-free. Runs beyond endChar contribute only
   // their kept prefix.
   uint64_t stringNeed = 0;
-  for (uint16_t i = 0; i < page.runCount; ++i) {
-    if (page.runs[i].text == nullptr) continue;
-    if (endChar > 0 && page.runs[i].charStart >= endChar) continue;
-    uint32_t len = page.runs[i].len;
-    if (endChar > 0 && page.runs[i].charStart + page.runs[i].charLen > endChar) {
-      const uint32_t cutChars = endChar - page.runs[i].charStart;
-      len = byteLenOfChars(page.runs[i].text, len, cutChars);
+  for (uint16_t i = 0; i < pageData.runCount; ++i) {
+    if (pageData.runs[i].text == nullptr) continue;
+    if (endChar > 0 && pageData.runs[i].charStart >= endChar) continue;
+    uint32_t len = pageData.runs[i].len;
+    if (endChar > 0 && pageData.runs[i].charStart + pageData.runs[i].charLen > endChar) {
+      const uint32_t cutChars = endChar - pageData.runs[i].charStart;
+      len = byteLenOfChars(pageData.runs[i].text, len, cutChars);
     }
     stringNeed += len;
   }
-  for (uint16_t i = 0; i < page.linkCount; ++i) {
-    if (page.links[i].target != nullptr) stringNeed += strlen(page.links[i].target) + 1;
-    if (page.links[i].fragment != nullptr) stringNeed += strlen(page.links[i].fragment) + 1;
+  for (uint16_t i = 0; i < pageData.linkCount; ++i) {
+    if (pageData.links[i].target != nullptr) stringNeed += strlen(pageData.links[i].target) + 1;
+    if (pageData.links[i].fragment != nullptr) stringNeed += strlen(pageData.links[i].fragment) + 1;
   }
-  for (uint16_t i = 0; i < page.imageCount; ++i) {
-    if (page.images[i].href != nullptr) stringNeed += strlen(page.images[i].href) + 1;
+  for (uint16_t i = 0; i < pageData.imageCount; ++i) {
+    if (pageData.images[i].href != nullptr) stringNeed += strlen(pageData.images[i].href) + 1;
   }
-  for (uint16_t i = 0; i < page.rubyCount; ++i) {
-    if (page.rubies[i].text != nullptr) stringNeed += strlen(page.rubies[i].text) + 1;
+  for (uint16_t i = 0; i < pageData.rubyCount; ++i) {
+    if (pageData.rubies[i].text != nullptr) stringNeed += strlen(pageData.rubies[i].text) + 1;
   }
   if (cap_ < kStringsOff || stringNeed > cap_ - kStringsOff) return false;
 
@@ -72,8 +72,8 @@ bool QuickPageCapture::capture(const freeink::book::Page& page, const uint32_t e
   auto* rubies = reinterpret_cast<freeink::book::PageRuby*>(buffer_ + kRubiesOff);
 
   uint16_t runOut = 0;
-  for (uint16_t i = 0; i < page.runCount; ++i) {
-    freeink::book::PageTextRun run = page.runs[i];
+  for (uint16_t i = 0; i < pageData.runCount; ++i) {
+    freeink::book::PageTextRun run = pageData.runs[i];
     if (endChar > 0) {
       if (run.charStart >= endChar) continue;  // beyond the entry span
       const uint32_t runEnd = run.charStart + run.charLen;
@@ -99,25 +99,35 @@ bool QuickPageCapture::capture(const freeink::book::Page& page, const uint32_t e
     }
     ++runOut;
   }
-  for (uint16_t i = 0; i < page.linkCount; ++i) {
-    links[i] = page.links[i];
-    links[i].target = copyString(page.links[i].target);
-    links[i].fragment = page.links[i].fragment != nullptr ? copyString(page.links[i].fragment) : nullptr;
+  for (uint16_t i = 0; i < pageData.linkCount; ++i) {
+    links[i] = pageData.links[i];
+    links[i].target = copyString(pageData.links[i].target);
+    links[i].fragment = pageData.links[i].fragment != nullptr ? copyString(pageData.links[i].fragment) : nullptr;
   }
-  for (uint16_t i = 0; i < page.imageCount; ++i) {
-    images[i] = page.images[i];
-    images[i].href = copyString(page.images[i].href);
+  for (uint16_t i = 0; i < pageData.imageCount; ++i) {
+    images[i] = pageData.images[i];
+    images[i].href = copyString(pageData.images[i].href);
   }
   // Rules carry no strings — geometry only.
-  for (uint16_t i = 0; i < page.ruleCount; ++i) rules[i] = page.rules[i];
-  for (uint16_t i = 0; i < page.rubyCount; ++i) {
-    rubies[i] = page.rubies[i];
-    rubies[i].text = copyString(page.rubies[i].text);
+  for (uint16_t i = 0; i < pageData.ruleCount; ++i) rules[i] = pageData.rules[i];
+  for (uint16_t i = 0; i < pageData.rubyCount; ++i) {
+    rubies[i] = pageData.rubies[i];
+    rubies[i].text = copyString(pageData.rubies[i].text);
   }
 
-  page_ = freeink::book::Page{runs,           runOut,         images,         page.imageCount, links,
-                              page.linkCount, rules,          page.ruleCount, rubies,          page.rubyCount,
-                              page.pageIndex, page.wordCount, page.charStart};
+  page_ = freeink::book::Page{runs,
+                              runOut,
+                              images,
+                              pageData.imageCount,
+                              links,
+                              pageData.linkCount,
+                              rules,
+                              pageData.ruleCount,
+                              rubies,
+                              pageData.rubyCount,
+                              pageData.pageIndex,
+                              pageData.wordCount,
+                              pageData.charStart};
   valid_ = true;
   return true;
 }

@@ -101,8 +101,8 @@ struct PageInfo {
 
 struct ChapterInfo {
   std::string name;
-  uint16_t startPage;
-  uint16_t endPage;
+  uint16_t startPage = 0;
+  uint16_t endPage = 0;
 };
 
 // Error codes

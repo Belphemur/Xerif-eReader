@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Install the official registry tool-cppcheck (cppcheck 2.22.0) and align its
+# package.json version with the pinned pioarduino platform's manifest
+# `package-version`, so the platform's own tool check tolerates the newer
+# binary. Run this BEFORE any `pio check` invocation (CI does it as a separate
+# step; bin/cppcheck-check calls it).
+#
+# Why the sync exists: pioarduino's platform.py `_get_tool_paths` fills the
+# idf_tools path from a module-level name, so once tool-esp_install exists,
+# every tool-cppcheck install is routed through `_handle_existing_tool` ->
+# `_check_tool_version`, which compares the package's own package.json version
+# against the MANIFEST `package-version` (2.20.1 for platform 55.03.312). A
+# project `platform_packages` spec cannot override `package-version`, so any
+# non-pioarduino build (official 1.22200.0 / cppcheck 2.22.0) is wiped with
+# rmtree at the next `pio check`/build configure — the tool dir then stays
+# missing and the check dies with FileNotFoundError (CI showed exit 127 with
+# the pioarduino binary restored instead). Syncing package.json's version to
+# the manifest value makes that check pass while the 2.22.0 binary runs.
+#
+# The manifest version is read from the installed platform when present; the
+# fallback must be bumped together with the [base] platform pin.
+set -euo pipefail
+
+REQUIRED_FALLBACK="2.20.1" # platform-espressif32 55.03.312 manifest package-version
+
+resolve_pio() {
+  if [[ -n "${PIO_BIN:-}" ]]; then
+    echo "${PIO_BIN}"
+    return 0
+  fi
+  if command -v pio >/dev/null 2>&1; then
+    command -v pio
+    return 0
+  fi
+  local penv="${PLATFORMIO_CORE_DIR:-$HOME/.platformio}/penv/bin/pio"
+  if [[ -x "${penv}" ]]; then
+    echo "${penv}"
+    return 0
+  fi
+  return 1
+}
+
+if ! PIO="$(resolve_pio)"; then
+  echo "cppcheck-tool-sync: 'pio' not found (set PIO_BIN or install PlatformIO Core)." >&2
+  exit 127
+fi
+
+"${PIO}" pkg install --global --tool "tool-cppcheck@~1.22200.0"
+
+PIO_CORE_DIR="${PLATFORMIO_CORE_DIR:-$HOME/.platformio}" CPPCHECK_FALLBACK_VERSION="${REQUIRED_FALLBACK}" python3 - <<'EOF'
+import glob
+import json
+import os
+
+core_dir = os.environ["PIO_CORE_DIR"]
+pkg_json = os.path.join(core_dir, "packages", "tool-cppcheck", "package.json")
+required = ""
+for path in sorted(glob.glob(os.path.join(core_dir, "platforms", "*espressif32*", "platform.json"))):
+        with open(path) as f:
+            manifest = json.load(f)
+        version = (manifest.get("packages", {}).get("tool-cppcheck", {}) or {}).get("package-version")
+        if version:
+            required = version
+            break
+
+if not required:
+    # Platform not installed yet (fresh CI checkout): use the pinned platform's
+    # known manifest value so the sync still lands before the first pio check.
+    required = os.environ.get("CPPCHECK_FALLBACK_VERSION", "")
+
+with open(pkg_json) as f:
+    data = json.load(f)
+
+if not required:
+    # Platform not installed yet (fresh CI checkout): keep the current value.
+    print("cppcheck-tool-sync: platform manifest not found; leaving package.json version at %s" % data.get("version"))
+else:
+    if data.get("version") != required:
+        data["version"] = required
+        with open(pkg_json, "w") as f:
+            json.dump(data, f, indent=2)
+        print("cppcheck-tool-sync: package.json version synced to %s" % required)
+    else:
+        print("cppcheck-tool-sync: package.json version already %s" % required)
+EOF
+
+"${PIO_CORE_DIR:-$HOME/.platformio}/packages/tool-cppcheck/cppcheck" --version
