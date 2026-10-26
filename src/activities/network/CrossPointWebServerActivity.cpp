@@ -302,9 +302,11 @@ void CrossPointWebServerActivity::startWebServer() {
   // Repeat the release right before the allocation: the WiFi selection screen
   // rendered since onEnter(), and a CJK SSID repopulates the SD-font caches.
   if (auto* fcm = renderer.getFontCacheManager()) {
-    LOG_DBG("WEBACT", "Free heap before SD font cache release: %d bytes", ESP.getFreeHeap());
+    LOG_INF("WEBACT", "Heap before SD font cache release (free=%u maxblock=%u)",
+            static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
     fcm->releaseSdFontCaches();
-    LOG_DBG("WEBACT", "Free heap before server alloc: %d bytes", ESP.getFreeHeap());
+    LOG_INF("WEBACT", "Heap before web server alloc (free=%u maxblock=%u)", static_cast<unsigned>(ESP.getFreeHeap()),
+            static_cast<unsigned>(ESP.getMaxAllocHeap()));
   }
 
   // Create the web server instance. No-throw allocation: this is the exact
