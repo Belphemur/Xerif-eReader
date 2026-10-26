@@ -1,0 +1,198 @@
+# X3 WiFi-connect / clock-sync abort — OOM-class hardening
+
+Date: 2026-10-26
+Status: Proposed (defensive hardening; the exact thrower is not yet pinpointed — see
+"What /crash_report.txt would confirm or refute")
+Affected boards: X3 (ESP32-C3) profile class; written against v2.11.0 sources
+at `origin/develop` 08fd9d05.
+
+## 1. Reported symptom
+
+A v2.11.0 X3 user, on a fresh install of the fork, gets a deterministic
+"System Crash — abort() was called at PC 0x422c2db1 on core 0" every time the
+reader connects to WiFi (phone hotspot), and again from Settings > System >
+Clock > Sync now. A `/crash_report.txt` is written to the SD card; the reporter
+has not yet retrieved it, so this document designs the hardening without it.
+
+## 2. Decode evidence
+
+Orchestrator-decoded facts, cited to the v2.11.0 tree:
+
+- `0x422c2db1` resolves (gh_release v2.11.0 ELF, C3) to
+  `__cxxabiv1::__terminate` (libstdc++ `eh_terminate.cc:45`) — the
+  `std::terminate` → `abort()` landing. The project builds with
+  `-fno-exceptions`, so under the project's sources there are exactly two
+  throw classes that land there:
+  1. a failed `operator new` — an uncaught `std::bad_alloc` thrown from
+     libstdc++ (OOM), or
+  2. `std::get<T>` on a variant holding a different alternative.
+- The variant paths on the WiFi-connect chain were audited and are CLEAN:
+  `WifiSelectionActivity::onComplete`
+  (src/activities/network/WifiSelectionActivity.cpp:1120-1128) is the only
+  completion site and always sets `WifiResult` when connected;
+  `ActivityManager` normalizes unset results to cancelled; both
+  `std::get<KeyboardResult>` call sites
+  (WifiSelectionActivity.cpp:359, 383) are `isCancelled`-guarded.
+  Conclusion: the crash class is (a) — an OOM abort.
+- Both reported symptoms share one code path. On `WL_CONNECTED`,
+  `WifiSelectionActivity::checkConnectionStatus`
+  (src/activities/network/WifiSelectionActivity.cpp:523-546) runs, and on the
+  FIRST successful connect (fresh install ⇒ `SETTINGS.clockHasBeenSynced == 0`)
+  calls `halClock.syncFromNTP()` and then `freeink::detectTimeZoneFromIp()`
+  (lib/hal/HalTimeZone.cpp:109) — a wolfSSL TLS 1.3 HTTPS GET to
+  `https://ipwho.is/` with fallback to `https://worldtimeapi.org/api/ip`.
+  `ClockSyncActivity::runSync` (src/activities/settings/ClockSyncActivity.cpp:61)
+  runs the same pair.
+- If the device crashes before `SETTINGS.saveToFile()`
+  (WifiSelectionActivity.cpp:538), `clockHasBeenSynced` stays 0, so every later
+  connect re-runs the hook — matching "every time I try to connect it crashes".
+- X3 = ESP32-C3: single core, ~380 KB usable RAM, no PSRAM, 792x528
+  framebuffer (52 KB). Board profile `XTEINK_X3` at
+  freeink-sdk/libs/hardware/BoardConfig/include/BoardConfig.h:1030.
+- This abort class has extensive history on tight boards:
+  - platformio.ini:128-140 (MEMFIX-PORT): without SP ECC, wolfSSL
+    `WOLFSSL_SMALL_STACK` heap-allocates `FP_MAX_BITS`-sized temporaries and
+    "OOMs (MP_MEM) at the ~50KB free heap a reading session leaves". (SP ECC is
+    now on, but the 50 KB-tight-heap baseline stands.)
+  - src/activities/reader/EpubReaderActivity.cpp:2841: "X3: abort() in a page
+    restore at free 22,676 B" — the C3 heap in reader-exit states can be below
+    even 25 KB free.
+  - src/activities/network/CrossPointWebServerActivity.cpp:66-96, 142-150:
+    X3 web-server activation aborts on fragmented heaps; mitigated there by
+    reboot-once into a pristine heap plus SD-font cache release before the big
+    allocations.
+  - lib/Memory/Memory.h `makeUniqueNoThrow` — the sanctioned no-throw idiom,
+    not available inside libstdc++ itself.
+
+### Pre-existing heap guards (the idiom this change mirrors)
+
+- src/network/HttpDownloader.h:30-35: `MIN_TLS_FREE_HEAP = 40000`,
+  `MIN_TLS_MAX_ALLOC = 20000` — "Below this the session or its ~17KB record
+  buffer fails mid-stream (wolfSSL MEMORY_E) — or an interior allocation
+  abort()s the device."
+- src/util/DictHtmlPages.cpp:28-29, 218: 40 KB free / 20 KB max-alloc before
+  styled dictionary pages.
+- src/SdCardFontSystem.cpp:304-307: 48 KB max-alloc before a font-variant load.
+- src/activities/CatalogActivity.cpp:185-187 and
+  src/activities/browser/OpdsBookBrowserActivity.cpp:904 apply the same shape
+  before TLS-adjacent work.
+
+## 3. Ranked hypotheses
+
+### H1 (most likely): OOM abort inside `detectTimeZoneFromIp()`
+
+`SecureHttpClient` runs the same wolfSSL TLS 1.3 stack as `HttpDownloader`
+(freeink-sdk/libs/network/SecureNet), so it carries the same demand profile the
+repo already measured for TLS: the handshake working set, and ~17 KB-class
+record buffers when a peer ignores `HAVE_MAX_FRAGMENT` (HttpDownloader.h:31-33).
+`ipwho.is`/`worldtimeapi.org` are arbitrary third-party hosts — nothing
+guarantees they honour the fragment-size extension. The parse step adds an
+ArduinoJson document for the response body on top.
+
+On a fresh install the connect runs from a state where the X3 heap is exactly
+the "~50 KB free after a reading session" baseline of the MEMFIX comment — and
+`CrossPointWebServerActivity` proves the web path already treats that state as
+abort-likely. The clock-sync entry (`ClockSyncActivity`, launched directly from
+Settings or the reader popup at EpubReaderActivity.cpp:2697) never gets the
+web-path's reboot-into-pristine-heap treatment, so the TLS tz-detect runs on the
+current heap whatever its state.
+
+### H2: OOM elsewhere on the connect chain
+
+`WL_CONNECTED` also triggers: DHCP/framework-internal allocations after the
+status flips, `trustedtime::startSync()` (WifiSelectionActivity.cpp:550), the
+SD write in `WIFI_STORE.setLastConnectedSsid` (RenderLock'd), and the plugin
+outbox drain that follows. Any of these can hit the same `operator new →
+std::terminate` landing. The web-server precedent
+(CrossPointWebServerActivity.cpp:66-96) shows X3 aborts on fragmented heaps in
+far cheaper code paths.
+
+### H3 (residual): variant/`std::get` misuse
+
+Audited and ruled out above (§2). Retained only as a residual in case the crash
+report's stack window lands somewhere neither H1 nor H2 covers.
+
+## 4. What /crash_report.txt would confirm or refute
+
+The report captures a 1 KB stack window plus the last log lines. This change
+makes the tail decisive:
+
+| Crash-report observation | Reading |
+| --- | --- |
+| Last line `CLK: NTP sync: free=… maxblock=…` then nothing | Crash during `halClock.syncFromNTP()` (SNTP is UDP/small — unexpected; would push H2). |
+| Last line `CLK: tz detect: free=… maxblock=…` with free ≥ 40000, then nothing, no `HalTimeZone: Zone via` | Crash inside the TLS tz-detect WITH the floor satisfied — the guard did not fire. Would mean the 40 KB floor is too low for this path and must be raised (or SecureHttpClient's peak measured on-device). |
+| Last line `CLK: tz detect skipped: low heap (free=… maxblock=…)` | Guard fired as designed; the connect continued. No crash expected — if a crash still follows, it is H2. |
+| Last line `WIFI: …` / `CLK: NTP sync done ok=…` with heap values, crash before any tz line | H2 (connect chain) — the guard's breadcrumbs localize it even if the guard can't prevent it. |
+| `HalTimeZone: Zone via …` as the last line, crash later | H2 with the tz-detect exonerated; look at `trustedtime`/plugin drain next. |
+
+The reporter still owes `/crash_report.txt`; decoding it against a local
+v2.11.0 `gh_release` ELF will name the thrower. Until then this PR is honestly
+scoped as hardening: it removes the OOM-abort class from the connect/sync path
+(H1) and instrumented the rest of the chain (H2) so any future report is
+self-locating. It does NOT claim to fix THE crash.
+
+## 5. Guard design
+
+One pure, host-testable decision function mirrors the existing guards' style:
+
+- `src/util/TlsHeapGuard.h` — `tlsheap::verdict(freeHeap, maxAllocHeap)`
+  returning `Proceed`/`Skip` against `kMinFreeHeap = 40'000` and
+  `kMinLargestBlock = 20'000` (constexpr, no Arduino includes).
+- `HttpDownloader::MIN_TLS_FREE_HEAP` / `MIN_TLS_MAX_ALLOC` are re-aliased to
+  the same constants so the TLS floor has exactly one source of truth
+  (`heapAvailableForTransfer()` delegates to the same verdict — behaviour
+  unchanged).
+
+Threshold justification: the tz-detect uses the device's own measured TLS
+demand. `SecureHttpClient` (tz-detect) and `HttpDownloader` (downloads) are the
+same wolfSSL TLS 1.3 stack on this device, so the 40 KB free / 20 KB
+largest-block floor already validated for downloads transfers directly; the
+tz-detect's extra ArduinoJson parse of a ~1 KB body fits inside that margin.
+Two independent checks because the C3's failure mode is fragmentation: free
+heap says there is room in total, max-alloc says the biggest contiguous chunk
+can host the record buffer and handshake temporaries.
+
+Call-site behaviour:
+
+- `WifiSelectionActivity::checkConnectionStatus`: breadcrumb `LOG_INF("CLK", …)`
+  with free/max-alloc before `syncFromNTP()` and before the tz-detect; when the
+  verdict is `Skip`, log the skip with the measured values and skip only the
+  tz-detect — the NTP sync and `SETTINGS.saveToFile()` still run, so
+  `clockHasBeenSynced` persists and the hook does not re-fire on every connect.
+- `ClockSyncActivity::runSync`: same breadcrumbs and guard; on skip,
+  `tzDetected_` stays false and the existing `STR_TIMEZONE_DETECT_FAILED`
+  status line renders — the pre-existing tz-failure UX, unchanged.
+- Heap breadcrumbs bracket the NTP and tz-detect calls in both sites (tag
+  `CLK`/`WIFI`), at `LOG_INF` level so they survive `LOG_LEVEL=1` release
+  builds into any future `/crash_report.txt` log tail.
+
+Out of scope (explicit user-initiated TLS with their own failure UX): `KOSync`,
+OPDS browsing, OTA downloads, `HttpDownloader` consumers — each already guards
+or degrades via `heapAvailableForTransfer()`/catalog error UI, and a silent
+skip there would hide a user action's failure rather than degrade an automatic
+background step.
+
+## 6. Caller audit (owner rule: every caller checked)
+
+`grep -rn detectTimeZoneFromIp src/ lib/` (excluding HalTimeZone itself) shows
+exactly two callers:
+
+1. `src/activities/network/WifiSelectionActivity.cpp:531` (first-connect hook),
+2. `src/activities/settings/ClockSyncActivity.cpp:81` (`runSync`).
+
+Both are guarded by this change. `SecureHttpClient`'s other users (KOSync,
+OPDS, OTA, web-server relay) are explicit user-initiated actions with their own
+failure UX and are out of scope (§5).
+
+## 7. Verification
+
+- Host unit tests for `tlsheap::verdict` (pure function; boundary cases:
+  exactly-at-floor, free-heap shortfall, fragmentation shortfall, both low).
+- Firmware build `pio run -e x4pro` proves compilation; CI covers the heavier
+  C3 (`default`/`gh_release`) environments.
+- clang-format and cppcheck on the touched tree.
+- Device verification remains the owner's: on the reporter's X3, connect to a
+  hotspot and run Sync now; expected serial output shows the `CLK` heap
+  breadcrumbs and either a tz-detect result or a `low heap` skip — never a
+  reboot. Retrieving `/crash_report.txt` from the reporter's card remains
+  required to name the original thrower.

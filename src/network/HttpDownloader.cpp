@@ -393,7 +393,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
 bool HttpDownloader::heapAvailableForTransfer() {
   const uint32_t free = ESP.getFreeHeap();
   const uint32_t maxBlock = ESP.getMaxAllocHeap();
-  if (free < MIN_TLS_FREE_HEAP || maxBlock < MIN_TLS_MAX_ALLOC) {
+  if (tlsheap::verdict(free, maxBlock) == tlsheap::Verdict::Skip) {
     LOG_ERR("HTTP", "Low heap for download (%u free, %u max block)", free, maxBlock);
     return false;
   }
