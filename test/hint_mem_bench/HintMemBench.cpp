@@ -30,6 +30,7 @@
 #include <pthread.h>
 #include <sys/mman.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -191,6 +192,10 @@ SequenceResult measureSequence(const SequenceJob& job) {
 constexpr const char* kEmberRegular = TESTDATA_DIR "/fixtures/fonts/amazon-ember/Amazon_Ember_Regular.ttf";
 constexpr const char* kAtkinsonRegular =
     TESTDATA_DIR "/fixtures/fonts/atkinson-hyperlegible-next/AtkinsonHyperlegibleNext-Regular.otf";
+constexpr const char* kDejaVuSans =
+    TESTDATA_DIR "/../freeink-sdk/libs/font/FreeInkFont/test/fixtures/fonts/DejaVuSans.ttf";
+constexpr const char* kNotoSansRegular =
+    TESTDATA_DIR "/../lib/EpdFont/builtinFonts/source/NotoSans/NotoSans-Regular.ttf";
 
 std::string readFileOrDie(const char* path) {
   // ifstream: the handle closes on every path, including the early exits.
@@ -233,6 +238,14 @@ const SeededFamily kSeededFamilies[] = {
      "OTF (CFF)",
      {{"/fonts/Atkinson/AtkinsonRegular.otf", kAtkinsonRegular, 0u},
       {"/fonts/Atkinson/AtkinsonBold.otf", kAtkinsonRegular, 1u}}},
+    {"DejaVu Sans",
+     "TTF (glyf)",
+     {{"/fonts/DejaVu/DejaVuSans.ttf", kDejaVuSans, 0u},
+      {"/fonts/DejaVu/DejaVuSans.ttf", kDejaVuSans, 1u /*StyleBold*/}}},
+    {"Noto Sans",
+     "TTF (glyf)",
+     {{"/fonts/NotoSans/NotoSans-Regular.ttf", kNotoSansRegular, 0u},
+      {"/fonts/NotoSans/NotoSans-Regular.ttf", kNotoSansRegular, 1u /*StyleBold*/}}},
 };
 
 // Publishes ONE manifest record per family (faces[] + faceCount), the shape
@@ -308,7 +321,7 @@ std::vector<uint32_t> decodePageText() {
   return out;
 }
 
-void setChainHinting(freeink::font::FontChain* chain, freeink::font::FtFont::HintingMode mode) {
+void setChainHinting(freeink::font::FontChain* chain, freeink::font::FtFont::HintingMode mode, bool monochrome) {
   // Same call degradeHint() makes; fontFor() hands back the face the render
   // path would actually draw with, so the options land on the real face.
   for (const uint32_t cp : kStressCodepoints) {
@@ -317,7 +330,7 @@ void setChainHinting(freeink::font::FontChain* chain, freeink::font::FtFont::Hin
     freeink::font::FtFont::RenderOptions options{};
     options.hinting = mode;
     options.interpreterVersion = 40;
-    options.monochrome = false;
+    options.monochrome = monochrome;
     face->setRenderOptions(options);
     // Measure the uncached worst case: the device's P1 glyph cache makes
     // repeat glyphs cheaper, but the FIRST render of a face is what must fit.
@@ -331,6 +344,7 @@ struct Row {
   const char* callSet;  // render / layout
   const char* glyphSet;
   const char* hinting;
+  const char* renderMode;  // AA / Mono
   uint8_t pointSize;
   uint16_t sizePx;
   size_t firstGlyph;
@@ -338,8 +352,8 @@ struct Row {
 };
 
 void printRow(const Row& r) {
-  std::printf("| %s | %s | %s | %s | %s | %2u | %3u | %6zu | %6zu |\n", r.family, r.format, r.callSet, r.glyphSet,
-              r.hinting, r.pointSize, r.sizePx, r.firstGlyph, r.steadyState);
+  std::printf("| %s | %s | %s | %s | %s | %s | %2u | %3u | %6zu | %6zu |\n", r.family, r.format, r.callSet, r.glyphSet,
+              r.hinting, r.renderMode, r.pointSize, r.sizePx, r.firstGlyph, r.steadyState);
 }
 
 }  // namespace
@@ -361,13 +375,78 @@ int main() {
   const std::vector<uint32_t> stress(std::begin(kStressCodepoints), std::end(kStressCodepoints));
   const std::vector<uint32_t> page = decodePageText();
 
+  // All hinting modes defined in FtFont::HintingMode, in probe-relevant order.
+  // The bench runs every mode; those not compiled into this FreeType build
+  // (Native without FREEINK_FONT_ENABLE_NATIVE_HINTING) silently degrade to the
+  // closest equivalent — see the header note printed below.
+  const struct {
+    const char* name;
+    freeink::font::FtFont::HintingMode mode;
+  } kModes[] = {
+      {"None", freeink::font::FtFont::HintingMode::None},     {"Light", freeink::font::FtFont::HintingMode::Light},
+      {"Auto", freeink::font::FtFont::HintingMode::Auto},     {"Default", freeink::font::FtFont::HintingMode::Default},
+      {"Native", freeink::font::FtFont::HintingMode::Native},
+  };
+  const char* modeNames[] = {"AA", "Mono"};
+
   std::printf("# Hint-stack depth bench (host, 64-bit; see docs/design/ for device correspondence)\n\n");
   std::printf("Depth = deepest byte reached below a fresh stack top (bytes), the same\n");
   std::printf("measurement IDF's uxTaskGetStackHighWaterMark performs on device.\n");
   std::printf("first = first call of the sequence (the probe's number); steady = deepest\n");
   std::printf("call after it. Glyph cache disabled: uncached worst case.\n\n");
-  std::printf("| family | format | call set | glyph set | hinting | pt | px | first | steady |\n");
-  std::printf("|---|---|---|---|---|---|---|---|---|\n");
+  std::printf("Hinting modes:\n");
+  std::printf("  None    — FT_LOAD_NO_HINTING|NO_AUTOHINT (no hinting, no phantom rounding)\n");
+  std::printf("  Light   — FT_LOAD_TARGET_LIGHT (auto-hinter, light grid-fit — current TTF default)\n");
+  std::printf("  Auto    — FT_LOAD_FORCE_AUTOHINT|TARGET_NORMAL (auto-hinter, full grid-fit)\n");
+  std::printf("  Default — FT_LOAD_NO_AUTOHINT (native bytecode v40 if compiled; see note)\n");
+  std::printf("  Native  — FT_LOAD_NO_AUTOHINT + interpreter-version 40 (bytecode VM)\n");
+  std::printf("Render modes:\n");
+  std::printf("  AA     — 8-bit grayscale coverage (Smooth render path)\n");
+  std::printf("  Mono   — 1-bit coverage (Crisp render path, the device's mono target)\n\n");
+
+  std::printf("| family | format | call set | glyph set | hinting | mode | pt | px | first | steady |\n");
+  std::printf("|---|---|---|---|---|---|---|---|---|---|\n");
+
+  // Track render depth maxima per outline format for the summary (render
+  // path only). TTF and CFF depth differ by whole rungs (bytecode VM vs
+  // Adobe engine + autohinter), so the summary reports them separately —
+  // a TTF-only maximum must not stand in for the CFF families' spikes.
+  struct MaxDepth {
+    size_t light = 0, autos = 0, none = 0, native = 0, def = 0;
+  };
+  MaxDepth ttfMaxAA, ttfMaxMono;
+  MaxDepth cffMaxAA, cffMaxMono;
+  auto bumpMax = [](MaxDepth& m, freeink::font::FtFont::HintingMode mode, size_t peak) {
+    switch (mode) {
+      case freeink::font::FtFont::HintingMode::Light:
+        m.light = std::max(m.light, peak);
+        break;
+      case freeink::font::FtFont::HintingMode::Auto:
+        m.autos = std::max(m.autos, peak);
+        break;
+      case freeink::font::FtFont::HintingMode::None:
+        m.none = std::max(m.none, peak);
+        break;
+      case freeink::font::FtFont::HintingMode::Native:
+        m.native = std::max(m.native, peak);
+        break;
+      case freeink::font::FtFont::HintingMode::Default:
+        m.def = std::max(m.def, peak);
+        break;
+    }
+  };
+  auto trackMax = [&](const SeededFamily& f, int mono, freeink::font::FtFont::HintingMode mode, size_t peak) {
+    if (std::strcmp(f.format, "TTF (glyf)") == 0) {
+      bumpMax(mono ? ttfMaxMono : ttfMaxAA, mode, peak);
+    } else if (std::strcmp(f.format, "OTF (CFF)") == 0) {
+      bumpMax(mono ? cffMaxMono : cffMaxAA, mode, peak);
+    }
+  };
+#if FREEINK_FONT_ENABLE_NATIVE_HINTING
+  constexpr bool kNativeHintingAvailable = true;
+#else
+  constexpr bool kNativeHintingAvailable = false;
+#endif
 
   for (const SeededFamily& fam : kSeededFamilies) {
     // A fresh loader per family keeps the measurement independent of any
@@ -387,35 +466,113 @@ int main() {
       std::fprintf(stderr, "hint_mem_bench: %s did not load an FT face (builtin fallback in use)\n", fam.name);
       return 2;
     }
+    // The kModes loop below handles Native mode availability via
+    // kNativeHintingAvailable (compile-time). No runtime setRenderOptions
+    // probe is needed — Native mode with no bytecode interpreter would
+    // produce a degenerate FT_LOAD_NO_AUTOHINT load that can crash the
+    // FreeType rasterizer, so we never call it.
 
-    for (int hint = 0; hint < 2; ++hint) {
-      const auto mode = hint ? freeink::font::FtFont::HintingMode::Light : freeink::font::FtFont::HintingMode::None;
-      setChainHinting(chain, mode);
-      for (int renderPath = 1; renderPath >= 0; --renderPath) {
-        for (const uint8_t pt : kReaderPointSizes) {
-          const uint16_t px = pointSizeToPx(pt);
-          for (int set = 0; set < 2; ++set) {
-            const std::vector<uint32_t>& cps = set ? page : stress;
-            const SequenceResult r = measureSequence(SequenceJob{chain, &cps, px, renderPath != 0});
-            printRow(Row{fam.name, fam.format, renderPath ? "render (rasterize)" : "layout (advance/kern)",
-                         set ? "page mix" : "probe stress", hint ? "Light" : "None", pt, px, r.firstGlyph,
-                         r.steadyState});
+    for (const auto& hm : kModes) {
+      // Skip Native mode when the bytecode interpreter is not compiled in.
+      if (hm.mode == freeink::font::FtFont::HintingMode::Native && !kNativeHintingAvailable) continue;
+      for (int mono = 0; mono < 2; ++mono) {
+        setChainHinting(chain, hm.mode, mono != 0);
+        const char* rmode = modeNames[mono];
+        for (int renderPath = 1; renderPath >= 0; --renderPath) {
+          for (const uint8_t pt : kReaderPointSizes) {
+            const uint16_t px = pointSizeToPx(pt);
+            for (int set = 0; set < 2; ++set) {
+              const std::vector<uint32_t>& cps = set ? page : stress;
+              const SequenceResult r = measureSequence(SequenceJob{chain, &cps, px, renderPath != 0});
+              printRow(Row{fam.name, fam.format, renderPath ? "render (rasterize)" : "layout (advance/kern)",
+                           set ? "page mix" : "probe stress", hm.name, rmode, pt, px, r.firstGlyph, r.steadyState});
+              if (renderPath) {
+                size_t peak = r.steadyState;
+                if (r.firstGlyph > peak) peak = r.firstGlyph;
+                trackMax(fam, mono, hm.mode, peak);
+              }
+            }
           }
-        }
-        // SD-family extremes: the reader's clamp range is 8..72 pt.
-        for (const uint8_t pt : {kSdPointSizeMin, kSdPointSizeMax}) {
-          const uint16_t px = pointSizeToPx(pt);
-          for (int set = 0; set < 2; ++set) {
-            const std::vector<uint32_t>& cps = set ? page : stress;
-            const SequenceResult r = measureSequence(SequenceJob{chain, &cps, px, renderPath != 0});
-            printRow(Row{fam.name, fam.format, renderPath ? "render (rasterize)" : "layout (advance/kern)",
-                         set ? "page mix" : "probe stress", hint ? "Light" : "None", pt, px, r.firstGlyph,
-                         r.steadyState});
+          // SD-family extremes: the reader's clamp range is 8..72 pt.
+          for (const uint8_t pt : {kSdPointSizeMin, kSdPointSizeMax}) {
+            const uint16_t px = pointSizeToPx(pt);
+            for (int set = 0; set < 2; ++set) {
+              const std::vector<uint32_t>& cps = set ? page : stress;
+              const SequenceResult r = measureSequence(SequenceJob{chain, &cps, px, renderPath != 0});
+              printRow(Row{fam.name, fam.format, renderPath ? "render (rasterize)" : "layout (advance/kern)",
+                           set ? "page mix" : "probe stress", hm.name, rmode, pt, px, r.firstGlyph, r.steadyState});
+              if (renderPath) {
+                size_t peak = r.steadyState;
+                if (r.firstGlyph > peak) peak = r.firstGlyph;
+                trackMax(fam, mono, hm.mode, peak);
+              }
+            }
           }
         }
       }
     }
   }
+
+  // ── Summary ──────────────────────────────────────────────────────────────
+  // The budget from docs/design/2026-09-29-hint-stack-bench-results.md:
+  //   kHintProbeStackBudgetBytes = 40 KB (48 KB loop-task consumer — 8 KB margin)
+  // Host numbers run ~1.5-2× above the 32-bit Xtensa device; the ratios and
+  // the shape of the result are what the budget decision reads.
+  constexpr size_t kBudget = 40 * 1024;
+  std::printf("\n## Summary: peak render depth vs %zu KB device budget\n\n", kBudget / 1024);
+  std::printf("Max RENDER-path depth per outline format across sizes (host, 64-bit).\n");
+  std::printf("Calibration (docs/design/2026-09-29-hint-stack-bench-results.md): TTF\n");
+  std::printf("device probe ~= host STEADY (the first-call autohinter transient does\n");
+  std::printf("not appear on device: blue zones build during face init); CFF device ~=\n");
+  std::printf("host, no discount. A row at or above the budget line trips the probe\n");
+  std::printf("gate on device. The per-row tables above cover every family, including\n");
+  std::printf("the CFF-Mono first-call transient the maxima do not capture.\n\n");
+  std::printf("### TTF (glyf) families\n\n");
+  std::printf("| hinting | AA (grayscale) | Mono (Crisp) | AA vs budget | Mono vs budget |\n");
+  std::printf("|---|---|---|---|---|\n");
+  auto budgetPct = [](size_t depth) -> const char* {
+    if (depth == 0) return "-";
+    static char buf[3][32];
+    static int idx = 0;
+    idx = (idx + 1) % 3;
+    std::snprintf(buf[idx], sizeof(buf[idx]), "%zu KB (%.0f%%)", depth / 1024, (double)depth / (double)kBudget * 100.0);
+    return buf[idx];
+  };
+  std::printf("| None    | %14zu B | %13zu B | %s | %s |\n", ttfMaxAA.none, ttfMaxMono.none, budgetPct(ttfMaxAA.none),
+              budgetPct(ttfMaxMono.none));
+  std::printf("| Light   | %14zu B | %13zu B | %s | %s |\n", ttfMaxAA.light, ttfMaxMono.light,
+              budgetPct(ttfMaxAA.light), budgetPct(ttfMaxMono.light));
+  std::printf("| Auto    | %14zu B | %13zu B | %s | %s |\n", ttfMaxAA.autos, ttfMaxMono.autos,
+              budgetPct(ttfMaxAA.autos), budgetPct(ttfMaxMono.autos));
+  std::printf("| Default | %14zu B | %13zu B | %s | %s |\n", ttfMaxAA.def, ttfMaxMono.def, budgetPct(ttfMaxAA.def),
+              budgetPct(ttfMaxMono.def));
+  std::printf("| Native  | %14zu B | %13zu B | %s | %s |\n", ttfMaxAA.native, ttfMaxMono.native,
+              budgetPct(ttfMaxAA.native), budgetPct(ttfMaxMono.native));
+  std::printf("\n### CFF (OTF) families\n\n");
+  std::printf("| hinting | AA (grayscale) | Mono (Crisp) | AA vs budget | Mono vs budget |\n");
+  std::printf("|---|---|---|---|---|\n");
+  std::printf("| None    | %14zu B | %13zu B | %s | %s |\n", cffMaxAA.none, cffMaxMono.none, budgetPct(cffMaxAA.none),
+              budgetPct(cffMaxMono.none));
+  std::printf("| Light   | %14zu B | %13zu B | %s | %s |\n", cffMaxAA.light, cffMaxMono.light,
+              budgetPct(cffMaxAA.light), budgetPct(cffMaxMono.light));
+  std::printf("| Auto    | %14zu B | %13zu B | %s | %s |\n", cffMaxAA.autos, cffMaxMono.autos,
+              budgetPct(cffMaxAA.autos), budgetPct(cffMaxMono.autos));
+  std::printf("| Default | %14zu B | %13zu B | %s | %s |\n", cffMaxAA.def, cffMaxMono.def, budgetPct(cffMaxAA.def),
+              budgetPct(cffMaxMono.def));
+  std::printf("| Native  | %14zu B | %13zu B | %s | %s |\n", cffMaxAA.native, cffMaxMono.native,
+              budgetPct(cffMaxAA.native), budgetPct(cffMaxMono.native));
+  std::printf("\n");
+  if (!kNativeHintingAvailable) {
+    std::printf("NOTE: Native hinting NOT compiled in (no FREEINK_FONT_ENABLE_NATIVE_HINTING).\n");
+    std::printf("  Default and Native modes degrade to FT_LOAD_NO_AUTOHINT without bytecode VM.\n");
+    std::printf("  On device, Default/Native require the bytecode interpreter — those rows show\n");
+    std::printf("  the fallback (no bytecode execution) depths, not the bytecode VM depth.\n");
+  } else {
+    std::printf("Bytecode interpreter IS compiled in — Native rows reflect real bytecode VM depth.\n");
+  }
+  std::printf("\nLayout path (FIBP worker / ChapterLayout) uses FT_LOAD_NO_HINTING|FAST_ONLY\n");
+  std::printf("for advances — measured depth is ~0 regardless of hinting mode.\n");
+  std::printf("Only the render path (loop task, 48 KB stack on ESP32-S3) pays the hint depth.\n");
 
   return 0;
 }

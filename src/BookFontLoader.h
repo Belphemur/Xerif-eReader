@@ -158,6 +158,15 @@ class BookFontLoader {
     return options;
   }
 
+  // Requested render options for ONE slot: the reader's raster mode plus the
+  // format-aware hinting request. A glyf face executes the font's own TT
+  // bytecode (compiled in via FREEINK_FONT_ENABLE_NATIVE_HINTING on the S3
+  // boards) at the unhinted render depth — bench 2026-10-26 — so it requests
+  // HintingMode::Default; CFF and undetected faces keep Light. Call after the
+  // slot's face format was detected (sfntOutlineFormat at load time); an
+  // unloaded/undetected slot keeps the generic requested base.
+  [[nodiscard]] freeink::font::FtFont::RenderOptions requestedRenderOptions(uint8_t faceSlot) const;
+
   // Re-derive every slot's effective options from the requested mode and
   // push them through setRenderOptions() — the P1 glyph-cache flush point —
   // so no stale-quantized bitmap survives the change. No-op on the stb
@@ -252,6 +261,14 @@ class BookFontLoader {
   // TrueType collections: faceIndex selects which embedded face's directory
   // is validated (container-absolute table offsets).
   static bool validateSfntBytes(const uint8_t* data, uint32_t size, int faceIndex = 0);
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  // Outline flavor of an sfnt face, read from its table directory: 'glyf' =
+  // TrueType outlines (bytecode-hintable), 'CFF '/'CFF2' = CFF outlines
+  // (Adobe engine). Drives the format-aware hinting request
+  // (requestedRenderOptions); Unknown falls back to the generic base.
+  enum class OutlineFormat : uint8_t { Unknown = 0, Glyf, Cff };
+  static OutlineFormat sfntOutlineFormat(const uint8_t* data, uint32_t size, int faceIndex = 0);
+#endif
 
   // The path hash folded into the fingerprint's role-map tag (§14.4.1);
   // exposed so FibpPrefetchWorker can replicate computeFingerprint() exactly.
@@ -417,6 +434,10 @@ class BookFontLoader {
   // fail-closed degrade tag, so the successful retry's verdict must be cached
   // under this stored key — the key an unchanged later load computes.
   uint32_t hintProbeRetryKey_ = 0;
+  // Per-slot outline flavor, captured at face load from the sfnt table
+  // directory (sfntOutlineFormat) and consumed by requestedRenderOptions.
+  // Unknown until the slot's bytes are seen.
+  OutlineFormat faceOutline_[4] = {};
 #endif
 
   std::array<FamilyInfo, kMaxDiscoveredFamilies> families_{};
