@@ -189,10 +189,12 @@ SequenceResult measureSequence(const SequenceJob& job) {
 
 // ── Fixture wiring (real faces from test/fixtures/fonts) ──────────────────
 constexpr const char* kEmberRegular = TESTDATA_DIR "/fixtures/fonts/amazon-ember/Amazon_Ember_Regular.ttf";
-constexpr const char* kAtkinsonRegular =\
+constexpr const char* kAtkinsonRegular =
     TESTDATA_DIR "/fixtures/fonts/atkinson-hyperlegible-next/AtkinsonHyperlegibleNext-Regular.otf";
-constexpr const char* kDejaVuSans = TESTDATA_DIR "/../freeink-sdk/libs/font/FreeInkFont/test/fixtures/fonts/DejaVuSans.ttf";
-constexpr const char* kNotoSansRegular = TESTDATA_DIR "/../lib/EpdFont/builtinFonts/source/NotoSans/NotoSans-Regular.ttf";
+constexpr const char* kDejaVuSans =
+    TESTDATA_DIR "/../freeink-sdk/libs/font/FreeInkFont/test/fixtures/fonts/DejaVuSans.ttf";
+constexpr const char* kNotoSansRegular =
+    TESTDATA_DIR "/../lib/EpdFont/builtinFonts/source/NotoSans/NotoSans-Regular.ttf";
 
 std::string readFileOrDie(const char* path) {
   // ifstream: the handle closes on every path, including the early exits.
@@ -349,9 +351,8 @@ struct Row {
 };
 
 void printRow(const Row& r) {
-  std::printf("| %s | %s | %s | %s | %s | %s | %2u | %3u | %6zu | %6zu |\n",
-              r.family, r.format, r.callSet, r.glyphSet, r.hinting, r.renderMode,
-              r.pointSize, r.sizePx, r.firstGlyph, r.steadyState);
+  std::printf("| %s | %s | %s | %s | %s | %s | %2u | %3u | %6zu | %6zu |\n", r.family, r.format, r.callSet, r.glyphSet,
+              r.hinting, r.renderMode, r.pointSize, r.sizePx, r.firstGlyph, r.steadyState);
 }
 
 }  // namespace
@@ -377,11 +378,12 @@ int main() {
   // The bench runs every mode; those not compiled into this FreeType build
   // (Native without FREEINK_FONT_ENABLE_NATIVE_HINTING) silently degrade to the
   // closest equivalent — see the header note printed below.
-  const struct { const char* name; freeink::font::FtFont::HintingMode mode; } kModes[] = {
-      {"None", freeink::font::FtFont::HintingMode::None},
-      {"Light", freeink::font::FtFont::HintingMode::Light},
-      {"Auto", freeink::font::FtFont::HintingMode::Auto},
-      {"Default", freeink::font::FtFont::HintingMode::Default},
+  const struct {
+    const char* name;
+    freeink::font::FtFont::HintingMode mode;
+  } kModes[] = {
+      {"None", freeink::font::FtFont::HintingMode::None},     {"Light", freeink::font::FtFont::HintingMode::Light},
+      {"Auto", freeink::font::FtFont::HintingMode::Auto},     {"Default", freeink::font::FtFont::HintingMode::Default},
       {"Native", freeink::font::FtFont::HintingMode::Native},
   };
   const char* modeNames[] = {"AA", "Mono"};
@@ -405,7 +407,9 @@ int main() {
   std::printf("|---|---|---|---|---|---|---|---|---|---|\n");
 
   // Track TTF render depth maxima for the summary (only for render path, AA mode).
-  struct MaxDepth { size_t light = 0, autos = 0, none = 0, native = 0, def = 0; };
+  struct MaxDepth {
+    size_t light = 0, autos = 0, none = 0, native = 0, def = 0;
+  };
   MaxDepth ttfMaxAA, ttfMaxMono;
 #if FREEINK_FONT_ENABLE_NATIVE_HINTING
   constexpr bool kNativeHintingAvailable = true;
@@ -450,24 +454,32 @@ int main() {
               const std::vector<uint32_t>& cps = set ? page : stress;
               const SequenceResult r = measureSequence(SequenceJob{chain, &cps, px, renderPath != 0});
               printRow(Row{fam.name, fam.format, renderPath ? "render (rasterize)" : "layout (advance/kern)",
-                           set ? "page mix" : "probe stress", hm.name, rmode, pt, px, r.firstGlyph,
-                           r.steadyState});
+                           set ? "page mix" : "probe stress", hm.name, rmode, pt, px, r.firstGlyph, r.steadyState});
               // Track TTF render maxima
               if (renderPath && std::strcmp(fam.format, "TTF (glyf)") == 0) {
                 size_t peak = r.steadyState;
                 if (r.firstGlyph > peak) peak = r.firstGlyph;
                 if (mono == 0) {
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Light && peak > ttfMaxAA.light) ttfMaxAA.light = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Auto && peak > ttfMaxAA.autos) ttfMaxAA.autos = peak;
+                  if (hm.mode == freeink::font::FtFont::HintingMode::Light && peak > ttfMaxAA.light)
+                    ttfMaxAA.light = peak;
+                  if (hm.mode == freeink::font::FtFont::HintingMode::Auto && peak > ttfMaxAA.autos)
+                    ttfMaxAA.autos = peak;
                   if (hm.mode == freeink::font::FtFont::HintingMode::None && peak > ttfMaxAA.none) ttfMaxAA.none = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Native && peak > ttfMaxAA.native) ttfMaxAA.native = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Default && peak > ttfMaxAA.def) ttfMaxAA.def = peak;
+                  if (hm.mode == freeink::font::FtFont::HintingMode::Native && peak > ttfMaxAA.native)
+                    ttfMaxAA.native = peak;
+                  if (hm.mode == freeink::font::FtFont::HintingMode::Default && peak > ttfMaxAA.def)
+                    ttfMaxAA.def = peak;
                 } else {
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Light && peak > ttfMaxMono.light) ttfMaxMono.light = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Auto && peak > ttfMaxMono.autos) ttfMaxMono.autos = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::None && peak > ttfMaxMono.none) ttfMaxMono.none = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Native && peak > ttfMaxMono.native) ttfMaxMono.native = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Default && peak > ttfMaxMono.def) ttfMaxMono.def = peak;
+                  if (hm.mode == freeink::font::FtFont::HintingMode::Light && peak > ttfMaxMono.light)
+                    ttfMaxMono.light = peak;
+                  if (hm.mode == freeink::font::FtFont::HintingMode::Auto && peak > ttfMaxMono.autos)
+                    ttfMaxMono.autos = peak;
+                  if (hm.mode == freeink::font::FtFont::HintingMode::None && peak > ttfMaxMono.none)
+                    ttfMaxMono.none = peak;
+                  if (hm.mode == freeink::font::FtFont::HintingMode::Native && peak > ttfMaxMono.native)
+                    ttfMaxMono.native = peak;
+                  if (hm.mode == freeink::font::FtFont::HintingMode::Default && peak > ttfMaxMono.def)
+                    ttfMaxMono.def = peak;
                 }
               }
             }
@@ -479,23 +491,31 @@ int main() {
               const std::vector<uint32_t>& cps = set ? page : stress;
               const SequenceResult r = measureSequence(SequenceJob{chain, &cps, px, renderPath != 0});
               printRow(Row{fam.name, fam.format, renderPath ? "render (rasterize)" : "layout (advance/kern)",
-                           set ? "page mix" : "probe stress", hm.name, rmode, pt, px, r.firstGlyph,
-                           r.steadyState});
+                           set ? "page mix" : "probe stress", hm.name, rmode, pt, px, r.firstGlyph, r.steadyState});
               if (renderPath && std::strcmp(fam.format, "TTF (glyf)") == 0) {
                 size_t peak = r.steadyState;
                 if (r.firstGlyph > peak) peak = r.firstGlyph;
                 if (mono == 0) {
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Light && peak > ttfMaxAA.light) ttfMaxAA.light = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Auto && peak > ttfMaxAA.autos) ttfMaxAA.autos = peak;
+                  if (hm.mode == freeink::font::FtFont::HintingMode::Light && peak > ttfMaxAA.light)
+                    ttfMaxAA.light = peak;
+                  if (hm.mode == freeink::font::FtFont::HintingMode::Auto && peak > ttfMaxAA.autos)
+                    ttfMaxAA.autos = peak;
                   if (hm.mode == freeink::font::FtFont::HintingMode::None && peak > ttfMaxAA.none) ttfMaxAA.none = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Native && peak > ttfMaxAA.native) ttfMaxAA.native = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Default && peak > ttfMaxAA.def) ttfMaxAA.def = peak;
+                  if (hm.mode == freeink::font::FtFont::HintingMode::Native && peak > ttfMaxAA.native)
+                    ttfMaxAA.native = peak;
+                  if (hm.mode == freeink::font::FtFont::HintingMode::Default && peak > ttfMaxAA.def)
+                    ttfMaxAA.def = peak;
                 } else {
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Light && peak > ttfMaxMono.light) ttfMaxMono.light = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Auto && peak > ttfMaxMono.autos) ttfMaxMono.autos = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::None && peak > ttfMaxMono.none) ttfMaxMono.none = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Native && peak > ttfMaxMono.native) ttfMaxMono.native = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Default && peak > ttfMaxMono.def) ttfMaxMono.def = peak;
+                  if (hm.mode == freeink::font::FtFont::HintingMode::Light && peak > ttfMaxMono.light)
+                    ttfMaxMono.light = peak;
+                  if (hm.mode == freeink::font::FtFont::HintingMode::Auto && peak > ttfMaxMono.autos)
+                    ttfMaxMono.autos = peak;
+                  if (hm.mode == freeink::font::FtFont::HintingMode::None && peak > ttfMaxMono.none)
+                    ttfMaxMono.none = peak;
+                  if (hm.mode == freeink::font::FtFont::HintingMode::Native && peak > ttfMaxMono.native)
+                    ttfMaxMono.native = peak;
+                  if (hm.mode == freeink::font::FtFont::HintingMode::Default && peak > ttfMaxMono.def)
+                    ttfMaxMono.def = peak;
                 }
               }
             }
@@ -525,20 +545,19 @@ int main() {
     static char buf[3][32];
     static int idx = 0;
     idx = (idx + 1) % 3;
-    std::snprintf(buf[idx], sizeof(buf[idx]), "%zu KB (%.0f%%)", depth / 1024,
-                  (double)depth / (double)kBudget * 100.0);
+    std::snprintf(buf[idx], sizeof(buf[idx]), "%zu KB (%.0f%%)", depth / 1024, (double)depth / (double)kBudget * 100.0);
     return buf[idx];
   };
-  std::printf("| None    | %14zu B | %13zu B | %s | %s |\n",
-              ttfMaxAA.none, ttfMaxMono.none, budgetPct(ttfMaxAA.none), budgetPct(ttfMaxMono.none));
-  std::printf("| Light   | %14zu B | %13zu B | %s | %s |\n",
-              ttfMaxAA.light, ttfMaxMono.light, budgetPct(ttfMaxAA.light), budgetPct(ttfMaxMono.light));
-  std::printf("| Auto    | %14zu B | %13zu B | %s | %s |\n",
-              ttfMaxAA.autos, ttfMaxMono.autos, budgetPct(ttfMaxAA.autos), budgetPct(ttfMaxMono.autos));
-  std::printf("| Default | %14zu B | %13zu B | %s | %s |\n",
-              ttfMaxAA.def, ttfMaxMono.def, budgetPct(ttfMaxAA.def), budgetPct(ttfMaxMono.def));
-  std::printf("| Native  | %14zu B | %13zu B | %s | %s |\n",
-              ttfMaxAA.native, ttfMaxMono.native, budgetPct(ttfMaxAA.native), budgetPct(ttfMaxMono.native));
+  std::printf("| None    | %14zu B | %13zu B | %s | %s |\n", ttfMaxAA.none, ttfMaxMono.none, budgetPct(ttfMaxAA.none),
+              budgetPct(ttfMaxMono.none));
+  std::printf("| Light   | %14zu B | %13zu B | %s | %s |\n", ttfMaxAA.light, ttfMaxMono.light,
+              budgetPct(ttfMaxAA.light), budgetPct(ttfMaxMono.light));
+  std::printf("| Auto    | %14zu B | %13zu B | %s | %s |\n", ttfMaxAA.autos, ttfMaxMono.autos,
+              budgetPct(ttfMaxAA.autos), budgetPct(ttfMaxMono.autos));
+  std::printf("| Default | %14zu B | %13zu B | %s | %s |\n", ttfMaxAA.def, ttfMaxMono.def, budgetPct(ttfMaxAA.def),
+              budgetPct(ttfMaxMono.def));
+  std::printf("| Native  | %14zu B | %13zu B | %s | %s |\n", ttfMaxAA.native, ttfMaxMono.native,
+              budgetPct(ttfMaxAA.native), budgetPct(ttfMaxMono.native));
   std::printf("\n");
   if (!kNativeHintingAvailable) {
     std::printf("NOTE: Native hinting NOT compiled in (no FREEINK_FONT_ENABLE_NATIVE_HINTING).\n");
