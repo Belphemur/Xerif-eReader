@@ -1,6 +1,5 @@
-#include <util/TlsHeapGuard.h>
-
 #include <gtest/gtest.h>
+#include <util/TlsHeapGuard.h>
 
 // The pure TLS heap pre-flight decision shared by HttpDownloader and the
 // clock-sync tz-detect guard. The floor must stay identical to
