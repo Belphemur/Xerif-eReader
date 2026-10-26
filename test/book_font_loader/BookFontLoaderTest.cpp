@@ -1888,6 +1888,46 @@ TEST(BookFontLoaderStreaming, RebeginAfterStreamedLoadTearsDownOnceAndStaysLive)
   EXPECT_TRUE(loader.streamSourceOpenForTest(0));
 }
 
+// Format-aware hinting on the streamed path must classify from the font
+// bytes, never from whether the PSRAM prefix happened to be allocatable: a
+// glyf face flipping Glyf↔Unknown between loads would move the requested
+// hinting mode (Default↔Light) and with it the advances, the FIBP
+// fingerprint tag and the hint-verdict key over identical bytes.
+TEST(BookFontLoaderStreaming, StreamedGlyfClassifiesHintingRegardlessOfPrefix) {
+  const std::string regularBytes = emberBytes("Amazon_Ember_Regular.ttf");
+  if (!fixtureAvailable(regularBytes)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Regular.ttf";
+  std::string big = regularBytes;
+  big.resize(BookFontLoader::kMaxFaceBytes + 1024, '\0');  // force streaming path
+
+  auto loadOptionsTag = [&big] {
+    resetStorage();
+    seedFile("/fonts/Big/Big-Regular.ttf", big);
+    freeink::book::BookFontLoader loader;
+    auto& fam = loader.editFamily(0);
+    std::snprintf(fam.name, sizeof(fam.name), "%s", "Big");
+    fam.faceCount = 1;
+    fam.faces[0].styleFlags = freeink::book::StyleNone;
+    fam.faces[0].fileSize = static_cast<uint32_t>(big.size());
+    fam.faces[0].mtime = 0;
+    std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", "/fonts/Big/Big-Regular.ttf");
+    loader.setFamilyCountForTest(1);
+    loader.selectFamily("Big");
+    loader.markDirty();
+    if (loader.getReaderFont() == nullptr) return 0u;
+    EXPECT_EQ(loader.effectiveRenderOptions(0).hinting, HM::Default);
+    return BookFontLoader::renderOptionsFingerprintTag();
+  };
+
+  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 8 * 1024 * 1024});  // prefix cached
+  const uint32_t tagWithPrefix = loadOptionsTag();
+  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});  // no room for the prefix → pure streaming
+  const uint32_t tagWithoutPrefix = loadOptionsTag();
+
+  ASSERT_NE(tagWithPrefix, 0u);
+  // Identical font bytes → identical layout identity whatever the heap state.
+  EXPECT_EQ(tagWithPrefix, tagWithoutPrefix);
+}
+
 // Regression: streamed load failure paths (open failure) must clean up the
 // slot — the slot stays closed and the builtin fallback still serves all
 // styles — while never mishandling the never-opened handle.

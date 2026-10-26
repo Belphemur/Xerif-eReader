@@ -30,6 +30,7 @@
 #include <pthread.h>
 #include <sys/mman.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -406,11 +407,41 @@ int main() {
   std::printf("| family | format | call set | glyph set | hinting | mode | pt | px | first | steady |\n");
   std::printf("|---|---|---|---|---|---|---|---|---|---|\n");
 
-  // Track TTF render depth maxima for the summary (only for render path, AA mode).
+  // Track render depth maxima per outline format for the summary (render
+  // path only). TTF and CFF depth differ by whole rungs (bytecode VM vs
+  // Adobe engine + autohinter), so the summary reports them separately —
+  // a TTF-only maximum must not stand in for the CFF families' spikes.
   struct MaxDepth {
     size_t light = 0, autos = 0, none = 0, native = 0, def = 0;
   };
   MaxDepth ttfMaxAA, ttfMaxMono;
+  MaxDepth cffMaxAA, cffMaxMono;
+  auto bumpMax = [](MaxDepth& m, freeink::font::FtFont::HintingMode mode, size_t peak) {
+    switch (mode) {
+      case freeink::font::FtFont::HintingMode::Light:
+        m.light = std::max(m.light, peak);
+        break;
+      case freeink::font::FtFont::HintingMode::Auto:
+        m.autos = std::max(m.autos, peak);
+        break;
+      case freeink::font::FtFont::HintingMode::None:
+        m.none = std::max(m.none, peak);
+        break;
+      case freeink::font::FtFont::HintingMode::Native:
+        m.native = std::max(m.native, peak);
+        break;
+      case freeink::font::FtFont::HintingMode::Default:
+        m.def = std::max(m.def, peak);
+        break;
+    }
+  };
+  auto trackMax = [&](const SeededFamily& f, int mono, freeink::font::FtFont::HintingMode mode, size_t peak) {
+    if (std::strcmp(f.format, "TTF (glyf)") == 0) {
+      bumpMax(mono ? ttfMaxMono : ttfMaxAA, mode, peak);
+    } else if (std::strcmp(f.format, "OTF (CFF)") == 0) {
+      bumpMax(mono ? cffMaxMono : cffMaxAA, mode, peak);
+    }
+  };
 #if FREEINK_FONT_ENABLE_NATIVE_HINTING
   constexpr bool kNativeHintingAvailable = true;
 #else
@@ -455,32 +486,10 @@ int main() {
               const SequenceResult r = measureSequence(SequenceJob{chain, &cps, px, renderPath != 0});
               printRow(Row{fam.name, fam.format, renderPath ? "render (rasterize)" : "layout (advance/kern)",
                            set ? "page mix" : "probe stress", hm.name, rmode, pt, px, r.firstGlyph, r.steadyState});
-              // Track TTF render maxima
-              if (renderPath && std::strcmp(fam.format, "TTF (glyf)") == 0) {
+              if (renderPath) {
                 size_t peak = r.steadyState;
                 if (r.firstGlyph > peak) peak = r.firstGlyph;
-                if (mono == 0) {
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Light && peak > ttfMaxAA.light)
-                    ttfMaxAA.light = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Auto && peak > ttfMaxAA.autos)
-                    ttfMaxAA.autos = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::None && peak > ttfMaxAA.none) ttfMaxAA.none = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Native && peak > ttfMaxAA.native)
-                    ttfMaxAA.native = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Default && peak > ttfMaxAA.def)
-                    ttfMaxAA.def = peak;
-                } else {
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Light && peak > ttfMaxMono.light)
-                    ttfMaxMono.light = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Auto && peak > ttfMaxMono.autos)
-                    ttfMaxMono.autos = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::None && peak > ttfMaxMono.none)
-                    ttfMaxMono.none = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Native && peak > ttfMaxMono.native)
-                    ttfMaxMono.native = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Default && peak > ttfMaxMono.def)
-                    ttfMaxMono.def = peak;
-                }
+                trackMax(fam, mono, hm.mode, peak);
               }
             }
           }
@@ -492,31 +501,10 @@ int main() {
               const SequenceResult r = measureSequence(SequenceJob{chain, &cps, px, renderPath != 0});
               printRow(Row{fam.name, fam.format, renderPath ? "render (rasterize)" : "layout (advance/kern)",
                            set ? "page mix" : "probe stress", hm.name, rmode, pt, px, r.firstGlyph, r.steadyState});
-              if (renderPath && std::strcmp(fam.format, "TTF (glyf)") == 0) {
+              if (renderPath) {
                 size_t peak = r.steadyState;
                 if (r.firstGlyph > peak) peak = r.firstGlyph;
-                if (mono == 0) {
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Light && peak > ttfMaxAA.light)
-                    ttfMaxAA.light = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Auto && peak > ttfMaxAA.autos)
-                    ttfMaxAA.autos = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::None && peak > ttfMaxAA.none) ttfMaxAA.none = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Native && peak > ttfMaxAA.native)
-                    ttfMaxAA.native = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Default && peak > ttfMaxAA.def)
-                    ttfMaxAA.def = peak;
-                } else {
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Light && peak > ttfMaxMono.light)
-                    ttfMaxMono.light = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Auto && peak > ttfMaxMono.autos)
-                    ttfMaxMono.autos = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::None && peak > ttfMaxMono.none)
-                    ttfMaxMono.none = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Native && peak > ttfMaxMono.native)
-                    ttfMaxMono.native = peak;
-                  if (hm.mode == freeink::font::FtFont::HintingMode::Default && peak > ttfMaxMono.def)
-                    ttfMaxMono.def = peak;
-                }
+                trackMax(fam, mono, hm.mode, peak);
               }
             }
           }
@@ -532,14 +520,16 @@ int main() {
   // the shape of the result are what the budget decision reads.
   constexpr size_t kBudget = 40 * 1024;
   std::printf("\n## Summary: peak render depth vs %zu KB device budget\n\n", kBudget / 1024);
-  std::printf("Max render depth across all families/sizes (host, 64-bit). Calibration\n");
-  std::printf("(docs/design/2026-09-29-hint-stack-bench-results.md): TTF device probe ~=\n");
-  std::printf("host STEADY (the first-call autohinter transient does not appear on\n");
-  std::printf("device: blue zones build during face init); CFF device ~= host, no\n");
-  std::printf("discount. A CFF row at or above the budget line trips the probe gate on\n");
-  std::printf("device.\n\n");
-  std::printf("| hinting | AA (grayscale) | Mono (Crisp) | vs budget |\n");
-  std::printf("|---|---|---|---|\n");
+  std::printf("Max RENDER-path depth per outline format across sizes (host, 64-bit).\n");
+  std::printf("Calibration (docs/design/2026-09-29-hint-stack-bench-results.md): TTF\n");
+  std::printf("device probe ~= host STEADY (the first-call autohinter transient does\n");
+  std::printf("not appear on device: blue zones build during face init); CFF device ~=\n");
+  std::printf("host, no discount. A row at or above the budget line trips the probe\n");
+  std::printf("gate on device. The per-row tables above cover every family, including\n");
+  std::printf("the CFF-Mono first-call transient the maxima do not capture.\n\n");
+  std::printf("### TTF (glyf) families\n\n");
+  std::printf("| hinting | AA (grayscale) | Mono (Crisp) | AA vs budget | Mono vs budget |\n");
+  std::printf("|---|---|---|---|---|\n");
   auto budgetPct = [](size_t depth) -> const char* {
     if (depth == 0) return "-";
     static char buf[3][32];
@@ -558,6 +548,19 @@ int main() {
               budgetPct(ttfMaxMono.def));
   std::printf("| Native  | %14zu B | %13zu B | %s | %s |\n", ttfMaxAA.native, ttfMaxMono.native,
               budgetPct(ttfMaxAA.native), budgetPct(ttfMaxMono.native));
+  std::printf("\n### CFF (OTF) families\n\n");
+  std::printf("| hinting | AA (grayscale) | Mono (Crisp) | AA vs budget | Mono vs budget |\n");
+  std::printf("|---|---|---|---|---|\n");
+  std::printf("| None    | %14zu B | %13zu B | %s | %s |\n", cffMaxAA.none, cffMaxMono.none, budgetPct(cffMaxAA.none),
+              budgetPct(cffMaxMono.none));
+  std::printf("| Light   | %14zu B | %13zu B | %s | %s |\n", cffMaxAA.light, cffMaxMono.light,
+              budgetPct(cffMaxAA.light), budgetPct(cffMaxMono.light));
+  std::printf("| Auto    | %14zu B | %13zu B | %s | %s |\n", cffMaxAA.autos, cffMaxMono.autos,
+              budgetPct(cffMaxAA.autos), budgetPct(cffMaxMono.autos));
+  std::printf("| Default | %14zu B | %13zu B | %s | %s |\n", cffMaxAA.def, cffMaxMono.def, budgetPct(cffMaxAA.def),
+              budgetPct(cffMaxMono.def));
+  std::printf("| Native  | %14zu B | %13zu B | %s | %s |\n", cffMaxAA.native, cffMaxMono.native,
+              budgetPct(cffMaxAA.native), budgetPct(cffMaxMono.native));
   std::printf("\n");
   if (!kNativeHintingAvailable) {
     std::printf("NOTE: Native hinting NOT compiled in (no FREEINK_FONT_ENABLE_NATIVE_HINTING).\n");

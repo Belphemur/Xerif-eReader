@@ -2051,6 +2051,11 @@ void BookFontLoader::initBudget() {
 }
 
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+// Bounded head read for streamed outline classification: sfnt header plus a
+// 254-entry table directory — more tables than any real face; a larger
+// directory classifies Unknown (fail-closed generic request).
+constexpr uint32_t kStreamOutlineProbeBytes = 12u + 254u * 16u;
+
 void BookFontLoader::releaseStreamSource(const uint8_t faceIdx) {
   // Close-before-reopen discipline: a slot reload reopens the same HalFile
   // member, so the stale handle must be closed first (DESTRUCTOR_CLOSES_FILE
@@ -2114,11 +2119,24 @@ bool BookFontLoader::tryLoadStreamedFace(const uint8_t faceIdx, const FontFaceIn
   // scattered multi-MB SD reads into the render path. Documented trade-off
   // (§14.5 / PR body); advances stay identical, kern pairs collapse.
   face->setGposByteBudget(0);
-  // Format-aware hinting request: the prefix (when cached) carries the table
-  // directory; a pure-streaming face stays undetected and keeps the generic
-  // requested base.
-  faceOutline_[faceIdx] =
-      src.prefixLen >= 12 ? sfntOutlineFormat(src.prefix.get(), src.prefixLen, fi.faceIndex) : OutlineFormat::Unknown;
+  // Format-aware hinting request. Classify from a bounded DIRECT read of the
+  // file head — never from the PSRAM prefix: the prefix's presence depends on
+  // heap state, and a glyf face flipping Glyf↔Unknown between loads would
+  // move the requested hinting mode and with it the advances, the FIBP
+  // fingerprint tag and the hint-verdict key over identical font bytes.
+  // Read failures leave Unknown: the face keeps the generic (Light) request.
+  faceOutline_[faceIdx] = OutlineFormat::Unknown;
+  {
+    const uint32_t probe = fi.fileSize < kStreamOutlineProbeBytes ? fi.fileSize : kStreamOutlineProbeBytes;
+    PoolBytes head = poolMakeBytes(probe);
+    int got = -1;
+    if (head && src.file.seek(0)) got = src.file.read(head.get(), probe);
+    if (got >= 0 && static_cast<uint32_t>(got) == probe) {
+      faceOutline_[faceIdx] = sfntOutlineFormat(head.get(), probe, fi.faceIndex);
+    } else {
+      LOG_DBG("BFNT", "Outline probe read failed for %s — generic hinting request", fi.file);
+    }
+  }
   applySlotRenderOptions(face, faceIdx, requestedRenderOptions(faceIdx), fi.file);
   if (!chain.add(face, fi.styleFlags)) {
     LOG_ERR("BFNT", "FontChain::add failed to register %s", fi.file);

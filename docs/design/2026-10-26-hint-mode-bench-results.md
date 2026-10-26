@@ -178,8 +178,10 @@ The TTF recommendation is implemented; CFF stays on Light per Finding 3.
   walk extracted from `validateSfntBytes`) requests `HintingMode::Default`
   with the RenderOptions-default `interpreterVersion = 40`; CFF and
   undetected faces keep `Light`. The request is applied at face load
-  (resident and streamed paths — streamed faces without a cached prefix stay
-  undetected and keep Light) and on the probe-retry restore. The probe gate
+  (resident and streamed paths — streamed faces classify from a bounded
+  direct read of the file head, independent of the PSRAM prefix's
+  availability, so the same bytes always request the same mode) and on the
+  probe-retry restore. The probe gate
   (`probeHintStackSafety`), the degrade funnel, and the verdict cache are
   untouched; the effective per-slot mode still folds into the FIBP
   fingerprint tag, so existing caches re-index once on this firmware's first
