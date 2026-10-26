@@ -100,6 +100,28 @@ jobs:
             pio-${{ runner.os }}-${{ matrix.pio_env }}-
             pio-${{ runner.os }}-
 
+      - name: Pin pioarduino core inside the platform penv
+        run: |
+          set -euo pipefail
+          # The hybrid envs (gh_release/x3-x4 dual-family, sticky) run a nested
+          # `pio run` from ~/.platformio/penv after the IDF phase (espidf.py:
+          # "Starting Arduino compile ... with custom libraries"). The platform
+          # bootstraps that penv mid-build with an open-ended "pioarduino>=6.2.0"
+          # resolved from PyPI. Since pioarduino published 6.2.0.post1 (after
+          # v2.11.0), PyPI's latest maps through pepver_to_semver to the
+          # prerelease 6.2.0-post.1, which fails the platform manifest's
+          # engines check (platform.json requires core >=6.2.0) — the nested
+          # pio died with IncompatiblePlatform right after "Copied compiled
+          # IDF libraries" in the v2.12.0 release build. Same failure class as
+          # the RC workflow's SCons pin (see that step and
+          # pioarduino/platform-espressif32#529). Trigger the penv bootstrap
+          # cheaply here, then pin the penv core to the same 6.2.0 the outer
+          # core runs; penv_setup's dependency check then sees 6.2.0 already
+          # satisfying >=6.2.0 and leaves it alone.
+          pio pkg install -e ${{ matrix.pio_env }}
+          uv pip install --python ~/.platformio/penv/bin/python "pioarduino==6.2.0"
+          ~/.platformio/penv/bin/pio --version
+
       - name: Build CrossPoint
         env:
           # Enrollment gate for the LCP service: official releases carry this
