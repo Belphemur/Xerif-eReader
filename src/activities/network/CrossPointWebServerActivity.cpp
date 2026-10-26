@@ -6,6 +6,7 @@
 #include <GfxRenderer.h>
 #include <HalGPIO.h>
 #include <I18n.h>
+#include <Memory.h>
 #include <WiFi.h>
 
 #include <cstddef>
@@ -306,8 +307,21 @@ void CrossPointWebServerActivity::startWebServer() {
     LOG_DBG("WEBACT", "Free heap before server alloc: %d bytes", ESP.getFreeHeap());
   }
 
-  // Create the web server instance
-  webServer.reset(new CrossPointWebServer());
+  // Create the web server instance. No-throw allocation: this is the exact
+  // site that abort()ed the X3 in v2.11.0 (decoded crash_report: fresh
+  // install → connect → NTP + two failed TLS tz-detect handshakes fragmenting
+  // the heap → operator new → std::bad_alloc → std::terminate at PC
+  // 0x422c2db1). Under -fno-exceptions a throwing new cannot be caught, so
+  // the allocation must never throw; fall through to the shared failure path
+  // below instead (docs/design/2026-10-26-x3-wifi-connect-abort.md §5).
+  webServer = makeUniqueNoThrow<CrossPointWebServer>();
+  if (!webServer) {
+    LOG_ERR("WEBACT", "Out of memory for web server (free=%u maxblock=%u)", static_cast<unsigned>(ESP.getFreeHeap()),
+            static_cast<unsigned>(ESP.getMaxAllocHeap()));
+    // Shared failure path: log + go home, exactly like a begin() failure.
+    onGoHome();
+    return;
+  }
   // An upload holds loop() inside handleClient(), so input is sampled on each received chunk instead. On a slow
   // link chunks come ~0.5 s apart, so a button found down gets a second sample past the SDK's 5 ms debounce.
   webServer->setUploadCancelCheck([this] {

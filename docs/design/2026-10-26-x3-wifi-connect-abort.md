@@ -259,3 +259,36 @@ Earlier sections are left as written: §3 H1 and the §4 decode table remain the
 record of what v2.11.0 shipped and what `/crash_report.txt` from an affected
 device still has to confirm — this change does not claim to fix THE reported
 crash until that decode names the thrower.
+
+## Addendum 2 (2026-10-26): crash_report decoded — thrower was the web-server allocation
+
+The reporter of the original issue attached `/crash_report.txt` (v2.11.0, X3).
+Decoded against the preserved v2.11.0 `gh_release` ELF (§2 procedure), the panic
+stack names the thrower — and it is **not** the tz-detect TLS path:
+
+```
+loop() (main.cpp:1561)
+ → CrossPointWebServerActivity::onNetworkModeSelected lambda (CWA.cpp:201)
+  → CrossPointWebServerActivity::onWifiSelectionComplete (CWA.cpp:229)
+   → CrossPointWebServerActivity::startWebServer (CWA.cpp:310)
+    → operator new  →  std::bad_alloc  →  std::terminate  →  abort() @ 0x422c2db1
+```
+
+The log tail confirms the tz-detect **failed gracefully** ("All time zone
+services failed", `autoDetect: ok=0`) seconds before the abort — the two failed
+HTTPS attempts each ran a partial wolfSSL handshake (~20–40 KB working set
+allocated then freed), fragmenting the heap immediately before
+`startWebServer()`'s `operator new`. On that fragmented heap the allocation
+threw, and under `-fno-exceptions` the throw terminated the device. This
+upgrades §3: H1's mechanism (OOM abort on the connect chain) is confirmed, but
+the failing allocation was the web-server object, not the TLS fetch itself.
+
+Fix shipped with this addendum: `startWebServer()` allocates the server with
+`makeUniqueNoThrow` and routes allocation failure through the same
+log-and-`onGoHome()` path as a `begin()` failure, with free/max-alloc heap
+breadcrumbs in the error line. Combined with the HTTP switch above (no TLS
+session on this path any more) the reported crash chain has neither its
+fragmentation source nor its throwing allocation; a web server that still
+cannot be allocated now degrades to a visible "go home" instead of a reboot.
+`/crash_report.txt` files from v2.12.0+ will carry the `WEBACT` heap
+breadcrumbs and can no longer abort at this site.
