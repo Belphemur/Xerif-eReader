@@ -537,10 +537,10 @@ void WifiSelectionActivity::checkConnectionStatus() {
         }
       }
       // Auto-detect the time zone from this device's public IP (keyless,
-      // HTTPS). Falls back to UTC display if all geolocation services fail.
-      // The fetch is a TLS session: on a fragmented C3 heap it can abort() the
-      // device, so it is skipped below the TLS floor, saved as pending, and
-      // retried on the next connect once the heap recovers
+      // plain HTTP — no TLS on this path). Falls back to UTC display if all
+      // geolocation services fail. The heap-guard skip + clockTzPending retry
+      // stay as defense in depth: a genuinely fragmented heap can still fail
+      // allocations outside the transport
       // (docs/design/2026-10-26-x3-wifi-connect-abort.md).
       if (settingsDirty || SETTINGS.clockTzPending) {
         const uint32_t freeHeap = ESP.getFreeHeap();

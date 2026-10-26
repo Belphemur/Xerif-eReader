@@ -82,9 +82,9 @@ void ClockSyncActivity::runSync() {
 
   // Re-detect the time zone from this device's public IP (e.g. after travel).
   // Store it even on manual sync; falls back to the previous/UTC display on
-  // failure. The fetch is a TLS session: on a fragmented C3 heap it can
-  // abort() the device, so it is skipped below the TLS floor and the sync
-  // still reports success (docs/design/2026-10-26-x3-wifi-connect-abort.md).
+  // failure. The fetch is plain HTTP (no TLS on this path); the heap-guard
+  // skip stays as defense in depth and the sync still reports success
+  // (docs/design/2026-10-26-x3-wifi-connect-abort.md).
   const uint32_t freeHeap = ESP.getFreeHeap();
   const uint32_t maxAllocHeap = ESP.getMaxAllocHeap();
   LOG_INF("CLK", "tz detect: free=%u maxblock=%u", static_cast<unsigned>(freeHeap),

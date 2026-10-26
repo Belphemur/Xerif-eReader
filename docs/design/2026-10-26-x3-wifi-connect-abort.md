@@ -211,3 +211,51 @@ failure UX and are out of scope (§5).
   breadcrumbs and either a tz-detect result or a `low heap` skip — never a
   reboot. Retrieving `/crash_report.txt` from the reporter's card remains
   required to name the original thrower.
+
+## Addendum (2026-10-26, later): tz-detect switched to plain HTTP
+
+Measured live on 2026-10-26 (all three endpoints probed from a host the same
+day): the time-zone detect no longer opens any TLS session. The wolfSSL demand
+analysis above (§3 H1) described the v2.11.0 code; the shipped firmware now
+avoids that demand class on this path entirely:
+
+| Service | URL | Response | Measured size |
+| --- | --- | --- | --- |
+| Primary | `http://ipwho.is/?fields=success,timezone` | nested (`timezone.id`/`offset`/`is_dst`) | 157 B (full response 918 B) |
+| Fallback | `http://ip-api.com/json/?fields=timezone` | flat `{"timezone":"America/Toronto"}` | 30 B |
+
+- `worldtimeapi.org` is removed: it was unreachable over HTTPS in two probes
+  on 2026-10-26 (connection reset) and is a known-flaky service. Its parser and
+  the `utc_offset` helper are deleted.
+- `ipwho.is` keeps its nested response shape; `?fields=success,timezone` scopes
+  the payload to the one block the parser reads (the `success` flag is
+  explicitly requested because the scoped response omits it otherwise).
+- `ip-api.com`'s flat response carries no offset or DST flag. The parser
+  therefore records the id with neutral `offsetMin=0`/`isDst=false` — the
+  existing AceTime resolution (`clockEffectiveOffsetMin()`, which computes the
+  live offset from the id and folds DST) drives correctness, and the persisted
+  cached offset stays only an offline fallback.
+- ip-api's free tier is HTTP-only (HTTPS is a paid tier) and rate-limited to
+  45 req/min — irrelevant for a once-per-device lookup.
+
+Tamper mitigation: a plain-HTTP response can be modified in transit, so the
+zone id is accepted only when it is shaped like an IANA id — 1–3 segments of
+`[A-Za-z0-9_+-]` separated by `/`, no empty segments or leading/trailing
+slash, capped at 39 characters (`isValidIanaZoneId`, host-tested in
+`test/tz_detect_parse`). `clampOffsetMin` is unchanged. Documented trade-off:
+a tampered response can yield a *wrong time zone* (plain HTTP is not
+confidentiality-protected), not a security breach — the id feeds AceTime's
+zone-name lookup and settings JSON only.
+
+The TLS heap guard, `TlsHeapGuard.h`, the skip semantics, the `clockTzPending`
+retry, and the heap breadcrumbs stay exactly as described above: other paths
+still use TLS, and a genuinely fragmented heap can fail allocations outside
+the transport, so the guard is now defense-in-depth rather than the primary
+protection for this path. With no TLS session in the tz-detect, the peak
+transient demand on this path drops from the ~25–40 KB TLS/ArduinoJson profile
+to roughly the ArduinoJson document for a sub-kilobyte body (~1–2 KB class).
+
+Earlier sections are left as written: §3 H1 and the §4 decode table remain the
+record of what v2.11.0 shipped and what `/crash_report.txt` from an affected
+device still has to confirm — this change does not claim to fix THE reported
+crash until that decode names the thrower.

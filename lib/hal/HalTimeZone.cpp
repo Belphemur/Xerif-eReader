@@ -5,12 +5,13 @@
 #include <SecureHttpClient.h>
 #include <WiFi.h>
 
-#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <ctime>
 #include <mutex>
 #include <string>
+
+#include "TzDetectParse.h"
 
 namespace {
 constexpr const char* TAG = "HalTimeZone";
@@ -26,81 +27,18 @@ int clampOffsetMin(int minutes) {
   return minutes;
 }
 
-bool parseIpWhoIs(const std::string& body, freeink::TimeZoneInfo& out) {
-  JsonDocument doc;
-  if (deserializeJson(doc, body)) {
-    return false;
-  }
-  if (!doc["success"].as<bool>()) {
-    return false;
-  }
-  const char* id = doc["timezone"]["id"].as<const char*>();
-  if (!id || !*id) {
-    return false;
-  }
-  strncpy(out.id, id, sizeof(out.id) - 1);
-  out.id[sizeof(out.id) - 1] = '\0';
-  out.offsetMin = doc["timezone"]["offset"].as<int>() / 60;
-  out.isDst = doc["timezone"]["is_dst"].as<bool>();
-  out.valid = true;
-  return true;
-}
-
-// Parses "[+/-]HH:MM" into signed minutes.
-bool parseUtcOffset(const char* s, int& offsetMin) {
-  if (!s) {
-    return false;
-  }
-  int sign = 1;
-  if (*s == '+') {
-    ++s;
-  } else if (*s == '-') {
-    sign = -1;
-    ++s;
-  }
-  if (strlen(s) != 5 || s[2] != ':') {
-    return false;
-  }
-  for (int i : {0, 1, 3, 4}) {
-    if (!isdigit(static_cast<unsigned char>(s[i]))) {
-      return false;
-    }
-  }
-  const int hours = (s[0] - '0') * 10 + (s[1] - '0');
-  const int minutes = (s[3] - '0') * 10 + (s[4] - '0');
-  offsetMin = sign * (hours * 60 + minutes);
-  return true;
-}
-
-bool parseWorldTimeApi(const std::string& body, freeink::TimeZoneInfo& out) {
-  JsonDocument doc;
-  if (deserializeJson(doc, body)) {
-    return false;
-  }
-  const char* id = doc["timezone"].as<const char*>();
-  if (!id || !*id) {
-    return false;
-  }
-  int offsetMin = 0;
-  if (!parseUtcOffset(doc["utc_offset"].as<const char*>(), offsetMin)) {
-    return false;
-  }
-  strncpy(out.id, id, sizeof(out.id) - 1);
-  out.id[sizeof(out.id) - 1] = '\0';
-  out.offsetMin = offsetMin;
-  out.isDst = doc["dst"].as<bool>();
-  out.valid = true;
-  return true;
-}
-
 struct TzService {
   const char* url;
   bool (*parse)(const std::string&, freeink::TimeZoneInfo&);
 };
 
+// Plain HTTP only: the fetch is one GET whose body the parsers below consume,
+// so no TLS session (and none of its heap spikes) is needed on this path.
+// ip-api's free tier is HTTP-only (HTTPS is paid) and rate-limited to 45
+// req/min — fine for a once-per-device lookup.
 constexpr TzService kServices[] = {
-    {"https://ipwho.is/", &parseIpWhoIs},
-    {"https://worldtimeapi.org/api/ip", &parseWorldTimeApi},
+    {"http://ipwho.is/?fields=success,timezone", &tzdetect::parseIpWhoIs},
+    {"http://ip-api.com/json/?fields=timezone", &tzdetect::parseIpApi},
 };
 }  // namespace
 
@@ -130,6 +68,11 @@ TimeZoneInfo detectTimeZoneFromIp() {
     const std::string body = http.getString();
     http.end();
     if (svc.parse(body, out)) {
+      if (!tzdetect::isValidIanaZoneId(out.id)) {
+        LOG_DBG(TAG, "Rejected zone id from %s: '%s'", svc.url, out.id);
+        out = TimeZoneInfo{};
+        continue;
+      }
       out.offsetMin = clampOffsetMin(out.offsetMin);
       LOG_INF(TAG, "Zone via %s: %s (UTC%+d min%s)", svc.url, out.id, out.offsetMin, out.isDst ? ", DST" : "");
       return out;
