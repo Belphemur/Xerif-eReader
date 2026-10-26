@@ -523,17 +523,26 @@ void WifiSelectionActivity::checkConnectionStatus() {
 
     // Sync RTC from NTP on the first successful WiFi connection only. The DS3231
     // drifts ~2 ppm so one sync is enough; users can force a re-sync from
-    // Settings > System > Clock > Sync clock now.
-    if (halClock.isAvailable() && !SETTINGS.clockHasBeenSynced) {
-      LOG_INF("CLK", "NTP sync: free=%u maxblock=%u", static_cast<unsigned>(ESP.getFreeHeap()),
-              static_cast<unsigned>(ESP.getMaxAllocHeap()));
-      if (halClock.syncFromNTP()) {
-        SETTINGS.clockHasBeenSynced = 1;
-        // Auto-detect the time zone from this device's public IP (keyless,
-        // HTTPS). Falls back to UTC display if all geolocation services fail.
-        // The fetch is a TLS session: on a fragmented C3 heap it can
-        // abort() the device, so it is skipped below the TLS floor and the
-        // clock is saved regardless (docs/design/2026-10-26-x3-wifi-connect-abort.md).
+    // Settings > System > Clock > Sync clock now. clockTzPending re-runs ONLY
+    // the time-zone detect on a later connect when the heap guard skipped it,
+    // so a first-time user is not stranded on UTC (no NTP re-sync on retry).
+    if (halClock.isAvailable() && (!SETTINGS.clockHasBeenSynced || SETTINGS.clockTzPending)) {
+      bool settingsDirty = false;
+      if (!SETTINGS.clockHasBeenSynced) {
+        LOG_INF("CLK", "NTP sync: free=%u maxblock=%u", static_cast<unsigned>(ESP.getFreeHeap()),
+                static_cast<unsigned>(ESP.getMaxAllocHeap()));
+        if (halClock.syncFromNTP()) {
+          SETTINGS.clockHasBeenSynced = 1;
+          settingsDirty = true;
+        }
+      }
+      // Auto-detect the time zone from this device's public IP (keyless,
+      // HTTPS). Falls back to UTC display if all geolocation services fail.
+      // The fetch is a TLS session: on a fragmented C3 heap it can abort() the
+      // device, so it is skipped below the TLS floor, saved as pending, and
+      // retried on the next connect once the heap recovers
+      // (docs/design/2026-10-26-x3-wifi-connect-abort.md).
+      if (settingsDirty || SETTINGS.clockTzPending) {
         const uint32_t freeHeap = ESP.getFreeHeap();
         const uint32_t maxAllocHeap = ESP.getMaxAllocHeap();
         LOG_INF("CLK", "tz detect: free=%u maxblock=%u", static_cast<unsigned>(freeHeap),
@@ -542,16 +551,27 @@ void WifiSelectionActivity::checkConnectionStatus() {
         if (tlsheap::verdict(freeHeap, maxAllocHeap) == tlsheap::Verdict::Skip) {
           LOG_INF("CLK", "tz detect skipped: low heap (free=%u maxblock=%u)", static_cast<unsigned>(freeHeap),
                   static_cast<unsigned>(maxAllocHeap));
+          if (!SETTINGS.clockTzPending) {
+            SETTINGS.clockTzPending = 1;  // retry on a later connect
+            settingsDirty = true;
+          }
         } else {
           tz = freeink::detectTimeZoneFromIp();
+          if (SETTINGS.clockTzPending) {
+            SETTINGS.clockTzPending = 0;  // attempted once: valid or not, the retry is consumed
+            settingsDirty = true;
+          }
           if (tz.valid) {
             strncpy(SETTINGS.clockTimeZoneId, tz.id, sizeof(SETTINGS.clockTimeZoneId) - 1);
             SETTINGS.clockTimeZoneId[sizeof(SETTINGS.clockTimeZoneId) - 1] = '\0';
             SETTINGS.clockTzOffsetMin = static_cast<int16_t>(tz.offsetMin);
             SETTINGS.clockTzIsDst = tz.isDst ? 1 : 0;
+            settingsDirty = true;
           }
         }
-        SETTINGS.saveToFile();
+        if (settingsDirty) {
+          SETTINGS.saveToFile();
+        }
         // Debug aid for the boot-time clock/timezone investigation: surface the
         // outcome of the very first auto-detect so we can correlate it with
         // what the next render actually picks up.

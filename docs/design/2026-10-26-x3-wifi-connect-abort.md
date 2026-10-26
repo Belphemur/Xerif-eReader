@@ -21,8 +21,8 @@ Orchestrator-decoded facts, cited to the v2.11.0 tree:
 - `0x422c2db1` resolves (gh_release v2.11.0 ELF, C3) to
   `__cxxabiv1::__terminate` (libstdc++ `eh_terminate.cc:45`) — the
   `std::terminate` → `abort()` landing. The project builds with
-  `-fno-exceptions`, so under the project's sources there are exactly two
-  throw classes that land there:
+  `-fno-exceptions`, which bounds the throw sites in the project's OWN sources
+  to two classes that can land there:
   1. a failed `operator new` — an uncaught `std::bad_alloc` thrown from
      libstdc++ (OOM), or
   2. `std::get<T>` on a variant holding a different alternative.
@@ -33,7 +33,12 @@ Orchestrator-decoded facts, cited to the v2.11.0 tree:
   `ActivityManager` normalizes unset results to cancelled; both
   `std::get<KeyboardResult>` call sites
   (WifiSelectionActivity.cpp:359, 383) are `isCancelled`-guarded.
-  Conclusion: the crash class is (a) — an OOM abort.
+  Conclusion: within the project's own sources the crash class is (a) — an
+  OOM abort — and class (2) is ruled out on this chain. That boundary is
+  not exhaustive: framework, third-party, and library-internal code (ESP-IDF,
+  Arduino core, wolfSSL, libstdc++ itself) can throw or abort by other means,
+  so OOM is the LEADING HYPOTHESIS (ranked H1 in §3), not an established fact,
+  until the crash-report decode (§4) confirms it.
 - Both reported symptoms share one code path. On `WL_CONNECTED`,
   `WifiSelectionActivity::checkConnectionStatus`
   (src/activities/network/WifiSelectionActivity.cpp:523-546) runs, and on the
@@ -158,10 +163,20 @@ Call-site behaviour:
   with free/max-alloc before `syncFromNTP()` and before the tz-detect; when the
   verdict is `Skip`, log the skip with the measured values and skip only the
   tz-detect — the NTP sync and `SETTINGS.saveToFile()` still run, so
-  `clockHasBeenSynced` persists and the hook does not re-fire on every connect.
+  `clockHasBeenSynced` persists and the NTP half of the hook does not re-fire
+  on every connect. The skip also sets the persistent `clockTzPending` flag,
+  and the next connect re-runs ONLY the tz-detect (no NTP re-sync) once the
+  heap passes the floor, so a first-time user is not stranded on UTC. The flag
+  clears when a detect is actually attempted, valid or not: a reachable-but-
+  failing geolocation service keeps the pre-PR one-shot semantics instead of
+  turning every connect into an extra TLS session.
+- `clockTzPending` is a new non-SettingsList settings key (absent = 0, no
+  retry owed), saved next to the other manually persisted clock keys.
 - `ClockSyncActivity::runSync`: same breadcrumbs and guard; on skip,
   `tzDetected_` stays false and the existing `STR_TIMEZONE_DETECT_FAILED`
-  status line renders — the pre-existing tz-failure UX, unchanged.
+  status line renders — the pre-existing tz-failure UX, unchanged. On skip it
+  also sets `clockTzPending` so the automatic hook retries on a later connect;
+  a manual detect attempt clears it.
 - Heap breadcrumbs bracket the NTP and tz-detect calls in both sites (tag
   `CLK`/`WIFI`), at `LOG_INF` level so they survive `LOG_LEVEL=1` release
   builds into any future `/crash_report.txt` log tail.

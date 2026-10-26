@@ -294,6 +294,11 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Set once an NTP sync succeeds. Used to skip re-syncing on every WiFi connect.
   // Resetting to 0 (e.g. via the web UI) forces a re-sync on next WiFi connect.
   uint8_t clockHasBeenSynced = 0;
+  // A time-zone detect was skipped by the TLS heap guard (never attempted).
+  // The next WiFi connect retries it once the heap passes the floor; cleared
+  // when an attempt is actually made, valid or not, so a reachable-but-failing
+  // geolocation service cannot turn every connect into an extra TLS session.
+  uint8_t clockTzPending = 0;
   // Text rendering settings
   uint8_t extraParagraphSpacing = 1;
   // Text render mode (same settings row as the former textAntiAliasing bool,

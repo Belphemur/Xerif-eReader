@@ -93,8 +93,12 @@ void ClockSyncActivity::runSync() {
   if (tlsheap::verdict(freeHeap, maxAllocHeap) == tlsheap::Verdict::Skip) {
     LOG_INF("CLK", "tz detect skipped: low heap (free=%u maxblock=%u)", static_cast<unsigned>(freeHeap),
             static_cast<unsigned>(maxAllocHeap));
+    // Mark the detect owed so the next WiFi connect retries it (manual sync
+    // must not leave first-time users on UTC either).
+    SETTINGS.clockTzPending = 1;
   } else {
     tz = freeink::detectTimeZoneFromIp();
+    SETTINGS.clockTzPending = 0;  // attempted once: valid or not, the retry is consumed
   }
   tzDetected_ = tz.valid;
   if (tz.valid) {
