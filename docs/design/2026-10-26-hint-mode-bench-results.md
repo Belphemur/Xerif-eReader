@@ -161,4 +161,44 @@ For x4pro/x4c:
    (classic). `TT_CONFIG_OPTION_SUBPIXEL_HINTING` is compiled in with the
    same flag; `RenderOptions.interpreterVersion` selects at runtime.
 
+## Adopted (2026-10-26)
+
+The TTF recommendation is implemented; CFF stays on Light per Finding 3.
+
+- **`platformio.ini`** — `FREEINK_FONT_ENABLE_NATIVE_HINTING=1` added to the
+  six envs of the two S3 TTF boards: `x4pro`, `x4pro_profile`, `x4c`,
+  `x4pro-gh_release`, `x4pro-gh_release_rc`, `x4c-gh_release` (the release/RC
+  variants are the same hardware, so they ship the same configuration;
+  `x4c-gh_release_rc` carries no TTF block and is untouched). All other envs
+  keep the stock build: without the define the loader's Default request
+  compiles out and every face keeps today's Light behavior.
+- **`src/BookFontLoader`** — format-aware request, `requestedRenderOptions(slot)`:
+  a glyf face (detected from the sfnt table directory — `'glyf'` vs
+  `'CFF '/'CFF2'` — by the new `sfntOutlineFormat`, sharing the TTC/table-dir
+  walk extracted from `validateSfntBytes`) requests `HintingMode::Default`
+  with the RenderOptions-default `interpreterVersion = 40`; CFF and
+  undetected faces keep `Light`. The request is applied at face load
+  (resident and streamed paths — streamed faces without a cached prefix stay
+  undetected and keep Light) and on the probe-retry restore. The probe gate
+  (`probeHintStackSafety`), the degrade funnel, and the verdict cache are
+  untouched; the effective per-slot mode still folds into the FIBP
+  fingerprint tag, so existing caches re-index once on this firmware's first
+  font load.
+- **Host parity** — `add_font_backend_tests()` in `test/CMakeLists.txt` now
+  defines `FREEINK_FONT_ENABLE_NATIVE_HINTING=1` for every FreeType-backend
+  test variant, matching the shipped x4pro/x4c configuration. The
+  `BookFontLoaderHinting` expectations were updated to the format-aware
+  policy: a loaded glyf face sits at `Default` (the host funnel previously
+  degraded it to `None` because neither mono nor autohint was compiled in —
+  now only mono is refused); the retry tests pin the verdict key against the
+  requested-options fingerprint, which no longer equals the failed attempt's
+  degraded tag.
+- **Bench re-verification** — both binaries re-run clean (stock 813 rows /
+  native 1002 rows, exit 0); the native build's TTF Default rows remain
+  4592 B AA / 5400 B Mono, and a temporary checksum probe confirmed the
+  Default bitmap differs from None's only in the native build (sums
+  2693332739993138456 vs 14103762388647521804, exactly the values recorded
+  above; stock build: identical, bytecode compiled out). The probe was
+  removed after verification.
+
 Credit: Antoine Aflalo (Belphemur), Hermes Agent.

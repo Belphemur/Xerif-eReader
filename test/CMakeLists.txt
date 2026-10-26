@@ -76,7 +76,12 @@ function(add_font_backend_tests TARGET)
   gtest_discover_tests(${TARGET})
 
   add_executable(${TARGET}BackendFT ${ARG_SOURCES} ${FONT_FT_TEST_SOURCES})
-  target_compile_definitions(${TARGET}BackendFT PRIVATE ${ARG_DEFINITIONS} CROSSPOINT_FONT_BACKEND_FT=1)
+  target_compile_definitions(${TARGET}BackendFT PRIVATE ${ARG_DEFINITIONS} CROSSPOINT_FONT_BACKEND_FT=1
+      # The TTF-device firmware envs (x4pro/x4c) also compile the TT bytecode
+      # interpreter (platformio.ini FREEINK_FONT_ENABLE_NATIVE_HINTING); host
+      # FT variants exercise the shipped configuration, including the loader's
+      # format-aware Default request for glyf faces.
+      FREEINK_FONT_ENABLE_NATIVE_HINTING=1)
   target_include_directories(${TARGET}BackendFT PRIVATE ${ARG_INCLUDES} ${FONT_FT_TEST_INCLUDES})
   target_link_libraries(${TARGET}BackendFT PRIVATE crosspoint_test_common GTest::gtest_main ${ARG_LIBS})
   gtest_discover_tests(${TARGET}BackendFT)
