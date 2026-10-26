@@ -3,7 +3,6 @@
 #include <BoardConfig.h>
 #include <FreeInkUICore.h>
 #include <GfxRenderer.h>
-#include <HalFrontlight.h>
 #include <HalHaptics.h>
 
 #include <algorithm>
@@ -531,10 +530,7 @@ bool MappedInputManager::wasHomeGesture() const {
   return gpio.hasHomeKey() ? homeAction == HomeButtonAction::Home : wasBottomEdgeUpSwipe();
 }
 
-bool MappedInputManager::wasLightPanelGesture() const {
-  // On lightless boards the same edge remains available to the reader menu.
-  return Frontlight.present() && wasTopEdgeDownSwipe();
-}
+bool MappedInputManager::wasLightPanelGesture() const { return wasTopEdgeDownSwipe(); }
 
 void MappedInputManager::resolvePowerDoubleClickWindow(const uint8_t newReleasedEdges) const {
 #if FREEINK_CAP_TOUCH
