@@ -16,6 +16,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/ClockFormat.h"
+#include "util/TlsHeapGuard.h"
 
 void ClockSyncActivity::onEnter() {
   Activity::onEnter();
@@ -66,7 +67,10 @@ void ClockSyncActivity::runSync() {
     return;
   }
 
+  LOG_INF("CLK", "NTP sync: free=%u maxblock=%u", static_cast<unsigned>(ESP.getFreeHeap()),
+          static_cast<unsigned>(ESP.getMaxAllocHeap()));
   const bool ok = halClock.syncFromNTP();
+  LOG_INF("CLK", "NTP sync done ok=%d free=%u", ok ? 1 : 0, static_cast<unsigned>(ESP.getFreeHeap()));
   if (!ok) {
     state = FAILED;
     requestUpdate();
@@ -77,8 +81,25 @@ void ClockSyncActivity::runSync() {
   SETTINGS.clockHasBeenSynced = 1;
 
   // Re-detect the time zone from this device's public IP (e.g. after travel).
-  // Store it even on manual sync; falls back to the previous/UTC display on failure.
-  auto tz = freeink::detectTimeZoneFromIp();
+  // Store it even on manual sync; falls back to the previous/UTC display on
+  // failure. The fetch is plain HTTP (no TLS on this path); the heap-guard
+  // skip stays as defense in depth and the sync still reports success
+  // (docs/design/2026-10-26-x3-wifi-connect-abort.md).
+  const uint32_t freeHeap = ESP.getFreeHeap();
+  const uint32_t maxAllocHeap = ESP.getMaxAllocHeap();
+  LOG_INF("CLK", "tz detect: free=%u maxblock=%u", static_cast<unsigned>(freeHeap),
+          static_cast<unsigned>(maxAllocHeap));
+  auto tz = freeink::TimeZoneInfo{};
+  if (tlsheap::verdict(freeHeap, maxAllocHeap) == tlsheap::Verdict::Skip) {
+    LOG_INF("CLK", "tz detect skipped: low heap (free=%u maxblock=%u)", static_cast<unsigned>(freeHeap),
+            static_cast<unsigned>(maxAllocHeap));
+    // Mark the detect owed so the next WiFi connect retries it (manual sync
+    // must not leave first-time users on UTC either).
+    SETTINGS.clockTzPending = 1;
+  } else {
+    tz = freeink::detectTimeZoneFromIp();
+    SETTINGS.clockTzPending = 0;  // attempted once: valid or not, the retry is consumed
+  }
   tzDetected_ = tz.valid;
   if (tz.valid) {
     strncpy(SETTINGS.clockTimeZoneId, tz.id, sizeof(SETTINGS.clockTimeZoneId) - 1);

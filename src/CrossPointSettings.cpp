@@ -120,6 +120,10 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   }
   doc["clockTzOffsetMin"] = clockTzOffsetMin;
   doc["clockTzIsDst"] = clockTzIsDst;
+  // Retry marker for a heap-guard-skipped tz detect (absent = 0, no retry owed).
+  if (clockTzPending) {
+    doc["clockTzPending"] = 1;
+  }
   // GT911 idle sleep toggle — not in SettingsList (no menu UI yet), persisted
   // manually so the owner can flip it without a rebuild.
   doc["touchIdleSleep"] = touchIdleSleep;
@@ -328,6 +332,7 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
     loadedOffset = 840;
   clockTzOffsetMin = static_cast<int16_t>(loadedOffset);
   clockTzIsDst = doc["clockTzIsDst"] | 0;
+  clockTzPending = doc["clockTzPending"] | 0;
   // Debug aid for the boot-time clock/timezone investigation: surface exactly
   // what came off the JSON so we can tell whether the file held an IANA id, an
   // empty id, a stale cached offset, or a legacy `clockUtcOffsetQ` that still

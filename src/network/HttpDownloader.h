@@ -1,5 +1,6 @@
 #pragma once
 #include <HalStorage.h>
+#include <util/TlsHeapGuard.h>
 
 #include <cstdint>
 #include <functional>
@@ -30,9 +31,10 @@ class HttpDownloader {
   // Pre-flight floor for starting a TLS transfer. Below this the session or
   // its ~17KB record buffer fails mid-stream (wolfSSL MEMORY_E) -- or an
   // interior allocation abort()s the device. Callers should check before
-  // downloadToFile() and fail into their error UI instead.
-  static constexpr uint32_t MIN_TLS_FREE_HEAP = 40000;
-  static constexpr uint32_t MIN_TLS_MAX_ALLOC = 20000;
+  // downloadToFile() and fail into their error UI instead. The floor lives in
+  // tlsheap so TLS users share one source of truth.
+  static constexpr uint32_t MIN_TLS_FREE_HEAP = tlsheap::kMinFreeHeap;
+  static constexpr uint32_t MIN_TLS_MAX_ALLOC = tlsheap::kMinLargestBlock;
 
   // True when the heap is large enough to start a TLS transfer. Checks the
   // same MIN_TLS_FREE_HEAP / MIN_TLS_MAX_ALLOC floor in one place so the

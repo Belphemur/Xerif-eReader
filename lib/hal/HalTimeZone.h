@@ -12,7 +12,8 @@ struct TimeZoneInfo {
   bool isDst = false;
 };
 
-// Best-effort time zone detection via IP geolocation (ipwho.is, worldtimeapi.org fallback).
+// Best-effort time zone detection via IP geolocation over plain HTTP
+// (ipwho.is primary, ip-api.com fallback).
 // Blocking (~2-10s over WiFi); returns TimeZoneInfo{valid=false} when detection fails.
 TimeZoneInfo detectTimeZoneFromIp();
 
