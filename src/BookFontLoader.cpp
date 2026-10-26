@@ -215,24 +215,6 @@ const freeink::font::FtFont::RenderOptions& BookFontLoader::effectiveRenderOptio
   return effectiveRenderOptions_[faceSlot];
 }
 
-freeink::font::FtFont::RenderOptions BookFontLoader::requestedRenderOptions(const uint8_t faceSlot) const {
-  freeink::font::FtFont::RenderOptions options = currentRenderOptions();
-#if defined(FREEINK_FONT_ENABLE_NATIVE_HINTING) && FREEINK_FONT_ENABLE_NATIVE_HINTING
-  // Format-aware request (design 2026-10-26, "Adopted"): a glyf face runs the
-  // font's own TT bytecode at the unhinted render depth (the interpreter's
-  // exec context is heap-resident), so it gets HintingMode::Default — the
-  // font's intended grid-fitting. CFF and undetected faces keep Light: the
-  // Adobe engine's depth is a property of the engine, and Auto on CFF breaks
-  // the probe budget. Default (not Native) requests identical load flags and
-  // stays meaningful wherever this gate compiles out. interpreterVersion
-  // stays at the RenderOptions default (40).
-  if (faceOutline_[faceSlot] == OutlineFormat::Glyf) {
-    options.hinting = freeink::font::FtFont::HintingMode::Default;
-  }
-#endif
-  return options;
-}
-
 bool BookFontLoader::effectiveMonochrome() { return monoAcceptable_ && effectiveRenderOptions_[0].monochrome; }
 
 void BookFontLoader::applyRenderMode(bool crispMode) {
@@ -488,12 +470,9 @@ void BookFontLoader::ensureHintProbeSettled() {
     // spawned yet, so the P1 flush cannot race a rasterization; if the retry
     // is unmeasurable too, probeHintStackSafety's fail-closed path re-degrades
     // every slot and the branch below keeps the session degraded.
-    // Retry restore: the per-slot REQUESTED mode (format-aware) so the probe
-    // measures the hinted depth it gates: a reading taken at
-    // HintingMode::None would clear a hinted render the verdict never tested.
     for (uint8_t i = 0; i < 4; ++i) {
       if (faces_[i] == nullptr) continue;
-      applySlotRenderOptions(faces_[i], i, requestedRenderOptions(i), "hint probe retry");
+      applySlotRenderOptions(faces_[i], i, currentRenderOptions(), "hint probe retry");
     }
     fingerprint_ = computeFingerprintCached();
   }
@@ -848,7 +827,6 @@ void BookFontLoader::ensureLoaded() {
     // Fresh load: every slot back to the requested mode, so the verdict
     // (cached below, or a fresh probe) is the only thing that degrades.
     resetHintState();
-    faceOutline_[i] = OutlineFormat::Unknown;
     // Streamed source: close-before-reopen (a reload reopens this slot's
     // HalFile member).
     releaseStreamSource(i);
@@ -1107,17 +1085,8 @@ unsigned long BookFontLoader::streamReadThunk(void* ctx, unsigned long offset, u
 }
 #endif  // CROSSPOINT_FONT_BACKEND_FT
 
-// Resolves a (possibly collection) sfnt buffer to its table directory.
-// Returns false when the header or the table count is unusable (each refusal
-// logged). Per-table bounds checks stay with the caller: in a TTC the offsets
-// are container-absolute, so they run against fullSize (the whole container),
-// while size/numTables are face-relative.
-static bool sfntTableDirectory(const uint8_t* data, uint32_t size, const int faceIndex, const uint8_t*& dir,
-                               uint16_t& numTables, uint32_t& fullSize) {
-  if (data == nullptr) {
-    LOG_ERR("BFNT", "Font bytes null");
-    return false;
-  }
+bool BookFontLoader::validateSfntBytes(const uint8_t* data, uint32_t size, const int faceIndex) {
+  if (data == nullptr) return false;
   if (size < 12) {
     LOG_ERR("BFNT", "Font too small for sfnt header (%u bytes)", size);
     return false;
@@ -1152,7 +1121,10 @@ static bool sfntTableDirectory(const uint8_t* data, uint32_t size, const int fac
     data += base;
     size -= base;  // face-relative size for the directory bounds checks
   }
-  numTables = static_cast<uint16_t>((data[4] << 8) | data[5]);
+  // Table offsets in a TTC directory are container-absolute, so the per-
+  // table bounds checks below run against the FULL container size.
+  const uint32_t fullSize = size + base;
+  const uint16_t numTables = static_cast<uint16_t>((data[4] << 8) | data[5]);
   if (numTables == 0) {
     LOG_ERR("BFNT", "Font invalid numTables 0");
     return false;
@@ -1162,20 +1134,8 @@ static bool sfntTableDirectory(const uint8_t* data, uint32_t size, const int fac
     LOG_ERR("BFNT", "Font too small for table directory (%u < %u)", size, minSz);
     return false;
   }
-  dir = data + 12;
-  // Table offsets in a TTC directory are container-absolute, so the per-
-  // table bounds checks below run against the FULL container size.
-  fullSize = size + base;
-  return true;
-}
-
-bool BookFontLoader::validateSfntBytes(const uint8_t* data, uint32_t size, const int faceIndex) {
-  const uint8_t* dir = nullptr;
-  uint16_t numTables = 0;
-  uint32_t fullSize = 0;
-  if (!sfntTableDirectory(data, size, faceIndex, dir, numTables, fullSize)) return false;
   for (uint16_t i = 0; i < numTables; ++i) {
-    const uint8_t* entry = dir + static_cast<size_t>(i) * 16;
+    const uint8_t* entry = data + 12 + static_cast<size_t>(i) * 16;
     // Guard against overflow in offset+length (uint32_t wraparound).
     const uint32_t offset = static_cast<uint32_t>(entry[8]) << 24 | static_cast<uint32_t>(entry[9]) << 16 |
                             static_cast<uint32_t>(entry[10]) << 8 | static_cast<uint32_t>(entry[11]);
@@ -1188,30 +1148,6 @@ bool BookFontLoader::validateSfntBytes(const uint8_t* data, uint32_t size, const
   }
   return true;
 }
-
-#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
-BookFontLoader::OutlineFormat BookFontLoader::sfntOutlineFormat(const uint8_t* data, uint32_t size,
-                                                                const int faceIndex) {
-  const uint8_t* dir = nullptr;
-  uint16_t numTables = 0;
-  uint32_t fullSize = 0;
-  if (!sfntTableDirectory(data, size, faceIndex, dir, numTables, fullSize)) return OutlineFormat::Unknown;
-  bool glyf = false;
-  bool cff = false;
-  for (uint16_t i = 0; i < numTables; ++i) {
-    const uint8_t* tag = dir + static_cast<size_t>(i) * 16;
-    if (tag[0] == 'g' && tag[1] == 'l' && tag[2] == 'y' && tag[3] == 'f') {
-      glyf = true;
-    } else if (tag[0] == 'C' && tag[1] == 'F' && tag[2] == 'F' && (tag[3] == ' ' || tag[3] == '2')) {
-      cff = true;
-    }
-  }
-  // OpenType/CFF faces never carry glyf; prefer an explicit CFF verdict.
-  if (cff) return OutlineFormat::Cff;
-  if (glyf) return OutlineFormat::Glyf;
-  return OutlineFormat::Unknown;
-}
-#endif  // CROSSPOINT_FONT_BACKEND_FT
 
 uint32_t BookFontLoader::computeFingerprint() const {
   // FNV-1a over loaded face bytes (only valid ones) xor styleCoverage.
@@ -1946,11 +1882,8 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
   }
   // Reader-wide render options (hinting + text render mode) through the
   // single supported/degrade funnel; the effective set lands in
-  // effectiveRenderOptions_ either way. The hinting request is format-aware:
-  // glyf faces ask for the font's own bytecode (Default) wherever the
-  // interpreter is compiled in (requestedRenderOptions).
-  faceOutline_[faceIdx] = sfntOutlineFormat(static_cast<const uint8_t*>(fontBytes), fi.fileSize, fi.faceIndex);
-  applySlotRenderOptions(face, faceIdx, requestedRenderOptions(faceIdx), fi.file);
+  // effectiveRenderOptions_ either way.
+  applySlotRenderOptions(face, faceIdx, effectiveRenderOptions(faceIdx), fi.file);
 #else
   if (!glyphBacking_[faceIdx]) {
     glyphBacking_[faceIdx] = poolMakeBytes(kGlyphArenaBytes);
@@ -2051,11 +1984,6 @@ void BookFontLoader::initBudget() {
 }
 
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
-// Bounded head read for streamed outline classification: sfnt header plus a
-// 254-entry table directory — more tables than any real face; a larger
-// directory classifies Unknown (fail-closed generic request).
-constexpr uint32_t kStreamOutlineProbeBytes = 12u + 254u * 16u;
-
 void BookFontLoader::releaseStreamSource(const uint8_t faceIdx) {
   // Close-before-reopen discipline: a slot reload reopens the same HalFile
   // member, so the stale handle must be closed first (DESTRUCTOR_CLOSES_FILE
@@ -2119,25 +2047,7 @@ bool BookFontLoader::tryLoadStreamedFace(const uint8_t faceIdx, const FontFaceIn
   // scattered multi-MB SD reads into the render path. Documented trade-off
   // (§14.5 / PR body); advances stay identical, kern pairs collapse.
   face->setGposByteBudget(0);
-  // Format-aware hinting request. Classify from a bounded DIRECT read of the
-  // file head — never from the PSRAM prefix: the prefix's presence depends on
-  // heap state, and a glyf face flipping Glyf↔Unknown between loads would
-  // move the requested hinting mode and with it the advances, the FIBP
-  // fingerprint tag and the hint-verdict key over identical font bytes.
-  // Read failures leave Unknown: the face keeps the generic (Light) request.
-  faceOutline_[faceIdx] = OutlineFormat::Unknown;
-  {
-    const uint32_t probe = fi.fileSize < kStreamOutlineProbeBytes ? fi.fileSize : kStreamOutlineProbeBytes;
-    PoolBytes head = poolMakeBytes(probe);
-    int got = -1;
-    if (head && src.file.seek(0)) got = src.file.read(head.get(), probe);
-    if (got >= 0 && static_cast<uint32_t>(got) == probe) {
-      faceOutline_[faceIdx] = sfntOutlineFormat(head.get(), probe, fi.faceIndex);
-    } else {
-      LOG_DBG("BFNT", "Outline probe read failed for %s — generic hinting request", fi.file);
-    }
-  }
-  applySlotRenderOptions(face, faceIdx, requestedRenderOptions(faceIdx), fi.file);
+  applySlotRenderOptions(face, faceIdx, effectiveRenderOptions(faceIdx), fi.file);
   if (!chain.add(face, fi.styleFlags)) {
     LOG_ERR("BFNT", "FontChain::add failed to register %s", fi.file);
     delete face;

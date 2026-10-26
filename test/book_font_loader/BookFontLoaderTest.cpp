@@ -1339,12 +1339,9 @@ TEST(BookFontLoaderFingerprintCache, MtimeZeroDisablesCache) {
 }
 
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
-// ── P2 hinting + stack-probe degrade identity ─────────────
-// kRenderOptions requests Light as the generic base; the format-aware
-// requestedRenderOptions() raises a loaded glyf face to Default (TT bytecode
-// interpreter compiled in on the shipped envs and the host FT variant) and
-// the runtime stack probe may degrade a slot to unhinted. The effective
-// per-slot modes fold into the fingerprint tag
+// ── P2 hinting (Light) + stack-probe degrade identity ────────────────
+// kRenderOptions requests Light; the runtime stack probe may degrade a slot
+// to unhinted. The effective per-slot modes fold into the fingerprint tag
 // (renderOptionsFingerprintTag), which both the loader and the FIBP prefetch
 // worker mix into their parity hash — a degrade MUST change the tag.
 
@@ -1457,13 +1454,12 @@ TEST(BookFontLoaderHinting, UnsupportedMonoDegradesToAaAndStillRenders) {
   ASSERT_NE(loader.getReaderFont(), nullptr);
 
   // (C2) The degrade is visible in the effective mode: mono is dropped.
-  // The TAG reflects the mode that actually renders: the host FT variant now
-  // compiles the TT bytecode interpreter (the shipped x4pro/x4c config), so
-  // the seeded glyf face keeps HintingMode::Default after the funnel drops
-  // only the unsupported mono request (a build without the interpreter would
-  // degrade all the way to None here). Raster mode alone never moves the tag.
+  // The TAG reflects the degrade: the host FT variant compiles neither the
+  // mono renderer nor the auto-hinter, so the funnel drops BOTH on the
+  // seeded slot (device builds compile both — there the tag stays Light).
+  // Raster mode alone never moves the tag.
   EXPECT_FALSE(BookFontLoader::effectiveMonochrome());
-  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::Default, HM::Light, HM::Light, HM::Light}));
+  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::None, HM::Light, HM::Light, HM::Light}));
 
   // (C1) The degraded face still rasterizes: non-null pixels, non-empty
   // bitmap (the regression produced nullptr for every glyph).
@@ -1552,14 +1548,13 @@ TEST(BookFontLoaderHinting, VerdictReusesOnUnchangedReloadAndMissesOnChangedByte
   // value agree, which is what the worker's parity hash mirrors.
   EXPECT_EQ(loader.computeFingerprint(), fpRequested);
   // Settle a verdict as the shallow probe would: slot 3 measured deeper
-  // than the consumer budget. (Slot 0 sits at Default on the host FT variant
-  // — it compiles the interpreter, so the funnel only drops the unsupported
-  // mono request — hence the tag.)
+  // than the consumer budget. (Slot 0 already sits at None on the host FT
+  // variant — the funnel drops mono and autohint alike — hence the tag.)
   loader.recordHintVerdictForTest(fpRequested, 0x08);
   EXPECT_EQ(BookFontLoader::effectiveRenderOptions(3).hinting, HM::None);
   const uint32_t fpDegraded = loader.fontFingerprint();
   EXPECT_NE(fpDegraded, fpRequested);
-  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::Default, HM::Light, HM::Light, HM::None}));
+  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::None, HM::Light, HM::Light, HM::None}));
 
   // The verdict is settled, so a second settle from the call site is a no-op
   // (the host probe measures nothing — only the identity may confirm it).
@@ -1576,7 +1571,7 @@ TEST(BookFontLoaderHinting, VerdictReusesOnUnchangedReloadAndMissesOnChangedByte
   EXPECT_EQ(loader.fontFingerprint(), fpDegraded);
   loader.ensureHintProbeSettled();
   EXPECT_EQ(loader.fontFingerprint(), fpDegraded);
-  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::Default, HM::Light, HM::Light, HM::None}));
+  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::None, HM::Light, HM::Light, HM::None}));
 
   // Changed bytes: the content identity moves, so the cached verdict no
   // longer describes these faces — slot 3 returns to the requested mode and
@@ -1588,7 +1583,7 @@ TEST(BookFontLoaderHinting, VerdictReusesOnUnchangedReloadAndMissesOnChangedByte
   loader.markDirty();
   ASSERT_NE(loader.getReaderFont(), nullptr);
   EXPECT_EQ(BookFontLoader::effectiveRenderOptions(3).hinting, HM::Light);
-  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::Default, HM::Light, HM::Light, HM::Light}));
+  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::None, HM::Light, HM::Light, HM::Light}));
   EXPECT_NE(loader.fontFingerprint(), fpDegraded);
 
   // Body-size change: the probe's depth is a function of the size it
@@ -1606,7 +1601,7 @@ TEST(BookFontLoaderHinting, VerdictReusesOnUnchangedReloadAndMissesOnChangedByte
   loader.markDirty();
   ASSERT_NE(loader.getReaderFont(), nullptr);
   EXPECT_EQ(BookFontLoader::effectiveRenderOptions(3).hinting, HM::Light);
-  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::Default, HM::Light, HM::Light, HM::Light}));
+  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::None, HM::Light, HM::Light, HM::Light}));
   EXPECT_EQ(loader.fontFingerprint(), fpRequested);
   // Restore after the test (the override is file-scope static state).
   BookFontLoader::setHintProbeSizeForTest(16);
@@ -1623,9 +1618,8 @@ TEST(BookFontLoaderHinting, VerdictReusesOnUnchangedReloadAndMissesOnChangedByte
 // retry armed, (b) the retry attempt disarms it whatever its outcome,
 // (c) a failed retry never re-arms, (d) a successful attempt clears both.
 // Slot-option/fingerprint folds are covered by the BookFontLoaderHinting
-// tests; with the shipped interpreter define the host FT funnel keeps loaded
-// glyf faces at their requested Default, so this suite pins the scheduling
-// state, not the modes.
+// tests; the host FT funnel keeps every loaded face unhinted, so this suite
+// pins the scheduling state, not the modes.
 namespace {
 // Loads the one-face DejaVu family through the real ensureLoaded() path
 // (which now settles the probe at its tail). Returns the load's content
@@ -1713,16 +1707,10 @@ TEST(HintingProbeRetryTest, RetrySuccessClearsBothAndCachesVerdict) {
   EXPECT_FALSE(loader.hintProbeRetryArmedForTest());
 
   // The settled verdict is cached: an unchanged reload reuses it instead of
-  // re-probing, and the identity stays stable. The retry also rolled the
-  // fail-closed degrade back, so the identity now sits at the REQUESTED
-  // tag — fp was captured under the failed attempt's degraded tag (the host
-  // funnel no longer leaves the loaded glyf face at None: it keeps
-  // Default), so the two must differ by exactly the retry's rollback.
-  const uint32_t fpRequested = loader.fontFingerprint();
-  EXPECT_NE(fpRequested, fp);
+  // re-probing, and the identity stays stable.
   loader.markDirty();
   ASSERT_NE(loader.getReaderFont(), nullptr);
-  EXPECT_EQ(loader.fontFingerprint(), fpRequested);
+  EXPECT_EQ(loader.fontFingerprint(), fp);
   EXPECT_FALSE(loader.hintProbePendingForTest());
   EXPECT_FALSE(loader.hintProbeRetryArmedForTest());
 
@@ -1736,12 +1724,11 @@ TEST(HintingProbeRetryTest, RetrySuccessClearsBothAndCachesVerdict) {
 // requested-options fingerprint): the retry pass re-enters with fingerprint_
 // under the fail-closed degrade tag, so caching under the entry key would
 // never match what an unchanged later load computes and every reload would
-// re-probe. Host limits: the host FT variant compiles the shipped
-// interpreter gate, so the loaded glyf face sits at its requested Default
-// (not None); (a) is pinned via the restore-order snapshot and (b) by
-// engineering a fingerprint-visible degrade on a FACELESS slot (allowed
-// there — it stays at the requested base until degraded), reproducing the
-// device's tag shift.
+// re-probe. Host limits: the host funnel drops autohint for every loaded
+// face (slot 0 already sits at None), so (a) is pinned via the restore-order
+// snapshot and (b) by engineering a fingerprint-visible degrade on a
+// FACELESS slot (allowed there — it stays at the requested Light until
+// degraded), reproducing the device's tag shift.
 TEST(HintingProbeRetryTest, RetryMeasuresRequestedModeAndCachesRequestedKey) {
   BookFontLoader::setHintProbeSizeForTest(16);
   UnmeasurableOverrideGuard unmeasurable;
@@ -1753,9 +1740,8 @@ TEST(HintingProbeRetryTest, RetryMeasuresRequestedModeAndCachesRequestedKey) {
   EXPECT_EQ(BookFontLoader::hintProbeRestoresAtProbeForTest(), 0);
 
   // Make the fail-closed degrade fingerprint-visible the way it is on the
-  // device (there the loaded faces drop their requested mode -> None; the
-  // host loaded face already sits at its requested Default, so shift a
-  // faceless slot instead).
+  // device (there the loaded faces drop Light -> None; the host funnel has
+  // already dropped slot 0, so shift a faceless slot instead).
   loader.degradeHintForTest(1);
   loader.applyRenderMode(false);
   const uint32_t degradedEntryKey = loader.fontFingerprint();
@@ -1768,20 +1754,14 @@ TEST(HintingProbeRetryTest, RetryMeasuresRequestedModeAndCachesRequestedKey) {
   EXPECT_EQ(BookFontLoader::hintProbeRestoresAtProbeForTest(), 1);
   EXPECT_FALSE(loader.hintProbePendingForTest());
   EXPECT_FALSE(loader.hintProbeRetryArmedForTest());
-  // The verdict is cached under the REQUESTED-options key (captured when the
-  // retry was armed) — not under fp (the failed attempt's degraded tag) nor
-  // the engineered faceless-slot key.
-  EXPECT_NE(loader.hintVerdictKeyForTest(), fp);
+  EXPECT_EQ(loader.hintVerdictKeyForTest(), fp);
   EXPECT_NE(loader.hintVerdictKeyForTest(), degradedEntryKey);
 
   // The unchanged reload therefore REUSES the verdict (the fingerprint comes
-  // back at the requested tag — equal to the cached key, slot 1's faceless
-  // degrade wiped by the reload's reset) instead of paying a second blocking
-  // probe.
+  // back at the requested tag) instead of paying a second blocking probe.
   loader.markDirty();
   ASSERT_NE(loader.getReaderFont(), nullptr);
-  EXPECT_EQ(loader.fontFingerprint(), loader.hintVerdictKeyForTest());
-  EXPECT_NE(loader.fontFingerprint(), fp);
+  EXPECT_EQ(loader.fontFingerprint(), fp);
   EXPECT_FALSE(loader.hintProbePendingForTest());
 
   loader.resetHintStateForTest();
@@ -1886,46 +1866,6 @@ TEST(BookFontLoaderStreaming, RebeginAfterStreamedLoadTearsDownOnceAndStaysLive)
   EXPECT_EQ(loader.fontFingerprint(), fp1);
   // The streamed slot's handle must actually be open again post-rebegin.
   EXPECT_TRUE(loader.streamSourceOpenForTest(0));
-}
-
-// Format-aware hinting on the streamed path must classify from the font
-// bytes, never from whether the PSRAM prefix happened to be allocatable: a
-// glyf face flipping Glyf↔Unknown between loads would move the requested
-// hinting mode (Default↔Light) and with it the advances, the FIBP
-// fingerprint tag and the hint-verdict key over identical bytes.
-TEST(BookFontLoaderStreaming, StreamedGlyfClassifiesHintingRegardlessOfPrefix) {
-  const std::string regularBytes = emberBytes("Amazon_Ember_Regular.ttf");
-  if (!fixtureAvailable(regularBytes)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Regular.ttf";
-  std::string big = regularBytes;
-  big.resize(BookFontLoader::kMaxFaceBytes + 1024, '\0');  // force streaming path
-
-  auto loadOptionsTag = [&big] {
-    resetStorage();
-    seedFile("/fonts/Big/Big-Regular.ttf", big);
-    freeink::book::BookFontLoader loader;
-    auto& fam = loader.editFamily(0);
-    std::snprintf(fam.name, sizeof(fam.name), "%s", "Big");
-    fam.faceCount = 1;
-    fam.faces[0].styleFlags = freeink::book::StyleNone;
-    fam.faces[0].fileSize = static_cast<uint32_t>(big.size());
-    fam.faces[0].mtime = 0;
-    std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", "/fonts/Big/Big-Regular.ttf");
-    loader.setFamilyCountForTest(1);
-    loader.selectFamily("Big");
-    loader.markDirty();
-    if (loader.getReaderFont() == nullptr) return 0u;
-    EXPECT_EQ(loader.effectiveRenderOptions(0).hinting, HM::Default);
-    return BookFontLoader::renderOptionsFingerprintTag();
-  };
-
-  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 8 * 1024 * 1024});  // prefix cached
-  const uint32_t tagWithPrefix = loadOptionsTag();
-  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});  // no room for the prefix → pure streaming
-  const uint32_t tagWithoutPrefix = loadOptionsTag();
-
-  ASSERT_NE(tagWithPrefix, 0u);
-  // Identical font bytes → identical layout identity whatever the heap state.
-  EXPECT_EQ(tagWithPrefix, tagWithoutPrefix);
 }
 
 // Regression: streamed load failure paths (open failure) must clean up the

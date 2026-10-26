@@ -204,3 +204,12 @@ The TTF recommendation is implemented; CFF stays on Light per Finding 3.
   removed after verification.
 
 Credit: Antoine Aflalo (Belphemur), Hermes Agent.
+
+## On-device outcome (2026-10-26): policy reverted
+
+Shipped build on X4 Pro (216 DPI e-ink): the owner reports TTF rendering with
+TT bytecode (Default) looks **worse** than Light. The firmware policy is
+reverted to Light for all faces; `FREEINK_FONT_ENABLE_NATIVE_HINTING` is
+removed from the firmware envs, so the bytecode interpreter is no longer
+compiled into shipped firmware. The bench tables above stay valid as host
+stack measurements; the adopted-then-reverted history is the decision record.
