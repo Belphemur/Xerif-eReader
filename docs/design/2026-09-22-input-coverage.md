@@ -54,6 +54,7 @@ refactor/fix plan (§5) before any code change of this round. Paradigm rules
 | B14 | Long-press Back / Confirm / page buttons in lists | go-home/file-browser/mode toggles | fixed thresholds (GO_HOME_MS 1000, LONG_PRESS_MS) — consumer-local UX constants | ReaderUtils.h:246-260, FileBrowserActivity.cpp:538, LibraryListActivity.cpp:713 |
 | B15 | Sticky shared OK/Power GPIO | CONFIRM vs POWER split | YES — `setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == SLEEP)` main.cpp:995 | main.cpp:995, InputManager.h:214-217 |
 | B16 | Long-press threshold events (`wasLongPressed`) | one-shot + release suppression; consumed globally by ActivityManager | n/a (mechanism) | MappedInputManager.cpp:455-461, ActivityManager.cpp:76 |
+| B17 | N queued press/release edges of one button (async poll task) | drained to a per-button count in `update()` (`edgecount::drainCount`, cap = queueLen 16); reader page turns net the counts into ONE N-page jump per refresh (`ReaderUtils::detectPageTurnSteps`, `ReaderActivity::pageTurnBy`); boolean `wasPressed/wasReleased` unchanged (count > 0). List-cursor jump = Phase 2 (per-activity opt-in) | YES — side layout + trigger edge mode (`SETTINGS.sideButtonLayout`, `longPressButtonBehavior`) | MappedInputManager.cpp:46-69, 320-364; ReaderUtils.h:67-122; TurnNetting.h; PageTurnBatch.h |
 
 Audit result: every button consumer reachable in this repo resolves through
 `mapButtonWith` (logical enums) or the main.cpp power zone. Of the power

@@ -2,7 +2,7 @@
 
 Date: 2026-10-27
 Issue: #259 (reporter feedback, [comment 6445472113](https://github.com/Belphemur/Xerif-eReader/issues/259#issuecomment-6445472113))
-Status: Proposed — implementation lands in PR #263 on `feat/x3-x4-async-input`
+Status: Accepted — implemented in PR #263 on `feat/x3-x4-async-input`
 
 ## 1. Problem
 
