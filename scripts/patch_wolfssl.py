@@ -20,6 +20,13 @@ OVERRIDES = f"""
 #ifndef HAVE_FFDHE_2048
 #define HAVE_FFDHE_2048
 #endif
+/* Arduino-wolfSSL always defines DEBUG_WOLFSSL, but SecureClient turns the
+   trace on only in FREEINK_WOLFSSL_DEBUG builds. Drop it otherwise so the trace
+   code and strings are not linked. Set the flag for all sources (build_flags),
+   not just SecureNet, to keep the trace. */
+#ifndef FREEINK_WOLFSSL_DEBUG
+#undef DEBUG_WOLFSSL
+#endif
 """
 
 # wolfSSL 5.8.x emits three diagnostics in every translation unit that pulls in
