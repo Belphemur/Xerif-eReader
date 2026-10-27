@@ -82,6 +82,18 @@ TCB, `InputManager.cpp:317-324`). Static DRAM is unchanged; the allocation is
 runtime heap. This must be validated on device (§5) given the X3's heap
 sensitivity (`a87d4018`, `4829fab8`).
 
+> **Amendment 2026-10-27 (owner decision, supersedes the gate form above).**
+> Enablement is the build flag `XERIF_ASYNC_INPUT`, defined in `[base]` of
+> platformio.ini so EVERY env carries it; the gate is
+> `#if defined(BOARD_HAS_PSRAM) || defined(XERIF_ASYNC_INPUT)`
+> (lib/hal/HalGPIO.cpp). The device-define form sketched above
+> (`FREEINK_DEVICE_X3/X4`) is superseded — it scoped the change to Xteink
+> builds only, while the owner wants async sampling everywhere with the
+> per-env `-UXERIF_ASYNC_INPUT` as the opt-out (used only on later evidence,
+> never speculatively). The env-flag matrix (§4 Task 1) remains the
+> verification that no env defines the device flags unintentionally; the
+> simulator is unaffected (lib_ignore=hal, platformio.ini:1011).
+
 ## 3. Interactions that must be re-audited (NOT optional)
 
 ### 3.1 Auto-repeat stall discount — expected to remain CORRECT as-is

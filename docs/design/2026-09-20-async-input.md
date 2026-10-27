@@ -113,6 +113,24 @@ behavior change for builds without the feature.
   they drain-and-latch (they previously *preserved* liveness during e-ink
   waits; now they also pick up task-queued edges).
 
+> **Addendum 2026-10-27 (every-board enablement, issue #259).** The
+> `beginAsync()` gate is now `#if defined(BOARD_HAS_PSRAM) ||
+> defined(XERIF_ASYNC_INPUT)`, with `XERIF_ASYNC_INPUT` defined for every env
+> in `[base]` of platformio.ini — the C3 combined builds (Xteink X3/X4) run
+> this same path, closing the press-loss-during-refresh gap that motivated
+> the original PSRAM-only scoping above. That scoping is superseded by owner
+> decision; the runtime cost is unchanged (~6.5 KB DRAM) and degradation on
+> `xTaskCreate()` failure stays safe by construction (`asyncActive()` false
+> keeps every consumer's `!asyncActive()` branch on the sync path). Board
+> opt-out is the escape hatch only on later evidence: `-UXERIF_ASYNC_INPUT`
+> in that one env. Root-cause evidence, interaction audits, and device
+> verification: `docs/design/2026-10-26-x3-x4-async-input.md`. Note: the SDK
+> host suite `test_x4_sync_path.cpp` (header comment in `run_x4_sync.sh`)
+> still describes the sync path as "the path the C3 release binary runs" —
+> that suite remains valid as a unit test of the sync path in isolation (its
+> `InputManager` instance never calls `beginAsync()`), but the shipped C3
+> firmware now runs async.
+
 ### 2.3 What each busy window becomes
 
 | window | before | after |
