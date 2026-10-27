@@ -3,7 +3,7 @@ name: PR firmware links
 on:
   workflow_run:
     workflows:
-      - CI (build)
+      - CI
     types:
       - completed
 
