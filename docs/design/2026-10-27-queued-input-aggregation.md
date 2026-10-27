@@ -136,6 +136,8 @@ button queue every frame.
   once and lands +3 pages; netting (2 next + 1 prev → +1); hold produces
   count 1; end-of-book clamps.
 - On device (X3): open a book, press Next 3× rapidly → ONE refresh lands
-  3 pages ahead; options menu cursor jumps 3 rows; held button still
-  auto-repeats stepwise; regression: single press, hold, power click window,
-  EOB.
+  3 pages ahead; held button still auto-repeats stepwise; regression:
+  single press, hold, power click window, EOB.
+- Phase-2 follow-up (not in this PR): options-menu list-cursor jump —
+  re-run the same device check with a popup list once list-cursor
+  aggregation (§3.2) lands.
