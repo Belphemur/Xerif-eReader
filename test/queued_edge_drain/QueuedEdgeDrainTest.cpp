@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
 
-#include "util/QueuedEdgeDrain.h"
-
 #include <deque>
+
+#include "util/QueuedEdgeDrain.h"
 
 namespace {
 

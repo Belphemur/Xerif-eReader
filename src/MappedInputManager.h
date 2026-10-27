@@ -2,9 +2,9 @@
 
 #include <HalGPIO.h>
 
-#include "util/QueuedEdgeDrain.h"
 #include "util/HomeButtonInput.h"
 #include "util/PowerClickWindow.h"
+#include "util/QueuedEdgeDrain.h"
 #include "util/RemoteButtonInput.h"
 #include "util/RepeatHoldDiscount.h"
 

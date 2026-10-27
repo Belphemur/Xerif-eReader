@@ -79,6 +79,10 @@ class GfxRenderer {
   int getWriteRows() const { return 0; }
   RenderMode getRenderMode() const { return BW; }
   bool grayPlanesAreAbsolute() const { return true; }
+  // Develop's #4160 image-grayscale toggle (upstream port 5d1142c1) added the
+  // member to lib/GfxRenderer without updating this fixture; DirectPixelWriter
+  // unconditionally reads it in init(), so the host build broke on CI.
+  bool imagesDitheredInBw() const { return false; }
   uint16_t getDisplayWidthBytes() const { return 0; }
   uint16_t getDisplayWidth() const { return 480; }
   uint16_t getDisplayHeight() const { return 800; }

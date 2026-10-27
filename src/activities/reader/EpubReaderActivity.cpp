@@ -2693,8 +2693,7 @@ bool EpubReaderActivity::pageTurnBy(const int steps) {
     // A step that crossed into another chapter (or reached end of book) left
     // the section unloaded/pending — the next step needs this frame's render
     // to load it first, so the jump clamps at the boundary.
-    return (isAtEndOfBook() || currentSpineIndex != spineBefore) ? pageturn::Step::Boundary
-                                                                 : pageturn::Step::Turned;
+    return (isAtEndOfBook() || currentSpineIndex != spineBefore) ? pageturn::Step::Boundary : pageturn::Step::Turned;
   });
 }
 

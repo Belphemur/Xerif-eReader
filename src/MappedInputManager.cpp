@@ -104,8 +104,7 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
       // Count halves of the same park (§3.1): Back is pump-consumed, Power
       // releases are parked after classification below.
       if (physical != HalGPIO::BTN_BACK) {
-        pendingPressedCounts[physical] =
-            static_cast<uint8_t>(pendingPressedCounts[physical] + drainedPress[physical]);
+        pendingPressedCounts[physical] = static_cast<uint8_t>(pendingPressedCounts[physical] + drainedPress[physical]);
         if (physical != HalGPIO::BTN_POWER) {
           pendingReleasedCounts[physical] =
               static_cast<uint8_t>(pendingReleasedCounts[physical] + drainedRelease[physical]);
@@ -148,10 +147,8 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
     for (uint8_t physical = HalGPIO::BTN_BACK; physical <= HalGPIO::BTN_POWER; ++physical) {
       // Count halves of the same composition: parked counts merge with this
       // tick's drain exactly once, then the registers clear with the masks.
-      framePressedCounts[physical] =
-          static_cast<uint8_t>(drainedPress[physical] + pendingPressedCounts[physical]);
-      frameReleasedCounts[physical] =
-          static_cast<uint8_t>(drainedRelease[physical] + pendingReleasedCounts[physical]);
+      framePressedCounts[physical] = static_cast<uint8_t>(drainedPress[physical] + pendingPressedCounts[physical]);
+      frameReleasedCounts[physical] = static_cast<uint8_t>(drainedRelease[physical] + pendingReleasedCounts[physical]);
       pendingPressedCounts[physical] = 0;
       pendingReleasedCounts[physical] = 0;
     }
@@ -172,8 +169,8 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
     // the window and is re-published as a mask bit with count 0 later — no
     // count consumer reads Power, so the count drop is unobservable there.
     if ((frameReleasedEdges & (1u << HalGPIO::BTN_POWER)) != 0) {
-      pendingReleasedCounts[HalGPIO::BTN_POWER] = static_cast<uint8_t>(
-          pendingReleasedCounts[HalGPIO::BTN_POWER] + frameReleasedCounts[HalGPIO::BTN_POWER]);
+      pendingReleasedCounts[HalGPIO::BTN_POWER] =
+          static_cast<uint8_t>(pendingReleasedCounts[HalGPIO::BTN_POWER] + frameReleasedCounts[HalGPIO::BTN_POWER]);
     }
   }
   // Counts stay in lockstep with the served masks (audit #2): wherever the
@@ -359,7 +356,7 @@ uint8_t MappedInputManager::wasReleasedCount(const Button button) const {
 #if FREEINK_CAP_TOUCH
         || wasPowerConfirmClick()
 #endif
-        )) ||
+            )) ||
       (button == Button::Back && (remoteInput.button == RemoteButton::Back || wasBackGesture())) ||
       ((button == Button::NavNext || button == Button::Right) && remoteInput.button == RemoteButton::Next) ||
       ((button == Button::NavPrevious || button == Button::Left) && remoteInput.button == RemoteButton::Previous);

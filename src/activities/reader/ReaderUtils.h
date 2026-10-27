@@ -101,10 +101,10 @@ inline PageTurnResult detectPageTurnSteps(const MappedInputManager& input,
     return usePress ? input.wasPressedCount(button) : input.wasReleasedCount(button);
   };
   turnnet::TriggerCounts counts;
-  counts.nextCount = static_cast<uint8_t>(pageButtonCount(MappedInputManager::Button::PageForward)) +
-                     pageButtonCount(nextButton);
-  counts.prevCount = static_cast<uint8_t>(pageButtonCount(MappedInputManager::Button::PageBack)) +
-                     pageButtonCount(prevButton);
+  counts.nextCount =
+      static_cast<uint8_t>(pageButtonCount(MappedInputManager::Button::PageForward)) + pageButtonCount(nextButton);
+  counts.prevCount =
+      static_cast<uint8_t>(pageButtonCount(MappedInputManager::Button::PageBack)) + pageButtonCount(prevButton);
   counts.touchNext = touch.next;
   counts.touchPrev = touch.prev;
   counts.tiltNext = tiltNext;
@@ -114,9 +114,8 @@ inline PageTurnResult detectPageTurnSteps(const MappedInputManager& input,
   counts.homeNextPage = input.homeButtonAction() == HomeButtonAction::NextPage;
   const bool prev = tiltPrev || pageButtonTriggered(MappedInputManager::Button::PageBack) ||
                     pageButtonTriggered(prevButton) || touch.prev;
-  const bool next = counts.homeNextPage || tiltNext ||
-                    pageButtonTriggered(MappedInputManager::Button::PageForward) || counts.powerTurn ||
-                    pageButtonTriggered(nextButton) || touch.next;
+  const bool next = counts.homeNextPage || tiltNext || pageButtonTriggered(MappedInputManager::Button::PageForward) ||
+                    counts.powerTurn || pageButtonTriggered(nextButton) || touch.next;
   return {prev, next, tiltPrev || tiltNext, turnnet::net(counts)};
 }
 
