@@ -221,6 +221,9 @@ jobs:
           name: ${{ matrix.asset }}
           path: .pio/build/${{ matrix.env }}/firmware.bin
           if-no-files-found: error
+          # Test builds only — the per-PR firmware-links comment is the
+          # delivery path; keep storage bounded.
+          retention-days: 7
 
   unit-tests:
     name: Host unit tests
