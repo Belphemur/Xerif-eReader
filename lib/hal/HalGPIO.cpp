@@ -179,6 +179,8 @@ void HalGPIO::prepareForDeepSleep() {
   if (!inputMgr.prepareForDeepSleep()) LOG_ERR("GPIO", "Failed to put touch controller to sleep");
 }
 
+bool HalGPIO::asyncInputActive() const { return inputMgr.asyncActive(); }
+
 bool HalGPIO::wasPressed(uint8_t buttonIndex) const { return inputMgr.wasPressed(buttonIndex); }
 
 bool HalGPIO::wasAnyPressed() const { return inputMgr.wasAnyPressed(); }

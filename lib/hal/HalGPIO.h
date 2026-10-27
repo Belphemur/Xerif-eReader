@@ -80,6 +80,13 @@ class HalGPIO {
   // wasPressed/wasReleased. No-op on sync builds.
   void consumeTouchFrame();
   bool isPressed(uint8_t buttonIndex) const;
+  // True while the SDK input poll task owns edge sampling (async mode): an
+  // edge probe consumes one QUEUED edge per call, so the app layer drains a
+  // button's queue in a loop to recover how many presses arrived (queued-input
+  // aggregation, docs/design/2026-10-27-queued-input-aggregation.md §3.1).
+  // False on sync builds, where an edge probe is idempotent within a frame
+  // (the event bit lives until update()) and must be called exactly once.
+  bool asyncInputActive() const;
   bool wasPressed(uint8_t buttonIndex) const;
   bool wasAnyPressed() const;
   bool wasReleased(uint8_t buttonIndex) const;

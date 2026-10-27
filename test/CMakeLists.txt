@@ -122,6 +122,7 @@ add_subdirectory(chapter_position)
 add_subdirectory(book_metadata_cache)
 add_subdirectory(home_button)
 add_subdirectory(input_grammar)
+add_subdirectory(queued_edge_drain)
 add_subdirectory(quick_page_capture)
 add_subdirectory(button_press_navigation)
 
