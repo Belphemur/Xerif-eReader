@@ -53,8 +53,10 @@ class CrossPointWebServer {
   CrossPointWebServer();
   ~CrossPointWebServer();
 
-  // Start the web server (call after WiFi is connected)
-  void begin();
+  // Start the web server (call after WiFi is connected). Returns false (and
+  // emits a WEBACT breadcrumb) on a no-throw allocation failure instead of
+  // aborting under -fno-exceptions.
+  bool begin();
 
   // Stop the web server
   void stop();

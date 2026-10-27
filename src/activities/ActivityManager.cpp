@@ -293,14 +293,11 @@ void ActivityManager::replaceActivity(std::unique_ptr<Activity>&& newActivity) {
   }
 }
 
-void ActivityManager::goToFileTransfer() {
-  replaceActivity(std::make_unique<CrossPointWebServerActivity>(renderer, mappedInput));
-}
-
-void ActivityManager::goToJoinNetwork() {
-  // Post heap-defrag reboot: enter the web-server activity straight in Join
-  // Network mode (skips mode selection, does not reboot again).
-  replaceActivity(std::make_unique<CrossPointWebServerActivity>(renderer, mappedInput, /*startInJoinNetwork=*/true));
+void ActivityManager::goToFileTransfer(const NetworkMode resumeMode) {
+  // resumeMode != MAX is the post heap-defrag reboot entry: enter the
+  // web-server activity straight in that mode (skips mode selection; the
+  // activity's heapDefragRetried latch prevents a second reboot).
+  replaceActivity(std::make_unique<CrossPointWebServerActivity>(renderer, mappedInput, resumeMode));
 }
 
 void ActivityManager::goToUsbDrive() {
