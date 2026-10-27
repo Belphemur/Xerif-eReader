@@ -21,25 +21,31 @@ enum class Verdict : uint8_t {
   Fallback,  // structurally short, or the one-shot reboot retry is exhausted
 };
 
-// Web-stack core footprint: http server + routes + WebDAV + WebSocket client
-// array. Sized to the X3 abort log (928 B left after the 30 route lambdas from
-// a ~44 KB web stack) and the design doc's "32-48 KB" range; mirrors the
-// HttpDownloader TLS floor (src/util/TlsHeapGuard.h) which this gate extends.
-constexpr uint32_t kWebStackFloor = 40000;
-// Extra headroom the mode-selection gate (before the WiFi working set lands)
-// requires for the WiFi+lwIP+mDNS resident set (~45 KB combined per the
-// CrossPointWebServerActivity::onEnter comment). The mode-selection floor is
-// this plus kWebStackFloor.
-constexpr uint32_t kWifiWorkingSetReserve = 5000;
-constexpr uint32_t kModeSelectionFloor = kWebStackFloor + kWifiWorkingSetReserve;
+// Cumulative web-stack footprint, measured on the X3 abort log (issue #258:
+// 928 B left after the ~44 KB of http server + routes + WebDAV had landed, and
+// the WebSocket-server allocation still aborted). Sized inside the design
+// doc's 32-48 KB range.
+constexpr uint32_t kWebStackFloor = 44000;
+// The WiFi + lwIP + mDNS resident set that lands *after* mode selection (the
+// CrossPointWebServerActivity::onEnter comment: "WiFi (~45KB) plus the web
+// server"). The mode-selection gate must require room for BOTH sets in free
+// heap, so it uses this plus kWebStackFloor.
+constexpr uint32_t kWifiWorkingSetReserve = 45000;
+constexpr uint32_t kModeSelectionFreeFloor = kWebStackFloor + kWifiWorkingSetReserve;
+// Contiguous-block criterion, mirroring tlsheap::kMinLargestBlock (the TLS
+// record-buffer precedent): the largest single begin()-time allocations
+// (per-client WebSocket buffers, upload staging) are below it, but the
+// criterion leaves fragmentation headroom for them. Deliberately NOT the full
+// free-floor — the web stack is many small allocations, not one big block.
+constexpr uint32_t kMaxBlockFloor = 20000;
 
-// freeHeap / maxAllocHeap are ESP.getFreeHeap() / ESP.getMaxAllocHeap(). floor
-// is the site's threshold (kModeSelectionFloor at mode-selection, kWebStackFloor
-// at the begin() tail). retryExhausted is true once a heap-defrag reboot has
-// been attempted for this activity instance, so a structurally-underprovisioned
-// board degrades to Home instead of looping.
-inline Verdict verdict(uint32_t freeHeap, uint32_t maxAllocHeap, uint32_t floor, bool retryExhausted) {
-  if (freeHeap >= floor && maxAllocHeap >= floor) return Verdict::Proceed;
+// freeHeap / maxAllocHeap are ESP.getFreeHeap() / ESP.getMaxAllocHeap().
+// freeFloor is the site's free-heap threshold (kModeSelectionFreeFloor at
+// mode-selection, kWebStackFloor at the begin() tail). retryExhausted is true
+// once a heap-defrag reboot has been spent for this activity instance, so a
+// structurally-underprovisioned board degrades to Home instead of looping.
+inline Verdict verdict(uint32_t freeHeap, uint32_t maxAllocHeap, uint32_t freeFloor, bool retryExhausted) {
+  if (freeHeap >= freeFloor && maxAllocHeap >= kMaxBlockFloor) return Verdict::Proceed;
   if (retryExhausted) return Verdict::Fallback;
   return Verdict::Defrag;
 }

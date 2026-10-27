@@ -1,5 +1,6 @@
 #include "CrossPointWebServerActivity.h"
 
+#include <BoardConfig.h>
 #include <DNSServer.h>
 #include <ESPmDNS.h>
 #include <FontCacheManager.h>
@@ -186,7 +187,7 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
     // One heap gate over both web-stack modes (Join Network + Create Hotspot):
     // measure before the WiFi working set lands, reboot once into a pristine
     // heap if short, fall back to Home if already retried (issue #258).
-    if (!ensureNetworkStackHeap(mode, webgate::kModeSelectionFloor)) return;
+    if (!ensureNetworkStackHeap(mode, webgate::kModeSelectionFreeFloor)) return;
     // STA mode - launch WiFi selection
     LOG_DBG("WEBACT", "Turning on WiFi (STA mode)...");
     wifiStartedByUs = true;
@@ -205,7 +206,7 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
                            });
   } else {
     // AP mode - start access point
-    if (!ensureNetworkStackHeap(mode, webgate::kModeSelectionFloor)) return;
+    if (!ensureNetworkStackHeap(mode, webgate::kModeSelectionFreeFloor)) return;
     state = WebServerActivityState::AP_STARTING;
     requestUpdate();
     wifiStartedByUs =
@@ -241,28 +242,27 @@ void CrossPointWebServerActivity::onWifiSelectionComplete(const bool connected) 
   }
 }
 
-bool CrossPointWebServerActivity::ensureNetworkStackHeap(const NetworkMode mode, const uint32_t floor) {
+bool CrossPointWebServerActivity::ensureNetworkStackHeap(const NetworkMode mode, const uint32_t freeFloor) {
   const uint32_t free = ESP.getFreeHeap();
   const uint32_t maxBlock = ESP.getMaxAllocHeap();
   const char* modeName = (mode == NetworkMode::CREATE_HOTSPOT) ? "hotspot" : "join-network";
   LOG_INF("WEBACT", "Heap before web-server start (mode=%s free=%u maxblock=%u)", modeName, static_cast<unsigned>(free),
           static_cast<unsigned>(maxBlock));
 
-  switch (webgate::verdict(free, maxBlock, floor, heapDefragRetried)) {
+  switch (webgate::verdict(free, maxBlock, freeFloor, heapDefragRetried)) {
     case webgate::Verdict::Proceed:
       return true;
     case webgate::Verdict::Defrag:
+      // Touch boards never take the reboot (it would cycle their externally
+      // powered rails); they proceed on the current heap — begin()'s no-throw
+      // allocations degrade gracefully if the heap still fails.
+#if FREEINK_CAP_TOUCH
+      if (BoardConfig::hasTouch()) return true;
+#endif
       // One reboot, then give up: the latch (seeded true on the boot-resumed
       // instance) makes a still-short heap fall back instead of looping.
-      heapDefragRetried = true;
-      // Does not return on non-touch boards; touch boards proceed on the
-      // current heap (their WiFi-on-entry path stays live instead).
-      if (mode == NetworkMode::CREATE_HOTSPOT) {
-        silentRestartToHotspot();
-      } else {
-        silentRestartToJoinNetwork();
-      }
-      return true;
+      armHeapDefragReboot(mode);
+      return true;  // a guarded return (sleep/power-off supersedes) proceeds, as before
     case webgate::Verdict::Fallback:
       LOG_ERR("WEBACT", "Heap too low for web stack; going home (free=%u maxblock=%u)", static_cast<unsigned>(free),
               static_cast<unsigned>(maxBlock));
@@ -270,6 +270,18 @@ bool CrossPointWebServerActivity::ensureNetworkStackHeap(const NetworkMode mode,
       return false;
   }
   return true;  // unreachable; silences -Wreturn-type on some toolchains
+}
+
+void CrossPointWebServerActivity::armHeapDefragReboot(const NetworkMode mode) {
+  // Does not return on non-touch boards. The one-shot latch is spent here so
+  // the boot-resumed instance (which re-seeds it true from resumeMode) and any
+  // in-session retry fall back to Home instead of boot-looping.
+  heapDefragRetried = true;
+  if (mode == NetworkMode::CREATE_HOTSPOT) {
+    silentRestartToHotspot();
+  } else {
+    silentRestartToJoinNetwork();
+  }
 }
 
 void CrossPointWebServerActivity::startAccessPoint() {
@@ -383,11 +395,21 @@ void CrossPointWebServerActivity::startWebServer() {
     return leaveRequested;
   });
   // No-throw begin(): false means an allocation inside the web stack failed
-  // (the v2.12.1 abort site, issue #258); route to the same failure path as
-  // any other start failure.
+  // (the v2.12.1 abort site, issue #258). The gate just above passed, so the
+  // heap shrank underneath it — spend the one defrag reboot before going Home
+  // (AP resumes automatically; Join Network re-opens WiFi selection).
   if (!webServer->begin() || !webServer->isRunning()) {
-    LOG_ERR("WEBACT", "ERROR: Failed to start web server!");
     webServer.reset();
+#if FREEINK_CAP_TOUCH
+    if (!heapDefragRetried && !BoardConfig::hasTouch()) {
+      armHeapDefragReboot(networkMode);
+    }
+#else
+    if (!heapDefragRetried) {
+      armHeapDefragReboot(networkMode);
+    }
+#endif
+    LOG_ERR("WEBACT", "ERROR: Failed to start web server!");
     // Go back on error
     onGoHome();
     return;

@@ -76,11 +76,15 @@ class CrossPointWebServerActivity final : public Activity {
   void onNetworkModeSelected(NetworkMode mode);
   void onWifiSelectionComplete(bool connected);
   // Heap pre-flight for the web stack. mode drives the silent-restart target;
-  // floor is the site's threshold (mode-selection gate is stricter than the
-  // begin() tail). Returns false after falling back to Home; true means the
-  // caller proceeds (a Defrag verdict arms the reboot and proceeds on touch
-  // boards, where the reboot is a no-op).
-  bool ensureNetworkStackHeap(NetworkMode mode, uint32_t floor);
+  // freeFloor is the site's free-heap threshold (mode-selection gate is
+  // stricter than the begin() tail; the contiguous-block criterion is shared).
+  // Returns false after falling back to Home; true means the caller proceeds
+  // (a Defrag verdict arms the reboot and proceeds on touch boards, where the
+  // reboot is a no-op).
+  bool ensureNetworkStackHeap(NetworkMode mode, uint32_t freeFloor);
+  // Shared Defrag action: spends the one-shot latch and reboots into the
+  // mode's flow. Does not return on non-touch boards.
+  void armHeapDefragReboot(NetworkMode mode);
   void startAccessPoint();
   void startWebServer();
 
