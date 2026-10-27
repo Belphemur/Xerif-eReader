@@ -15,6 +15,10 @@ void silentRestartToSettings();  // settings screen
 // no-op on touch boards (a soft reset would cycle their externally-powered
 // rails); the caller then proceeds without a reboot.
 void silentRestartToJoinNetwork();
+// Reboot into the File Transfer > Create Hotspot flow on a pristine heap
+// (AP/QR file-sharing path), by analogy to Join Network. No-op on touch
+// boards; the caller then proceeds.
+void silentRestartToHotspot();
 
 // Reboots immediately after an activity releases exclusive raw storage. The
 // RTC target ensures setup() lands on Home instead of resuming a reader.

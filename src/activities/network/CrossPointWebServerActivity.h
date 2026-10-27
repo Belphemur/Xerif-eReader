@@ -4,8 +4,8 @@
 #include <memory>
 #include <string>
 
-#include "NetworkModeSelectionActivity.h"
 #include "activities/Activity.h"
+#include "activities/NetworkMode.h"
 #include "network/CrossPointWebServer.h"
 
 // Web server activity states
@@ -33,9 +33,14 @@ class CrossPointWebServerActivity final : public Activity {
   // Network mode
   NetworkMode networkMode = NetworkMode::JOIN_NETWORK;
   bool isApMode = false;
-  // Set when re-entered after the heap-defrag reboot: skip mode selection, go
-  // straight to Join Network, and don't reboot again.
-  bool startInJoinNetwork = false;
+  // Boot-resume target: non-MAX when re-entered after the heap-defrag reboot —
+  // skip mode selection and resume straight into that mode. MAX (default) is
+  // the normal user entry, which shows the mode picker.
+  NetworkMode resumeMode = NetworkMode::MAX;
+  // One-shot heap-defrag latch: set when the reboot is armed and seeded true on
+  // a boot-resumed instance, so a still-short heap on the second attempt falls
+  // back to Home instead of boot-looping.
+  bool heapDefragRetried = false;
 
   // Web server - owned by this activity
   std::unique_ptr<CrossPointWebServer> webServer;
@@ -70,13 +75,21 @@ class CrossPointWebServerActivity final : public Activity {
 
   void onNetworkModeSelected(NetworkMode mode);
   void onWifiSelectionComplete(bool connected);
+  // Heap pre-flight for the web stack. mode drives the silent-restart target;
+  // floor is the site's threshold (mode-selection gate is stricter than the
+  // begin() tail). Returns false after falling back to Home; true means the
+  // caller proceeds (a Defrag verdict arms the reboot and proceeds on touch
+  // boards, where the reboot is a no-op).
+  bool ensureNetworkStackHeap(NetworkMode mode, uint32_t floor);
   void startAccessPoint();
   void startWebServer();
 
  public:
   explicit CrossPointWebServerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                       bool startInJoinNetwork = false)
-      : Activity("CrossPointWebServer", renderer, mappedInput), startInJoinNetwork(startInJoinNetwork) {}
+                                       NetworkMode bootResumeMode = NetworkMode::MAX)
+      : Activity("CrossPointWebServer", renderer, mappedInput),
+        resumeMode(bootResumeMode),
+        heapDefragRetried(bootResumeMode != NetworkMode::MAX) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;

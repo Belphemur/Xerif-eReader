@@ -150,7 +150,8 @@ constexpr uint32_t SILENT_REBOOT_TARGET_HOME = 0;
 constexpr uint32_t SILENT_REBOOT_TARGET_READER = 1;
 constexpr uint32_t SILENT_REBOOT_TARGET_SETTINGS = 2;
 constexpr uint32_t SILENT_REBOOT_TARGET_JOIN_NETWORK = 3;
-constexpr uint32_t SILENT_REBOOT_TARGET_MAX = SILENT_REBOOT_TARGET_JOIN_NETWORK;
+constexpr uint32_t SILENT_REBOOT_TARGET_HOTSPOT = 4;
+constexpr uint32_t SILENT_REBOOT_TARGET_MAX = SILENT_REBOOT_TARGET_HOTSPOT;
 constexpr uint32_t SILENT_REBOOT_LIGHT_ON = 1U << 0;
 
 // How the device is coming back to life, resolved once at boot. Both resume
@@ -230,20 +231,26 @@ void silentRestartToReader() { silentRestartTo(SILENT_REBOOT_TARGET_READER, "rea
 
 void silentRestartToSettings() { silentRestartTo(SILENT_REBOOT_TARGET_SETTINGS, "settings"); }
 
-void silentRestartToJoinNetwork() {
-  if (deepSleepInProgress) return;
+// Network-entry variant of silentRestartTo(): runs on the way *into* a
+// web-server flow, so touch boards skip the reboot entirely (a software reset
+// would cycle their externally powered touch/frontlight rails; they proceed
+// into the flow on the current heap instead). Carries the deepSleep/powerOff
+// guards that the network reboot must honor, same as silentRestartTo.
+static void silentRestartForNetworkMode(const uint32_t target, const char* targetName) {
+  if (deepSleepInProgress || powerOffInProgress) return;  // sleeping/powering off supersedes the heap-defrag reboot
 #if FREEINK_CAP_TOUCH
-  // A software reset would cycle touch/frontlight rails; those boards proceed
-  // into Join Network without the fresh-heap reboot (return, don't stop WiFi —
-  // this runs on the way *in*, unlike the exit-time silentRestart()).
   if (BoardConfig::hasTouch()) return;
 #endif
-  armSilentReboot(SILENT_REBOOT_TARGET_JOIN_NETWORK);
-  LOG_DBG("MAIN", "Silent restart (target=join-network)");
+  armSilentReboot(target);
+  LOG_DBG("MAIN", "Silent restart (target=%s)", targetName);
   GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
   delay(50);
   ESP.restart();
 }
+
+void silentRestartToJoinNetwork() { silentRestartForNetworkMode(SILENT_REBOOT_TARGET_JOIN_NETWORK, "join-network"); }
+
+void silentRestartToHotspot() { silentRestartForNetworkMode(SILENT_REBOOT_TARGET_HOTSPOT, "hotspot"); }
 
 void restartToHomeAfterStorageHandoff() {
   if (deepSleepInProgress || powerOffInProgress) return;  // sleeping/powering off supersedes the storage handoff reboot
@@ -1182,7 +1189,11 @@ void setup() {
   } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_JOIN_NETWORK) {
     // Rebooted on the way *into* File Transfer > Join Network for a fresh heap;
     // resume that flow directly instead of landing on home.
-    activityManager.goToJoinNetwork();
+    activityManager.goToFileTransfer(NetworkMode::JOIN_NETWORK);
+  } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_HOTSPOT) {
+    // Same for the AP/QR path: Create Hotspot resumes automatically (no WiFi
+    // re-selection) straight out of the reboot.
+    activityManager.goToFileTransfer(NetworkMode::CREATE_HOTSPOT);
   } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_SETTINGS) {
     // Back out of the WiFi rows and the user is where they left off, not on Home.
     activityManager.goToSettings(SettingsSection::Network);

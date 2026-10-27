@@ -21,6 +21,7 @@
 #include "util/PluginEvents.h"
 #include "util/QrUtils.h"
 #include "util/TaskWatchdog.h"
+#include "util/WebServerHeapGate.h"
 
 namespace {
 // AP Mode configuration
@@ -88,11 +89,12 @@ void CrossPointWebServerActivity::onEnter() {
   lastHandleClientTime = 0;
   requestUpdate();
 
-  if (startInJoinNetwork) {
+  if (resumeMode != NetworkMode::MAX) {
     // Came back from the heap-defrag reboot on a pristine heap: skip the mode
-    // picker and go straight into Join Network (onNetworkModeSelected won't
-    // reboot again while this flag is set).
-    onNetworkModeSelected(NetworkMode::JOIN_NETWORK);
+    // picker and resume straight into the rebooted mode. heapDefragRetried is
+    // already true (constructor), so a still-short heap falls back to Home
+    // instead of rebooting a second time.
+    onNetworkModeSelected(resumeMode);
     return;
   }
 
@@ -141,15 +143,6 @@ void CrossPointWebServerActivity::onExit() {
 }
 
 void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) {
-  // Join Network brings up WiFi + the web server + TLS relays, whose working set
-  // needs a large *contiguous* block. After reading/browsing the heap is
-  // fragmented enough that tight boards (X3) abort mid-activation. Reboot once
-  // into a pristine heap and land straight back here; the flag prevents a second
-  // reboot on that return. No-op on touch boards, which fall through.
-  if (mode == NetworkMode::JOIN_NETWORK && !startInJoinNetwork) {
-    silentRestartToJoinNetwork();  // does not return on non-touch boards
-  }
-
   const char* modeName = "Join Network";
   if (mode == NetworkMode::CONNECT_CALIBRE) {
     modeName = "Connect to Calibre";
@@ -190,6 +183,10 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
   }
 
   if (mode == NetworkMode::JOIN_NETWORK) {
+    // One heap gate over both web-stack modes (Join Network + Create Hotspot):
+    // measure before the WiFi working set lands, reboot once into a pristine
+    // heap if short, fall back to Home if already retried (issue #258).
+    if (!ensureNetworkStackHeap(mode, webgate::kModeSelectionFloor)) return;
     // STA mode - launch WiFi selection
     LOG_DBG("WEBACT", "Turning on WiFi (STA mode)...");
     wifiStartedByUs = true;
@@ -208,6 +205,7 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
                            });
   } else {
     // AP mode - start access point
+    if (!ensureNetworkStackHeap(mode, webgate::kModeSelectionFloor)) return;
     state = WebServerActivityState::AP_STARTING;
     requestUpdate();
     wifiStartedByUs =
@@ -241,6 +239,37 @@ void CrossPointWebServerActivity::onWifiSelectionComplete(const bool connected) 
                              }
                            });
   }
+}
+
+bool CrossPointWebServerActivity::ensureNetworkStackHeap(const NetworkMode mode, const uint32_t floor) {
+  const uint32_t free = ESP.getFreeHeap();
+  const uint32_t maxBlock = ESP.getMaxAllocHeap();
+  const char* modeName = (mode == NetworkMode::CREATE_HOTSPOT) ? "hotspot" : "join-network";
+  LOG_INF("WEBACT", "Heap before web-server start (mode=%s free=%u maxblock=%u)", modeName, static_cast<unsigned>(free),
+          static_cast<unsigned>(maxBlock));
+
+  switch (webgate::verdict(free, maxBlock, floor, heapDefragRetried)) {
+    case webgate::Verdict::Proceed:
+      return true;
+    case webgate::Verdict::Defrag:
+      // One reboot, then give up: the latch (seeded true on the boot-resumed
+      // instance) makes a still-short heap fall back instead of looping.
+      heapDefragRetried = true;
+      // Does not return on non-touch boards; touch boards proceed on the
+      // current heap (their WiFi-on-entry path stays live instead).
+      if (mode == NetworkMode::CREATE_HOTSPOT) {
+        silentRestartToHotspot();
+      } else {
+        silentRestartToJoinNetwork();
+      }
+      return true;
+    case webgate::Verdict::Fallback:
+      LOG_ERR("WEBACT", "Heap too low for web stack; going home (free=%u maxblock=%u)", static_cast<unsigned>(free),
+              static_cast<unsigned>(maxBlock));
+      onGoHome();
+      return false;
+  }
+  return true;  // unreachable; silences -Wreturn-type on some toolchains
 }
 
 void CrossPointWebServerActivity::startAccessPoint() {
@@ -285,7 +314,16 @@ void CrossPointWebServerActivity::startAccessPoint() {
   // Start DNS server for captive portal behavior
   // This redirects all DNS queries to our IP, making any domain typed resolve to us
   stopDnsServer();
-  dnsServer = new DNSServer();
+  // No-throw allocation: the AP/QR path reaches here straight out of a reading
+  // session on a fragmented heap (issue #258); operator new must not throw
+  // under -fno-exceptions.
+  dnsServer = new (std::nothrow) DNSServer();
+  if (!dnsServer) {
+    LOG_ERR("WEBACT", "Out of memory for DNS server (free=%u maxblock=%u)", static_cast<unsigned>(ESP.getFreeHeap()),
+            static_cast<unsigned>(ESP.getMaxAllocHeap()));
+    onGoHome();
+    return;
+  }
   dnsServer->setErrorReplyCode(DNSReplyCode::NoError);
   dnsServer->start(DNS_PORT, "*", apIP);
   LOG_DBG("WEBACT", "DNS server started for captive portal");
@@ -305,9 +343,17 @@ void CrossPointWebServerActivity::startWebServer() {
     LOG_INF("WEBACT", "Heap before SD font cache release (free=%u maxblock=%u)",
             static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
     fcm->releaseSdFontCaches();
-    LOG_INF("WEBACT", "Heap before web server alloc (free=%u maxblock=%u)", static_cast<unsigned>(ESP.getFreeHeap()),
-            static_cast<unsigned>(ESP.getMaxAllocHeap()));
   }
+
+  // The shared begin() tail both modes reach. The mode-selection gate already
+  // ran with the stricter WiFi+web floor; this one re-checks with the web-stack
+  // floor in case the heap collapsed while WiFi was connecting / the AP was
+  // coming up. Runs after the SD-font release above so the verdict sees the
+  // heap the allocations will actually draw from.
+  if (!ensureNetworkStackHeap(networkMode, webgate::kWebStackFloor)) return;
+
+  LOG_INF("WEBACT", "Heap before web server alloc (free=%u maxblock=%u)", static_cast<unsigned>(ESP.getFreeHeap()),
+          static_cast<unsigned>(ESP.getMaxAllocHeap()));
 
   // Create the web server instance. No-throw allocation: this is the exact
   // site that abort()ed the X3 in v2.11.0 (decoded crash_report: fresh
@@ -336,29 +382,31 @@ void CrossPointWebServerActivity::startWebServer() {
                      mappedInput.wasPressed(MappedInputManager::Button::Back) || mappedInput.wasHomeGesture();
     return leaveRequested;
   });
-  webServer->begin();
-
-  if (webServer->isRunning()) {
-    state = WebServerActivityState::SERVER_RUNNING;
-    LOG_DBG("WEBACT", "Web server started successfully");
-    lastWifiBars = isApMode ? 0 : barsForRssi(WiFi.RSSI(), 0);
-
-    // The device is online: deliver queued plugin events through their
-    // manifest handlers. STA only (AP mode has no internet route); bounded by
-    // the drain's per-call event budget so serving is not noticeably delayed.
-    if (!isApMode) {
-      pluginevents::drain(&renderer);
-    }
-
-    // Force an immediate render since we're transitioning from a subactivity
-    // that had its own rendering task. We need to make sure our display is shown.
-    requestUpdate();
-  } else {
+  // No-throw begin(): false means an allocation inside the web stack failed
+  // (the v2.12.1 abort site, issue #258); route to the same failure path as
+  // any other start failure.
+  if (!webServer->begin() || !webServer->isRunning()) {
     LOG_ERR("WEBACT", "ERROR: Failed to start web server!");
     webServer.reset();
     // Go back on error
     onGoHome();
+    return;
   }
+
+  state = WebServerActivityState::SERVER_RUNNING;
+  LOG_DBG("WEBACT", "Web server started successfully");
+  lastWifiBars = isApMode ? 0 : barsForRssi(WiFi.RSSI(), 0);
+
+  // The device is online: deliver queued plugin events through their
+  // manifest handlers. STA only (AP mode has no internet route); bounded by
+  // the drain's per-call event budget so serving is not noticeably delayed.
+  if (!isApMode) {
+    pluginevents::drain(&renderer);
+  }
+
+  // Force an immediate render since we're transitioning from a subactivity
+  // that had its own rendering task. We need to make sure our display is shown.
+  requestUpdate();
 }
 
 void CrossPointWebServerActivity::loop() {

@@ -14,6 +14,7 @@
 #include "FrontlightControl.h"
 #include "GfxRenderer.h"
 #include "MappedInputManager.h"
+#include "activities/NetworkMode.h"
 #include "settings/SettingsSection.h"
 #include "util/ScreenshotInfo.h"
 
@@ -94,8 +95,9 @@ class ActivityManager {
   void replaceActivity(std::unique_ptr<Activity>&& newActivity);
 
   // goTo... functions are convenient wrapper for replaceActivity()
-  void goToFileTransfer();
-  void goToJoinNetwork();  // File Transfer straight into Join Network (post heap-defrag reboot)
+  // resumeMode: MAX = normal mode picker entry; a real mode = boot-resume into
+  // that mode directly (post heap-defrag reboot, skips the picker).
+  void goToFileTransfer(NetworkMode resumeMode = NetworkMode::MAX);
   void goToUsbDrive();
   // openSection jumps straight into one group (End = the section list).
   void goToSettings(SettingsSection openSection = SettingsSection::End);
