@@ -109,7 +109,7 @@ void HalGPIO::begin() {
   _deviceType = DeviceType::X4;
 #endif
   inputMgr.begin();
-#if defined(BOARD_HAS_PSRAM) || defined(XERIF_ASYNC_INPUT)
+#if defined(XERIF_ASYNC_INPUT)
   // Async input sampling (docs/design/2026-10-26-x3-x4-async-input.md,
   // extending the 2026-09-20 design): a 10 ms poll task samples buttons
   // through e-ink flush windows and multi-second build/render windows so
