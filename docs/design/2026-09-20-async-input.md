@@ -114,12 +114,14 @@ behavior change for builds without the feature.
   waits; now they also pick up task-queued edges).
 
 > **Addendum 2026-10-27 (every-board enablement, issue #259).** The
-> `beginAsync()` gate is now `#if defined(BOARD_HAS_PSRAM) ||
-> defined(XERIF_ASYNC_INPUT)`, with `XERIF_ASYNC_INPUT` defined for every env
-> in `[base]` of platformio.ini — the C3 combined builds (Xteink X3/X4) run
-> this same path, closing the press-loss-during-refresh gap that motivated
-> the original PSRAM-only scoping above. That scoping is superseded by owner
-> decision; the runtime cost is unchanged (~6.5 KB DRAM) and degradation on
+> `beginAsync()` gate is now `#if defined(XERIF_ASYNC_INPUT)` — the flag
+> alone, defined for every env in `[base]` of platformio.ini, with no
+> `BOARD_HAS_PSRAM` clause (superseded by owner decision twice: first the
+> flag replaced the device-define gate, then the PSRAM clause was dropped
+> since the flag already covers every env). The C3 combined builds (Xteink
+> X3/X4) run this same path, closing the press-loss-during-refresh gap that
+> motivated the original PSRAM-only scoping above, which is likewise
+> superseded. The runtime cost is unchanged (~6.5 KB DRAM) and degradation on
 > `xTaskCreate()` failure stays safe by construction (`asyncActive()` false
 > keeps every consumer's `!asyncActive()` branch on the sync path). Board
 > opt-out is the escape hatch only on later evidence: `-UXERIF_ASYNC_INPUT`
