@@ -84,17 +84,19 @@ sensitivity (`a87d4018`, `4829fab8`).
 
 > **Amendment 2026-10-27 (owner decision, supersedes the gate form above).**
 > Enablement is the build flag `XERIF_ASYNC_INPUT`, defined in `[base]` of
-> platformio.ini so EVERY env carries it; the gate is
+> platformio.ini so every firmware environment carries it; the gate is
 > `#if defined(XERIF_ASYNC_INPUT)`
 > (lib/hal/HalGPIO.cpp) — the flag alone, with no `BOARD_HAS_PSRAM` clause
-> (second owner decision: the flag already covers every env, so the PSRAM
-> clause added nothing). The device-define form sketched above
+> (second owner decision: the flag already covers every firmware env, so the
+> PSRAM clause added nothing). The device-define form sketched above
 > (`FREEINK_DEVICE_X3/X4`) is superseded — it scoped the change to Xteink
 > builds only, while the owner wants async sampling everywhere with the
 > per-env `-UXERIF_ASYNC_INPUT` as the opt-out (used only on later evidence,
 > never speculatively). The env-flag matrix (§4 Task 1) remains the
 > verification that no env defines the device flags unintentionally; the
-> simulator is unaffected (lib_ignore=hal, platformio.ini:1011).
+> host-only simulator defines its own `FREEINK_DEVICE_X4=1` without
+> inheriting `[base]` and is excluded from this firmware matrix — it is
+> unaffected because it ignores `hal` (platformio.ini:1018).
 
 ## 3. Interactions that must be re-audited (NOT optional)
 
@@ -146,11 +148,12 @@ no mechanism without requirement).
 
 ## 4. Implementation order
 
-1. **Env-flag matrix**: grep `platformio.ini` for every env defining
+1. **Env-flag matrix**: grep `platformio.ini` for every firmware env defining
    `FREEINK_DEVICE_X3`/`FREEINK_DEVICE_X4`; confirm the set is exactly the
    C3 combined builds (default, cppcheck, gh_release, gh_release_rc, slim)
    and that sticky/papermono/picco/eego_a4/metalio/x4c/x4pro do not define
-   them. Record the matrix in the PR body.
+   them. Exclude the simulator's host-only `FREEINK_DEVICE_X4` from this
+   matrix. Record the matrix in the PR body.
 2. **Gate change**: `lib/hal/HalGPIO.cpp:108` — condition + comment rewrite
    (the comment must state WHY the C3 boards now take the cost: issue #259,
    flush-window press loss, ~6.5 KB budget, safe degradation).

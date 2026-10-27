@@ -115,10 +115,10 @@ behavior change for builds without the feature.
 
 > **Addendum 2026-10-27 (every-board enablement, issue #259).** The
 > `beginAsync()` gate is now `#if defined(XERIF_ASYNC_INPUT)` — the flag
-> alone, defined for every env in `[base]` of platformio.ini, with no
-> `BOARD_HAS_PSRAM` clause (superseded by owner decision twice: first the
+> alone, defined for every firmware env in `[base]` of platformio.ini, with
+> no `BOARD_HAS_PSRAM` clause (superseded by owner decision twice: first the
 > flag replaced the device-define gate, then the PSRAM clause was dropped
-> since the flag already covers every env). The C3 combined builds (Xteink
+> since the flag already covers every firmware env). The C3 combined builds (Xteink
 > X3/X4) run this same path, closing the press-loss-during-refresh gap that
 > motivated the original PSRAM-only scoping above, which is likewise
 > superseded. The runtime cost is unchanged (~6.5 KB DRAM) and degradation on
