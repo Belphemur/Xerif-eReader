@@ -561,6 +561,11 @@ class EpubReaderActivity final : public ReaderActivity {
   void render(RenderLock&& lock) override;
 
   bool pageTurn(bool isForward) override;
+  // Batched jump with the chapter-boundary clamp (queued-input aggregation
+  // §3.2): a step that crossed into another chapter (or reached end of book)
+  // needs a render/load before the next step applies state-safely, so the
+  // jump stops there and lands on the boundary page in this frame's render.
+  bool pageTurnBy(int steps) override;
   bool skipPages(int amount) override;
   bool remoteShortcut(bool readerMenu) override;
   bool isAtEndOfBook() const override;
