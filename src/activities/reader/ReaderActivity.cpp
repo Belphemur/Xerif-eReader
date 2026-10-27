@@ -271,7 +271,7 @@ void ReaderActivity::loop() {
   const bool skip = !turn.fromTilt && SETTINGS.longPressButtonBehavior == SETTINGS.CHAPTER_SKIP &&
                     heldMs >= ReaderUtils::SKIP_HOLD_MS;
 
-  const bool changed = skip ? skipPages(turn.next ? -10 : 10) : pageTurnBy(turn.steps);
+  const bool changed = skip ? skipPages(turnnet::chapterSkipAmount(turn.next, 10)) : pageTurnBy(turn.steps);
   // A skip is navigation, not reading: it never counts toward session dwell.
   notePageTurn(!skip && !turn.prev, changed);
   if (changed && (touch.prev || touch.next)) haptic_feedback::touchAction(skip);

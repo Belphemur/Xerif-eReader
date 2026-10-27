@@ -67,8 +67,16 @@ behavior).
   via a new `pageTurnBy(int steps)` that loops the existing single-step logic
   from `pageTurn(bool)` (`EpubReaderActivity.cpp:2515`: chapter crossing,
   end-of-book handling, prefetch promotion) without rendering between steps.
-  `pendingManualTurn` becomes magnitude-carrying (`int8_t steps`) through the
-  render gate. Reading stats count every page crossed (per-step), not one per
+  `pendingManualTurn` becomes magnitude-carrying through the render gate with
+  RUNNING-SUM semantics: every guarded frame's net parks into it via
+  `turnnet::accumulate` (a saturating int8_t running sum — repeated guarded
+  frames cannot wrap) and the first frame that carries a pending magnitude
+  while the gate is open joins that frame's fresh net with the parked sum and
+  applies the full magnitude ONCE (`turnnet::pendingManualTurnGate` decides
+  Park vs Apply, same expression at both sites). Presses that arrive behind
+  the render / `kMinManualTurnGapMs` guard window are therefore never
+  dropped; the joined sign follows the net direction (forward presses
+  accumulate +, Prev −). Reading stats count every page crossed (per-step), not one per
   jump, to preserve `totalPagesTurned` semantics.
   Tilt, power-button, and home-key triggers stay single-shot (they are state
   flags, not queued edges).
@@ -79,12 +87,14 @@ behavior).
 ### 3.3 Hold / auto-repeat interplay
 
 A held button queues exactly ONE press edge; auto-repeat is generated
-app-side from held time (`MappedInputManager.h:175`), not by extra queue
+app-side from held time (`getRepeatHeldTime()`, `MappedInputManager.cpp:802`;
+declaration/comment at `MappedInputManager.h:186-189`), not by extra queue
 edges. Drain counting is therefore hold-safe by construction: held = count 1,
 and repeat steps stay one-per-repeat-period (continuous scroll feel is
 preserved, never aggregated). Long-press mode
-(`ReaderUtils.h:67,75`: press-mode vs release-mode triggers) counts the same
-edge class the activity actually checks.
+(`ReaderUtils.h:97-101`: press-mode vs release-mode triggers in
+`detectPageTurnSteps`) counts the same edge class the activity actually
+checks.
 
 ### 3.4 Direction netting
 

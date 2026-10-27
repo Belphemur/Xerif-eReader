@@ -44,4 +44,25 @@ inline int8_t accumulate(int8_t pending, int steps) {
   return static_cast<int8_t>(joined > 127 ? 127 : (joined < -127 ? -127 : joined));
 }
 
+// Render-gate decision for the manual turn (queued-input aggregation §3.2,
+// audit #4): a frame that carries a pending magnitude while the guard window
+// is OPEN applies the jump once, joined with that frame's fresh net; every
+// other frame (nothing pending, or the guard is busy — a render in flight or
+// inside the 200 ms kMinManualTurnGapMs gap) parks the frame's net INTO the
+// pending running sum via accumulate().
+enum class GateAction { Park, Apply };
+inline GateAction pendingManualTurnGate(int8_t pending, bool turnGuardActive) {
+  return (pending != 0 && !turnGuardActive) ? GateAction::Apply : GateAction::Park;
+}
+
+// Chapter-skip long-press amount (CHAPTER_SKIP long-press behavior): Next
+// skips FORWARD, Prev backward — skipPages() ADDS the result to the current
+// position (XtcReaderActivity::skipPages), so the sign is the whole piece of
+// arithmetic that encodes direction. Pure helper so the dispatch ternary
+// cannot flip silently (regression: ReaderActivity's aggregation dispatch
+// turned a Next long-press into -10 pages).
+inline int chapterSkipAmount(bool nextTriggered, int magnitude) {
+  return nextTriggered ? magnitude : -magnitude;
+}
+
 }  // namespace turnnet

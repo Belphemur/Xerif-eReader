@@ -130,4 +130,71 @@ TEST(PageTurnBatchTest, NetZeroCallsNoSteps) {
   EXPECT_EQ(book.page, 0);
 }
 
+// ── Chapter-skip long-press direction (ReaderActivity/XTC regression pin) ──
+// skipPages() ADDS the amount to the position, so a Next long-press must pass
+// +10 (forward) and a Prev long-press -10. The aggregation dispatch initially
+// flipped the sign (Next landed -10); this pins the production helper.
+TEST(ChapterSkipTest, NextSkipsForwardPrevSkipsBackward) {
+  EXPECT_EQ(turnnet::chapterSkipAmount(true, 10), 10);
+  EXPECT_EQ(turnnet::chapterSkipAmount(false, 10), -10);
+  EXPECT_EQ(turnnet::chapterSkipAmount(true, 1), 1);
+  EXPECT_EQ(turnnet::chapterSkipAmount(false, 1), -1);
+  EXPECT_EQ(turnnet::chapterSkipAmount(false, 0), 0);
+}
+
+// ── Render-gate parking (audit #4): presses behind the guard are not lost ──
+// Frames whose presses arrive while the turn guard is busy (a render in
+// flight or inside the kMinManualTurnGapMs window) park INTO the pending
+// running sum; the first frame with a pending magnitude and an open gate
+// applies the joined total exactly once.
+TEST(AggregationGateTest, PressesBehindAGuardWindowAllSurviveIntoTheAppliedJump) {
+  int8_t pending = 0;
+  int applied = 0;  // magnitude handed to pageTurnBy
+  bool appliedThisFrame = false;
+  const auto dispatch = [&](int freshNet, bool guardActive) {
+    appliedThisFrame = false;
+    if (turnnet::pendingManualTurnGate(pending, guardActive) == turnnet::GateAction::Apply) {
+      applied = turnnet::accumulate(pending, freshNet);
+      pending = 0;
+      appliedThisFrame = true;
+      return;
+    }
+    // Park site: the frame's net joins the pending sum.
+    pending = turnnet::accumulate(pending, freshNet);
+  };
+
+  // Three Next presses arrive in successive frames while the guard window is
+  // busy: each parks into the pending sum, none fires a turn.
+  dispatch(1, /*guardActive=*/true);
+  EXPECT_EQ(pending, 1);
+  EXPECT_FALSE(appliedThisFrame);
+  dispatch(1, /*guardActive=*/true);
+  EXPECT_EQ(pending, 2);
+  EXPECT_FALSE(appliedThisFrame);
+  // The guard opens: ONE applied jump of the joined magnitude — every press
+  // survived.
+  dispatch(1, /*guardActive=*/false);
+  EXPECT_TRUE(appliedThisFrame);
+  EXPECT_EQ(applied, 3);
+
+  // Mixed directions behind a repeat burst: 2 next + 1 prev parked while the
+  // gate is busy net to +1 applied once.
+  dispatch(2, true);
+  dispatch(-1, true);
+  dispatch(0, false);
+  EXPECT_TRUE(appliedThisFrame);
+  EXPECT_EQ(applied, 1);
+}
+
+// A sustained burst across never-opening guard windows saturates at the
+// int8_t clamp and never wraps backwards.
+TEST(AggregationGateTest, SustainedBurstBehindAllBusyGuardSaturatesWithoutWrapping) {
+  int8_t pending = 0;
+  for (int i = 0; i < 300; ++i) {
+    EXPECT_NE(turnnet::pendingManualTurnGate(pending, /*guardActive=*/true), turnnet::GateAction::Apply);
+    pending = turnnet::accumulate(pending, 1);
+  }
+  EXPECT_EQ(pending, 127);
+}
+
 }  // namespace

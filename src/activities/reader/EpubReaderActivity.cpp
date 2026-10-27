@@ -1912,7 +1912,7 @@ void EpubReaderActivity::loop() {
 
   constexpr unsigned long kMinManualTurnGapMs = 200;
   const bool turnGuardActive = RenderLock::peek() || (millis() - lastPageTurnTime) < kMinManualTurnGapMs;
-  if (pendingManualTurn != 0 && !turnGuardActive) {
+  if (turnnet::pendingManualTurnGate(pendingManualTurn, turnGuardActive) == turnnet::GateAction::Apply) {
     if (!section
 #if defined(CROSSPOINT_TTF_READER)
         && !ttf_
@@ -1954,7 +1954,7 @@ void EpubReaderActivity::loop() {
   const unsigned long heldMs = (touch.prev || touch.next) ? touch.heldMs : mappedInput.getHeldTime();
   const bool longPress = !turn.fromTilt && heldMs >= ReaderUtils::SKIP_HOLD_MS;
   if (longPress && SETTINGS.longPressButtonBehavior == SETTINGS.CHAPTER_SKIP) {
-    const bool succeeded = skipPages(turn.next ? 1 : -1);
+    const bool succeeded = skipPages(turnnet::chapterSkipAmount(turn.next, 1));
     notePageTurn(false, succeeded);
     if (succeeded && (touch.prev || touch.next)) haptic_feedback::touchAction(true);
     requestUpdate();
@@ -1980,7 +1980,7 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  if (turnGuardActive) {
+  if (turnnet::pendingManualTurnGate(pendingManualTurn, turnGuardActive) == turnnet::GateAction::Park) {
     // Park the frame's net magnitude (§3.2): a guarded frame's presses join
     // any already-parked jump instead of replaying one turn per refresh.
     pendingManualTurn = turnnet::accumulate(pendingManualTurn, turn.steps);
