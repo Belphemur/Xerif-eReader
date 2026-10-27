@@ -61,8 +61,6 @@ inline GateAction pendingManualTurnGate(int8_t pending, bool turnGuardActive) {
 // arithmetic that encodes direction. Pure helper so the dispatch ternary
 // cannot flip silently (regression: ReaderActivity's aggregation dispatch
 // turned a Next long-press into -10 pages).
-inline int chapterSkipAmount(bool nextTriggered, int magnitude) {
-  return nextTriggered ? magnitude : -magnitude;
-}
+inline int chapterSkipAmount(bool nextTriggered, int magnitude) { return nextTriggered ? magnitude : -magnitude; }
 
 }  // namespace turnnet
