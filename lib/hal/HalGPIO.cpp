@@ -143,6 +143,24 @@ void HalGPIO::update() {
   lastUsbConnected = connected;
 }
 
+// Drain and DISCARD the async poll task's queued button edges (press AND
+// release) without delivering them. The silent-boot boundary uses this in
+// place of the sync absorb pair: in async mode update() is a no-op off the
+// poll task, so edges captured during boot/restart would otherwise sit in
+// the queue and dispatch against the freshly painted activity. Level state
+// (isPressed) is untouched — a button still held at the boundary keeps its
+// held state on the poll task and its later release edge is queued
+// normally. No-op on sync builds (popPress returns false with no queue).
+void HalGPIO::discardQueuedButtonEdges() {
+#if CROSSPOINT_EMULATED == 0
+  InputManager::AsyncInputEvent ev;
+  while (inputMgr.popPress(ev)) {
+  }
+#else
+  (void)0;
+#endif
+}
+
 // Consume the poll task's touch/home-key one-shots into the per-tick
 // snapshot (soak-fix7 pop pattern). No-op on sync builds.
 void HalGPIO::consumeTouchFrame() {

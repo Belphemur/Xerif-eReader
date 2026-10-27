@@ -101,6 +101,13 @@ class HalGPIO {
   // live while the GT911 is parked). Non-const because the rawInputActive() half
   // reads the ADC.
   bool anyPhysicalButtonHeld();
+  // Drain and DISCARD the async poll task's queued button edges (press AND
+  // release) without delivering them — the silent-boot boundary uses this in
+  // place of the sync absorb pair, which is a no-op off the poll task. Level
+  // state (isPressed) is untouched: a button still held at the boundary keeps
+  // its held state on the poll task and its later release edge is queued
+  // normally. No-op on sync builds (no queue exists).
+  void discardQueuedButtonEdges();
   // GT911 Sleep-mode control (docs/design/2026-09-24-gt911-idle-sleep.md §3
   // Tier B). setTouchSleep(true) parks the controller (no scanning, ~70–120 µA
   // vs 8 mA active); wakeTouch() wakes it and returns only once the controller
