@@ -87,11 +87,13 @@ class HalGPIO {
   unsigned long getHeldTime() const;
   unsigned long getPowerButtonHeldTime() const;
   // True when any button contact is closed right now, read straight from the
-  // hardware (ADC ladder off its idle rail, or the power GPIO asserted), without
-  // going through the debounced state. Cheap enough to call every few ms.
-  // Covers the ADC ladder and the power pin ONLY — on DigitalButtons boards
-  // (X4 Pro and friends) readButtonAdc() reports raw = -1, so the nav keys are
-  // invisible here. Use anyPhysicalButtonHeld() for "is some key down at all".
+  // hardware (ADC ladder off its idle rail, the power GPIO asserted, or the T5S3
+  // expander key, one I2C read), without going through the debounced state.
+  // Cheap enough to call every few ms.
+  // On DigitalButtons boards (X4 Pro and friends) readButtonAdc() reports raw = -1,
+  // so the nav keys are invisible to the ADC half; the T5S3 expander key and the
+  // power pin are still covered. Use anyPhysicalButtonHeld() for "is some key down
+  // at all".
   bool rawInputActive();
   // rawInputActive() OR the latched state of every physical button index, so a
   // held nav key counts on DigitalButtons boards too (design

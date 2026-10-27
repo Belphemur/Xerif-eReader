@@ -106,40 +106,40 @@ EpdFont atkinson_hn14RegularFont(&atkinson_hn_14_regular);
 EpdFont atkinson_hn14BoldFont(&atkinson_hn_14_bold);
 EpdFont atkinson_hn14ItalicFont(&atkinson_hn_14_italic);
 EpdFont atkinson_hn14BoldItalicFont(&atkinson_hn_14_bolditalic);
-EpdFontFamily atkinson_hn14FontFamily(&atkinson_hn14RegularFont, &atkinson_hn14BoldFont, &atkinson_hn14ItalicFont,
+EpdFontFamily atkinson_hn14FontFamily(14, &atkinson_hn14RegularFont, &atkinson_hn14BoldFont, &atkinson_hn14ItalicFont,
                                       &atkinson_hn14BoldItalicFont);
 #ifndef OMIT_FONTS
 EpdFont atkinson_hn12RegularFont(&atkinson_hn_12_regular);
 EpdFont atkinson_hn12BoldFont(&atkinson_hn_12_bold);
 EpdFont atkinson_hn12ItalicFont(&atkinson_hn_12_italic);
 EpdFont atkinson_hn12BoldItalicFont(&atkinson_hn_12_bolditalic);
-EpdFontFamily atkinson_hn12FontFamily(&atkinson_hn12RegularFont, &atkinson_hn12BoldFont, &atkinson_hn12ItalicFont,
+EpdFontFamily atkinson_hn12FontFamily(12, &atkinson_hn12RegularFont, &atkinson_hn12BoldFont, &atkinson_hn12ItalicFont,
                                       &atkinson_hn12BoldItalicFont);
 EpdFont atkinson_hn16RegularFont(&atkinson_hn_16_regular);
 EpdFont atkinson_hn16BoldFont(&atkinson_hn_16_bold);
 EpdFont atkinson_hn16ItalicFont(&atkinson_hn_16_italic);
 EpdFont atkinson_hn16BoldItalicFont(&atkinson_hn_16_bolditalic);
-EpdFontFamily atkinson_hn16FontFamily(&atkinson_hn16RegularFont, &atkinson_hn16BoldFont, &atkinson_hn16ItalicFont,
+EpdFontFamily atkinson_hn16FontFamily(16, &atkinson_hn16RegularFont, &atkinson_hn16BoldFont, &atkinson_hn16ItalicFont,
                                       &atkinson_hn16BoldItalicFont);
 EpdFont atkinson_hn18RegularFont(&atkinson_hn_18_regular);
 EpdFont atkinson_hn18BoldFont(&atkinson_hn_18_bold);
 EpdFont atkinson_hn18ItalicFont(&atkinson_hn_18_italic);
 EpdFont atkinson_hn18BoldItalicFont(&atkinson_hn_18_bolditalic);
-EpdFontFamily atkinson_hn18FontFamily(&atkinson_hn18RegularFont, &atkinson_hn18BoldFont, &atkinson_hn18ItalicFont,
+EpdFontFamily atkinson_hn18FontFamily(18, &atkinson_hn18RegularFont, &atkinson_hn18BoldFont, &atkinson_hn18ItalicFont,
                                       &atkinson_hn18BoldItalicFont);
 
 #endif  // OMIT_FONTS
 
 EpdFont smallFont(&atkinson_hn_8_regular);
-EpdFontFamily smallFontFamily(&smallFont);
+EpdFontFamily smallFontFamily(8, &smallFont);
 
 EpdFont ui10MediumFont(&ubuntu_10_medium);
 EpdFont ui10BoldFont(&ubuntu_10_bold);
-EpdFontFamily ui10FontFamily(&ui10MediumFont, &ui10BoldFont);
+EpdFontFamily ui10FontFamily(10, &ui10MediumFont, &ui10BoldFont);
 
 EpdFont ui12MediumFont(&ubuntu_12_medium);
 EpdFont ui12BoldFont(&ubuntu_12_bold);
-EpdFontFamily ui12FontFamily(&ui12MediumFont, &ui12BoldFont);
+EpdFontFamily ui12FontFamily(12, &ui12MediumFont, &ui12BoldFont);
 
 // Definitions for SilentRestart.h. RTC_NOINIT survives ESP.restart() but not power loss.
 RTC_NOINIT_ATTR uint32_t silentRebootMagic;

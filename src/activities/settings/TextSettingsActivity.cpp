@@ -15,6 +15,7 @@
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "ReaderFontSizes.h"
+#include "ReaderLineSpacing.h"
 #include "SdCardFontSystem.h"
 #include "TextSettingsPreview.h"
 #include "TtfUiFallback.h"
@@ -59,7 +60,6 @@ int findCurrentFontIndex(const SdCardFontRegistry* registry, const char* sdFontF
 }
 #endif  // !CROSSPOINT_TTF_READER
 
-constexpr StrId LINE_SPACING_IDS[] = {StrId::STR_TIGHT, StrId::STR_NORMAL, StrId::STR_WIDE, StrId::STR_EXTRA_WIDE};
 constexpr StrId WORD_SPACING_IDS[] = {StrId::STR_SPACING_50_PERCENT,  StrId::STR_SPACING_75_PERCENT,
                                       StrId::STR_SPACING_100_PERCENT, StrId::STR_SPACING_125_PERCENT,
                                       StrId::STR_SPACING_150_PERCENT, StrId::STR_SPACING_175_PERCENT,
@@ -645,7 +645,7 @@ std::string TextSettingsActivity::layoutValueText(int row) const {
   switch (static_cast<LayoutRow>(row)) {
     case LayoutRow::LineSpacing: {
       const uint8_t v = SETTINGS.lineSpacing;
-      return v < std::size(LINE_SPACING_IDS) ? I18N.get(LINE_SPACING_IDS[v]) : I18N.get(StrId::STR_NORMAL);
+      return I18N.get(LINE_SPACING_IDS[v < std::size(LINE_SPACING_IDS) ? v : CrossPointSettings::LINE_SPACING_120]);
     }
     case LayoutRow::ParaIndentation: {
       const int spaces = std::clamp<int>(SETTINGS.paragraphIndentSpaces, 0, 5);

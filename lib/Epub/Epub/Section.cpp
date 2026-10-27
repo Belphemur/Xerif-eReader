@@ -118,7 +118,11 @@ namespace {
 //      carries the same change upstream numbered v67 (stretchable literal
 //      spaces), so the merged layout is max(68, 68) + 1 = v69 per the
 //      version-collision rule and both parents' caches are invalidated.
-constexpr uint8_t SECTION_FILE_VERSION = 69;
+// v70: Line spacing multiplies font size instead of advanceY (upstream #4174, its
+//      v69). The fork's v69 carries the same change upstream numbered v68 (drop
+//      caps), so the merged layout is max(69, 69) + 1 = v70 per the
+//      version-collision rule and both parents' caches are invalidated.
+constexpr uint8_t SECTION_FILE_VERSION = 70;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects

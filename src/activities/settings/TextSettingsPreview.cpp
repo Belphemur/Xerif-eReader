@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "CrossPointSettings.h"
+#include "ReaderLineSpacing.h"
 #include "fontIds.h"
 #if defined(CROSSPOINT_TTF_READER)
 #include <BookFontLoader.h>
@@ -143,20 +144,11 @@ bool relayoutTtf(PreviewLayout& layout, const int textWidth, const int previewHe
     params.marginTop = 2;
     params.marginBottom = 0;
     params.baseSizePx = static_cast<uint16_t>(lroundf(static_cast<float>(SETTINGS.ttfFontPointSize) * 150.0f / 72.0f));
-    params.lineSpacingPct = 100;
-    switch (SETTINGS.lineSpacing % CrossPointSettings::LINE_COMPRESSION_COUNT) {
-      case CrossPointSettings::TIGHT:
-        params.lineSpacingPct = 95;
-        break;
-      case CrossPointSettings::WIDE:
-        params.lineSpacingPct = 110;
-        break;
-      case CrossPointSettings::EXTRA_WIDE:
-        params.lineSpacingPct = 120;
-        break;
-      default:
-        break;
-    }
+    // Same table as the reader (ReaderLineSpacing.h), scaled to this engine's
+    // unit — lineSpacingPct is % of the font's natural line height (~1.2 em),
+    // the setting is % of font size; the 1.2x default = natural height.
+    const uint8_t lsIdx = SETTINGS.lineSpacing < CrossPointSettings::LINE_COMPRESSION_COUNT ? SETTINGS.lineSpacing : 0;
+    params.lineSpacingPct = static_cast<uint16_t>(lroundf(LINE_SPACING_MULTIPLIERS[lsIdx] * 100.0f / 1.2f));
     // Same §2.3 mapping as the reader (TtfBookRuntime::makeLayoutParams).
     params.paragraphSpacingPct = SETTINGS.extraParagraphSpacing != 0 ? 150 : 100;
     switch (SETTINGS.paragraphAlignment % CrossPointSettings::PARAGRAPH_ALIGNMENT_COUNT) {

@@ -7,6 +7,7 @@
 #include <Logging.h>
 #include <Memory.h>
 
+#include <cmath>
 #include <cstring>
 
 namespace freeink {
@@ -37,6 +38,10 @@ bool TtfUiFont::begin(const void* const bytes[4], const uint32_t byteSizes[4], c
   end();
   if (sizePx == 0) return false;
   sizePx_ = sizePx;
+  // Convert the runtime pixel size to the point size EpdFontFamily stores
+  // (pixels at FONT_RASTER_DPI, upstream #4174).
+  const uint16_t pointSize = static_cast<uint16_t>(lroundf(sizePx * 72.0f / FONT_RASTER_DPI));
+  family_ = EpdFontFamily(pointSize, &slots_[0].font, &slots_[1].font, &slots_[2].font, &slots_[3].font);
   bool any = false;
   for (uint8_t s = 0; s < 4; ++s) {
     Slot& slot = slots_[s];

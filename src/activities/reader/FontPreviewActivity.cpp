@@ -13,6 +13,7 @@
 
 #include "CrossPointSettings.h"
 #include "QuickPageRelayout.h"
+#include "ReaderLineSpacing.h"
 #include "TtfBookRuntime.h"
 #include "TtfUiFallback.h"
 #include "activities/ActivityResult.h"
@@ -150,9 +151,10 @@ void FontPreviewActivity::openFamilyPicker() {
 // makeLayoutParams() the committed build reads, so the preview reflects the
 // setting exactly as the book will after the close reindex.
 void FontPreviewActivity::openLineSpacingPicker() {
-  static constexpr StrId kSpacingIds[] = {StrId::STR_TIGHT, StrId::STR_NORMAL, StrId::STR_WIDE, StrId::STR_EXTRA_WIDE};
-  static_assert(std::size(kSpacingIds) == CrossPointSettings::LINE_COMPRESSION_COUNT, "line spacing labels");
-  popup_.show(StrId::STR_LINE_SPACING, kSpacingIds, static_cast<int>(std::size(kSpacingIds)),
+  // LINE_SPACING_IDS follows the persisted LINE_COMPRESSION order (ReaderLineSpacing.h) —
+  // the same labels the Text settings row shows.
+  static_assert(std::size(LINE_SPACING_IDS) == CrossPointSettings::LINE_COMPRESSION_COUNT, "line spacing labels");
+  popup_.show(StrId::STR_LINE_SPACING, LINE_SPACING_IDS, static_cast<int>(std::size(LINE_SPACING_IDS)),
               SETTINGS.lineSpacing % CrossPointSettings::LINE_COMPRESSION_COUNT, [this](const int idx) {
                 if (idx < 0 || idx >= CrossPointSettings::LINE_COMPRESSION_COUNT) return;
                 SETTINGS.lineSpacing = static_cast<uint8_t>(idx);
@@ -342,8 +344,6 @@ void FontPreviewActivity::render(RenderLock&&) {
     std::string familyText = SETTINGS.ttfFontFamilyName[0] != '\0' ? SETTINGS.ttfFontFamilyName : tr(STR_BUILTIN_FONT);
     model.sizeText = sizeText.c_str();
     model.familyText = familyText.c_str();
-    static constexpr StrId kSpacingIds[] = {StrId::STR_TIGHT, StrId::STR_NORMAL, StrId::STR_WIDE,
-                                            StrId::STR_EXTRA_WIDE};
     static constexpr StrId kCharIds[] = {StrId::STR_SPACING_MINUS_2, StrId::STR_SPACING_MINUS_1,
                                          StrId::STR_SPACING_ZERO, StrId::STR_SPACING_PLUS_1, StrId::STR_SPACING_PLUS_2};
     static constexpr StrId kWordIds[] = {StrId::STR_SPACING_50_PERCENT,  StrId::STR_SPACING_75_PERCENT,
@@ -351,7 +351,7 @@ void FontPreviewActivity::render(RenderLock&&) {
                                          StrId::STR_SPACING_150_PERCENT, StrId::STR_SPACING_175_PERCENT,
                                          StrId::STR_SPACING_200_PERCENT};
     const std::string lineText =
-        I18N.get(kSpacingIds[SETTINGS.lineSpacing % CrossPointSettings::LINE_COMPRESSION_COUNT]);
+        I18N.get(LINE_SPACING_IDS[SETTINGS.lineSpacing % CrossPointSettings::LINE_COMPRESSION_COUNT]);
     const int wordIndex = (std::clamp<int>(SETTINGS.wordSpacing, CrossPointSettings::WORD_SPACING_MIN,
                                            CrossPointSettings::WORD_SPACING_MAX) -
                            CrossPointSettings::WORD_SPACING_MIN) /

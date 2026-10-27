@@ -96,7 +96,10 @@ class TtfUiFont {
   FtFont* ensureFace(Slot& slot);
 
   Slot slots_[4] = {};
-  EpdFontFamily family_{&slots_[0].font, &slots_[1].font, &slots_[2].font, &slots_[3].font};
+  // EpdFontFamily's ctor takes the point size (upstream #4174); a TtfUiFont's
+  // size is a runtime pixel size, so begin() re-binds the family with the
+  // converted value once the slots exist.
+  EpdFontFamily family_{0, nullptr, nullptr, nullptr, nullptr};
   uint16_t sizePx_ = 0;
   bool bound_ = false;
 

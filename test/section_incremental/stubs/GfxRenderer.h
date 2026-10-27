@@ -31,6 +31,8 @@ class GfxRenderer {
   FontCacheManager* getFontCacheManager() const { return nullptr; }
   bool isFontCacheScanning() const { return false; }
   int getLineHeight(int, float = 1.0f) const { return 16; }
+  // DirectPixelWriter queries the BW-dither image mode; the host fixture keeps it off.
+  bool imagesDitheredInBw() const { return false; }
   int getFontAscenderSize(int) const { return 12; }
   int getSpaceWidth(int, EpdFontFamily::Style) const { return 4; }
   // Fixture metrics: every glyph is 8 px wide, a space is 4 px, kerning is zero.

@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstring>
 
+#include "ReaderLineSpacing.h"
 #include "components/UITheme.h"
 
 namespace freeink {
@@ -415,23 +416,13 @@ void TtfBookRuntime::dropPrefetch() {
 // ---- layout params ----
 
 void TtfBookRuntime::applyReaderLayoutParams(LayoutParams& params) {
-  // lineSpacingPct mirrors getReaderLineCompression()'s Bookerly table — the
-  // most neutral mapping across engines (CrossPointSettings.cpp:323).
-  switch (SETTINGS.lineSpacing % CrossPointSettings::LINE_COMPRESSION_COUNT) {
-    case CrossPointSettings::TIGHT:
-      params.lineSpacingPct = 95;
-      break;
-    case CrossPointSettings::WIDE:
-      params.lineSpacingPct = 110;
-      break;
-    case CrossPointSettings::EXTRA_WIDE:
-      params.lineSpacingPct = 120;
-      break;
-    case CrossPointSettings::NORMAL:
-    default:
-      params.lineSpacingPct = 100;
-      break;
-  }
+  // Parity with the legacy engine (upstream #4174): the setting is a % of FONT
+  // size there, while this engine's lineSpacingPct is a % of the font's natural
+  // line height (ChapterLayout lineMetrics height, ~1.2 em). Scale through the
+  // 1.2 em anchor: the 1.2x default maps to 100% (natural height), the same
+  // visual the fork's old NORMAL produced.
+  const uint8_t idx = SETTINGS.lineSpacing < CrossPointSettings::LINE_COMPRESSION_COUNT ? SETTINGS.lineSpacing : 0;
+  params.lineSpacingPct = static_cast<uint16_t>(lroundf(LINE_SPACING_MULTIPLIERS[idx] * 100.0f / 1.2f));
   // §2.3 contract: 150 = the half-line extra gap (design line 284); mirrors
   // the legacy preview/reader mapping, not an arbitrary 130.
   params.paragraphSpacingPct = SETTINGS.extraParagraphSpacing != 0 ? 150 : 100;
