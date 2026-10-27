@@ -90,7 +90,14 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
-### Version 69
+### Version 71
+
+Version 70 preserves the binary layout but rebuilds completed and partial
+sections because SD-font layout now rounds each scaled glyph advance to pixels,
+matching unkerned drawing. Cached line breaks and word positions change.
+Book metadata and saved progress are kept.
+
+### Version 70
 
 Version 69 preserves the binary layout but rebuilds completed and partial
 sections because line spacing now multiplies font size instead of the font's

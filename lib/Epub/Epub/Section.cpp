@@ -122,7 +122,13 @@ namespace {
 //      v69). The fork's v69 carries the same change upstream numbered v68 (drop
 //      caps), so the merged layout is max(69, 69) + 1 = v70 per the
 //      version-collision rule and both parents' caches are invalidated.
-constexpr uint8_t SECTION_FILE_VERSION = 70;
+// v71: SD-font layout rounds each scaled glyph advance to pixels, matching
+//      unkerned drawing (upstream #3985, its v70). Both parents consumed v70
+//      for different changes (the fork: line spacing multiplies font size;
+//      upstream: this rounding), so the merged layout is max(70, 70) + 1 = v71
+//      per the version-collision rule and both parents' v70 caches are
+//      invalidated.
+constexpr uint8_t SECTION_FILE_VERSION = 71;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
