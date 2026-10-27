@@ -97,6 +97,7 @@ jobs:
               body += 'Download the file for your device, extract the `.bin` from the ZIP, then flash it with ';
               body += '[CrossPoint Reader Flash Tools](https://crosspointreader.com/#flash-tools). ';
               body += '**Make sure you use the correct firmware file for your device.**';
+              body += '\n\n> Artifacts are deleted 7 days after upload. If a link is dead, ask for a fresh build — any new commit on this PR regenerates this comment.';
 
               if (run.conclusion !== 'success') {
                 body += `\n\n> The firmware builds succeeded, but [another CI check finished with ${run.conclusion}](${run.html_url}).`;
