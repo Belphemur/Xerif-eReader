@@ -128,7 +128,12 @@ namespace {
 //      upstream: this rounding), so the merged layout is max(70, 70) + 1 = v71
 //      per the version-collision rule and both parents' v70 caches are
 //      invalidated.
-constexpr uint8_t SECTION_FILE_VERSION = 71;
+// v72: Focus split offsets follow the visual run order for RTL words (upstream
+//      #4230). Both parents consumed v71 for different changes (the fork:
+//      SD-font glyph advance rounding; upstream: this RTL focus split), so the
+//      merged layout is max(71, 71) + 1 = v72 per the version-collision rule
+//      and both parents' v71 caches are invalidated.
+constexpr uint8_t SECTION_FILE_VERSION = 72;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
