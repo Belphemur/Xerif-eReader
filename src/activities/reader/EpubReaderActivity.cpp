@@ -39,6 +39,7 @@
 #include "DictionaryWordSelectActivity.h"
 #include "FrontlightControl.h"
 #include "MemSentinel.h"
+#include "PageTurnBatch.h"
 #include "TouchLongPressRoute.h"
 #if defined(CROSSPOINT_TTF_READER)
 #include "FontPreviewActivity.h"
@@ -1492,6 +1493,31 @@ void EpubReaderActivity::openClippings() {
   });
 }
 
+bool EpubReaderActivity::dispatchLongPressTurn(const ReaderUtils::PageTurnResult& turn,
+                                               const ReaderUtils::TouchPageTurn& touch) {
+  if (!turn.prev && !turn.next) return false;
+  const unsigned long heldMs = (touch.prev || touch.next) ? touch.heldMs : mappedInput.getHeldTime();
+  const bool longPress = !turn.fromTilt && heldMs >= ReaderUtils::SKIP_HOLD_MS;
+  if (!longPress) return false;
+  if (SETTINGS.longPressButtonBehavior == SETTINGS.CHAPTER_SKIP) {
+    const bool succeeded = skipPages(turnnet::chapterSkipAmount(turn.next, 1));
+    notePageTurn(false, succeeded);
+    if (succeeded && (touch.prev || touch.next)) haptic_feedback::touchAction(true);
+    requestUpdate();
+    return true;
+  }
+  if (SETTINGS.longPressButtonBehavior == SETTINGS.ORIENTATION_CHANGE) {
+    const uint8_t newOrientation =
+        turn.next ? (SETTINGS.orientation - 1 + SETTINGS.ORIENTATION_COUNT) % SETTINGS.ORIENTATION_COUNT
+                  : (SETTINGS.orientation + 1) % SETTINGS.ORIENTATION_COUNT;
+    applyOrientation(newOrientation);
+    if (touch.prev || touch.next) haptic_feedback::touchAction(true);
+    requestUpdate();
+    return true;
+  }
+  return false;
+}
+
 void EpubReaderActivity::loop() {
   if (loadFailurePopup.isActive()) {
     loadFailurePopup.handleInput(mappedInput, [this] { requestUpdate(); });
@@ -1913,7 +1939,7 @@ void EpubReaderActivity::loop() {
 
   constexpr unsigned long kMinManualTurnGapMs = 200;
   const bool turnGuardActive = RenderLock::peek() || (millis() - lastPageTurnTime) < kMinManualTurnGapMs;
-  if (pendingManualTurn != 0 && !turnGuardActive) {
+  if (turnnet::pendingManualTurnGate(pendingManualTurn, turnGuardActive) == turnnet::GateAction::Apply) {
     if (!section
 #if defined(CROSSPOINT_TTF_READER)
         && !ttf_
@@ -1922,26 +1948,33 @@ void EpubReaderActivity::loop() {
       pendingManualTurn = 0;
       return;
     }
-    const bool forward = pendingManualTurn > 0;
+    // Magnitude-carrying jump (queued-input aggregation §3.2/audit #4): the
+    // parked magnitude applies ONCE, joined with this frame's fresh net so
+    // presses that arrived while the gate was busy are not dropped.
+    const auto turn = ReaderUtils::detectPageTurnSteps(mappedInput, touch);
+    // A long press arming in this Apply frame (round-2 review) is the user's
+    // newest intent: dispatch its configured action first. The parked
+    // magnitude is NOT consumed here — it stays pending and applies on a
+    // later frame (the skip/orientation render re-arms the turn guard).
+    if (dispatchLongPressTurn(turn, touch)) return;
+    const int steps = turnnet::accumulate(pendingManualTurn, turn.steps);
     pendingManualTurn = 0;
-    const bool succeeded = pageTurn(forward);
-    notePageTurn(forward, succeeded);
+    const bool succeeded = pageTurnBy(steps);
+    notePageTurn(steps > 0, succeeded);
     if (succeeded && pendingManualTurnTouch) haptic_feedback::touchAction();
     pendingManualTurnTouch = false;
     requestUpdate();
     return;
   }
 
-  auto [prevTriggered, nextTriggered, fromTilt] = ReaderUtils::detectPageTurn(mappedInput);
-  prevTriggered = prevTriggered || touch.prev;
-  nextTriggered = nextTriggered || touch.next;
-  if (!prevTriggered && !nextTriggered) {
+  const auto turn = ReaderUtils::detectPageTurnSteps(mappedInput, touch);
+  if (!turn.prev && !turn.next) {
     // Nothing to act on in this frame: build more of the chapter.
     backgroundBuildTick();
     return;
   }
 
-  if (handleEndOfBookPageTurn(prevTriggered, nextTriggered)) {
+  if (handleEndOfBookPageTurn(turn.prev, turn.next)) {
     return;
   }
 
@@ -1950,25 +1983,7 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  const unsigned long heldMs = (touch.prev || touch.next) ? touch.heldMs : mappedInput.getHeldTime();
-  const bool longPress = !fromTilt && heldMs >= ReaderUtils::SKIP_HOLD_MS;
-  if (longPress && SETTINGS.longPressButtonBehavior == SETTINGS.CHAPTER_SKIP) {
-    const bool succeeded = skipPages(nextTriggered ? 1 : -1);
-    notePageTurn(false, succeeded);
-    if (succeeded && (touch.prev || touch.next)) haptic_feedback::touchAction(true);
-    requestUpdate();
-    return;
-  }
-
-  if (longPress && SETTINGS.longPressButtonBehavior == SETTINGS.ORIENTATION_CHANGE) {
-    const uint8_t newOrientation =
-        nextTriggered ? (SETTINGS.orientation - 1 + SETTINGS.ORIENTATION_COUNT) % SETTINGS.ORIENTATION_COUNT
-                      : (SETTINGS.orientation + 1) % SETTINGS.ORIENTATION_COUNT;
-    applyOrientation(newOrientation);
-    if (touch.prev || touch.next) haptic_feedback::touchAction(true);
-    requestUpdate();
-    return;
-  }
+  if (dispatchLongPressTurn(turn, touch)) return;
 
   if (!section
 #if defined(CROSSPOINT_TTF_READER)
@@ -1979,14 +1994,16 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  if (turnGuardActive) {
-    pendingManualTurn = prevTriggered ? -1 : 1;
+  if (turnnet::pendingManualTurnGate(pendingManualTurn, turnGuardActive) == turnnet::GateAction::Park) {
+    // Park the frame's net magnitude (§3.2): a guarded frame's presses join
+    // any already-parked jump instead of replaying one turn per refresh.
+    pendingManualTurn = turnnet::accumulate(pendingManualTurn, turn.steps);
     pendingManualTurnTouch = touch.prev || touch.next;
     return;
   }
 
-  const bool succeeded = pageTurn(!prevTriggered);
-  notePageTurn(!prevTriggered, succeeded);
+  const bool succeeded = pageTurnBy(turn.steps);
+  notePageTurn(turn.steps > 0, succeeded);
   if (succeeded && (touch.prev || touch.next)) haptic_feedback::touchAction();
   requestUpdate();
 }
@@ -2532,11 +2549,18 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
   const bool haveDwell = currentPageReadingSecondsForStats(dwellSeconds);
   if (SETTINGS.shouldTrackReadingStats()) {
     recordCurrentPageReadingTime();
-    if (isForwardTurn && haveDwell) {
-      recordForwardPagePaceSample(dwellSeconds, currentPageWordsOnPage);
+    // Queued-input aggregation §3.2: count every crossed page of a batched
+    // jump (one step per pageTurn() call), even when only the first step has
+    // qualifying dwell — later steps reset page-shown time before they run.
+    if (isForwardTurn) {
       if (stats.totalPagesTurned < UINT32_MAX) stats.totalPagesTurned++;
       if (globalStats.totalPagesTurned < UINT32_MAX) globalStats.totalPagesTurned++;
       if (sessionPageTurns < UINT16_MAX) sessionPageTurns++;
+    }
+    // Pace samples stay dwell-gated: reading time must never be assigned to
+    // a page that was crossed unseen.
+    if (isForwardTurn && haveDwell) {
+      recordForwardPagePaceSample(dwellSeconds, currentPageWordsOnPage);
     }
   }
 #endif
@@ -2681,6 +2705,17 @@ bool EpubReaderActivity::skipPages(int amount) {
     }
   }
   return false;
+}
+
+bool EpubReaderActivity::pageTurnBy(const int steps) {
+  return pageturn::turnBy(steps, [this](const bool forward) {
+    const int spineBefore = currentSpineIndex;
+    if (!pageTurn(forward)) return pageturn::Step::Blocked;
+    // A step that crossed into another chapter (or reached end of book) left
+    // the section unloaded/pending — the next step needs this frame's render
+    // to load it first, so the jump clamps at the boundary.
+    return (isAtEndOfBook() || currentSpineIndex != spineBefore) ? pageturn::Step::Boundary : pageturn::Step::Turned;
+  });
 }
 
 // Failed protected open: show the standard option dialog (wrapped message)
@@ -5089,11 +5124,18 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
   const bool haveDwell = currentPageReadingSecondsForStats(dwellSeconds);
   if (SETTINGS.shouldTrackReadingStats()) {
     recordCurrentPageReadingTime();
-    if (isForwardTurn && haveDwell) {
-      recordForwardPagePaceSample(dwellSeconds, currentPageWordsOnPage);
+    // Queued-input aggregation §3.2: count every crossed page of a batched
+    // jump (one step per ttfPageTurn() call), even when only the first step
+    // has qualifying dwell — later steps reset page-shown time before they run.
+    if (isForwardTurn) {
       if (stats.totalPagesTurned < UINT32_MAX) stats.totalPagesTurned++;
       if (globalStats.totalPagesTurned < UINT32_MAX) globalStats.totalPagesTurned++;
       if (sessionPageTurns < UINT16_MAX) sessionPageTurns++;
+    }
+    // Pace samples stay dwell-gated: reading time must never be assigned to
+    // a page that was crossed unseen.
+    if (isForwardTurn && haveDwell) {
+      recordForwardPagePaceSample(dwellSeconds, currentPageWordsOnPage);
     }
   }
 #endif

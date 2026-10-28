@@ -1235,6 +1235,14 @@ void setup() {
     gpio.update();
     delay(10);
     gpio.update();
+    // Async input: the absorb pair above is a no-op off the poll task
+    // (InputManager update() returns early for non-poll tasks), so edges
+    // captured during boot/restart would sit in the SDK queue and dispatch
+    // against the freshly painted activity — e.g. a Confirm held across a
+    // silent restart re-opening the most-recent book. Discard everything
+    // queued so far; a button still held keeps its level state, and its
+    // later release edge is queued and delivered as on sync.
+    gpio.discardQueuedButtonEdges();
   }
 
   allowSleepAt = millis() + 2000;

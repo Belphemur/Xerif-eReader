@@ -4,6 +4,7 @@
 
 #include "util/HomeButtonInput.h"
 #include "util/PowerClickWindow.h"
+#include "util/QueuedEdgeDrain.h"
 #include "util/RemoteButtonInput.h"
 #include "util/RepeatHoldDiscount.h"
 
@@ -98,6 +99,20 @@ class MappedInputManager {
   bool hasRemoteClick() const { return remoteInput.button != RemoteButton::None; }
   bool wasPressed(Button button) const;
   bool wasReleased(Button button) const;
+  // QUEUED edge counts for this frame (0 = no edge this frame), drained from
+  // the SDK per-button queues in update() (queued-input aggregation,
+  // docs/design/2026-10-27-queued-input-aggregation.md §3.1). N rapid presses
+  // of one button deliver wasPressedCount() == N instead of N one-edge frames.
+  // wasPressed()/wasReleased() keep their exact meaning (true == the count is
+  // non-zero for the same sources), so every existing consumer is unchanged.
+  // Composite logical buttons (Page*/Nav*/Screen*) SUM the counts of the
+  // physical buttons they map to; single-shot sources (remote click, Back
+  // gesture, PWR_CONFIRM synthesized press) count as 1, matching the boolean
+  // read. wasPressedCount(Confirm) never consumes the synthesized press.
+  uint8_t wasPressedCount(Button button) const;
+  uint8_t wasReleasedCount(Button button) const;
+  // Drain cap; see edgecount::drainCount.
+  static constexpr uint8_t kMaxQueuedEdges = edgecount::kMaxQueuedEdges;
   // One-shot threshold event while the button is down; consumes its release.
   bool wasLongPressed(Button button, unsigned long thresholdMs) const;
   bool consumeSuppressedRelease() const;
@@ -206,6 +221,10 @@ class MappedInputManager {
   // This tick's edge read for `button`, from the snapshot taken in update()
   // (soak-fix7: consume-once at the snapshot, multi-read safe).
   bool edgeSnapshot(const Button button, const bool pressed) const;
+  // Sum of this tick's drained counts over every physical button `button`
+  // maps to (composite mappings sum, mirrors edgeSnapshot's OR). Bounded by
+  // 7 physicals x kMaxQueuedEdges, far under uint8_t range.
+  uint8_t edgeCountSnapshot(const Button button, const bool pressed) const;
   // SDK edge classification (fui::edgeSwipe) + the shared decode/held-time
   // bookkeeping; the wrappers below give each edge its board meaning.
   bool wasEdgeSwipe(freeink::ui::ScreenEdge edge) const;
@@ -244,6 +263,16 @@ class MappedInputManager {
   // exactly one frame and clear when they do.
   mutable uint8_t framePressedEdges = 0;
   mutable uint8_t frameReleasedEdges = 0;
+  // Drained per-physical edge counts for this tick, kept in lockstep with the
+  // frame masks above (a cleared mask bit zeroes its count). Index = physical
+  // BTN_i. Rebuilt from scratch every tick like the masks.
+  mutable uint8_t framePressedCounts[HalGPIO::BTN_POWER + 1] = {};
+  mutable uint8_t frameReleasedCounts[HalGPIO::BTN_POWER + 1] = {};
+  // Count halves of the pending registers below: edges drained on a blocking-
+  // transfer pump whose callbacks did not inspect them park here and compose
+  // into exactly ONE later dispatch frame, same as the mask bits.
+  mutable uint8_t pendingPressedCounts[HalGPIO::BTN_POWER + 1] = {};
+  mutable uint8_t pendingReleasedCounts[HalGPIO::BTN_POWER + 1] = {};
   // Edges captured on a blocking-transfer pump (update(true)) whose
   // callbacks did not inspect them (kody 6Ot2/6Oyk): held here — OUT of the
   // live frame masks — and composed into exactly ONE later dispatch frame

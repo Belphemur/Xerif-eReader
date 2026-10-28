@@ -42,11 +42,27 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
     stallWindow.sampleFrame(millis());
   }
 
+  const bool asyncInput = gpio.asyncInputActive();
   uint8_t pressedEdges = 0;
   uint8_t releasedEdges = 0;
+  uint8_t drainedPress[HalGPIO::BTN_POWER + 1] = {};
+  uint8_t drainedRelease[HalGPIO::BTN_POWER + 1] = {};
   for (uint8_t physical = HalGPIO::BTN_BACK; physical <= HalGPIO::BTN_POWER; ++physical) {
-    if (gpio.wasPressed(physical)) pressedEdges |= static_cast<uint8_t>(1u << physical);
-    if (gpio.wasReleased(physical)) releasedEdges |= static_cast<uint8_t>(1u << physical);
+    if (asyncInput) {
+      // Queued-edge aggregation (§3.1): each probe consumes one queued edge,
+      // so the drain loop recovers how many presses/releases the poll task
+      // queued since the last dispatch. A held button queues exactly one
+      // press edge, so a hold still counts 1 (§3.3). Sync builds keep the
+      // historical single check (edge probes are idempotent within a frame
+      // there — the event bit lives until gpio.update() clears it).
+      drainedPress[physical] = edgecount::drainCount([this, physical] { return gpio.wasPressed(physical); });
+      drainedRelease[physical] = edgecount::drainCount([this, physical] { return gpio.wasReleased(physical); });
+    } else {
+      drainedPress[physical] = gpio.wasPressed(physical) ? 1 : 0;
+      drainedRelease[physical] = gpio.wasReleased(physical) ? 1 : 0;
+    }
+    if (drainedPress[physical]) pressedEdges |= static_cast<uint8_t>(1u << physical);
+    if (drainedRelease[physical]) releasedEdges |= static_cast<uint8_t>(1u << physical);
   }
   if (deferHomeButtonAction) {
 #if FREEINK_CAP_TOUCH
@@ -84,6 +100,19 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
     constexpr uint8_t kPowerEdge = static_cast<uint8_t>(1u << HalGPIO::BTN_POWER);
     pendingPressed = static_cast<uint8_t>(pendingPressed | (pressedEdges & ~kBackEdge));
     pendingReleased = static_cast<uint8_t>(pendingReleased | (releasedEdges & ~(kBackEdge | kPowerEdge)));
+    for (uint8_t physical = HalGPIO::BTN_BACK; physical <= HalGPIO::BTN_POWER; ++physical) {
+      // Count halves of the same park (§3.1): Back is pump-consumed, Power
+      // releases are parked after classification below.
+      if (physical != HalGPIO::BTN_BACK) {
+        pendingPressedCounts[physical] = static_cast<uint8_t>(pendingPressedCounts[physical] + drainedPress[physical]);
+        if (physical != HalGPIO::BTN_POWER) {
+          pendingReleasedCounts[physical] =
+              static_cast<uint8_t>(pendingReleasedCounts[physical] + drainedRelease[physical]);
+        }
+      }
+      framePressedCounts[physical] = drainedPress[physical];
+      frameReleasedCounts[physical] = drainedRelease[physical];
+    }
     framePressedEdges = pressedEdges;
     frameReleasedEdges = releasedEdges;
   } else {
@@ -115,6 +144,14 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
     // normally. Registers clear once composed.
     framePressedEdges = static_cast<uint8_t>(pressedEdges | pendingPressed);
     frameReleasedEdges = static_cast<uint8_t>(releasedEdges | pendingReleased);
+    for (uint8_t physical = HalGPIO::BTN_BACK; physical <= HalGPIO::BTN_POWER; ++physical) {
+      // Count halves of the same composition: parked counts merge with this
+      // tick's drain exactly once, then the registers clear with the masks.
+      framePressedCounts[physical] = static_cast<uint8_t>(drainedPress[physical] + pendingPressedCounts[physical]);
+      frameReleasedCounts[physical] = static_cast<uint8_t>(drainedRelease[physical] + pendingReleasedCounts[physical]);
+      pendingPressedCounts[physical] = 0;
+      pendingReleasedCounts[physical] = 0;
+    }
     pendingPressed = 0;
     pendingReleased = 0;
   }
@@ -127,6 +164,22 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
     // release through unclassified. Pending never holds an unclassified
     // Power release.
     pendingReleased = static_cast<uint8_t>(pendingReleased | (frameReleasedEdges & (1u << HalGPIO::BTN_POWER)));
+    // Park the Power release count only when its bit actually survived
+    // classification; a withheld (window-armed) release keeps its edge inside
+    // the window and is re-published as a mask bit with count 0 later — no
+    // count consumer reads Power, so the count drop is unobservable there.
+    if ((frameReleasedEdges & (1u << HalGPIO::BTN_POWER)) != 0) {
+      pendingReleasedCounts[HalGPIO::BTN_POWER] =
+          static_cast<uint8_t>(pendingReleasedCounts[HalGPIO::BTN_POWER] + frameReleasedCounts[HalGPIO::BTN_POWER]);
+    }
+  }
+  // Counts stay in lockstep with the served masks (audit #2): wherever the
+  // mask machinery withholds a bit (Power click window above, suppressed
+  // releases), the matching count is dropped with it, so wasPressed() ==
+  // (wasPressedCount() > 0) holds for every physical button every frame.
+  for (uint8_t physical = HalGPIO::BTN_BACK; physical <= HalGPIO::BTN_POWER; ++physical) {
+    if ((framePressedEdges & (1u << physical)) == 0) framePressedCounts[physical] = 0;
+    if ((frameReleasedEdges & (1u << physical)) == 0) frameReleasedCounts[physical] = 0;
   }
 #if FREEINK_CAP_TOUCH
   // Arm the synthesized press the tick the Confirm verdict DELIVERS (kody
@@ -259,6 +312,56 @@ bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint
 bool MappedInputManager::edgeSnapshot(const Button button, const bool pressed) const {
   const uint8_t edges = pressed ? framePressedEdges : frameReleasedEdges;
   return mapButtonWith(button, [edges](const uint8_t physical) { return (edges & (1u << physical)) != 0; });
+}
+
+uint8_t MappedInputManager::edgeCountSnapshot(const Button button, const bool pressed) const {
+  const uint8_t* counts = pressed ? framePressedCounts : frameReleasedCounts;
+  // Pure fold over every physical the logical button maps to: the probe never
+  // short-circuits (always false), so composite mappings (PREV_PREV, Nav*)
+  // visit all their physicals and the counts sum.
+  uint32_t sum = 0;
+  mapButtonWith(button, [counts, &sum](const uint8_t physical) {
+    sum += counts[physical];
+    return false;
+  });
+  return static_cast<uint8_t>(sum);
+}
+
+uint8_t MappedInputManager::wasPressedCount(const Button button) const {
+  uint8_t count = edgeCountSnapshot(button, true);
+  // Single-shot sources (not queued edges) count as the one click they are,
+  // so wasPressedCount mirrors wasPressed for every button (ADR §3.1).
+  // Deliberately read-only: consumePowerConfirmPress() must stay available to
+  // the boolean read.
+  const bool singleShot =
+      (button == Button::Confirm &&
+       (remoteInput.button == RemoteButton::Confirm || homeAction == HomeButtonAction::Confirm
+#if FREEINK_CAP_TOUCH
+        || powerConfirmPressActive
+#endif
+        )) ||
+      (button == Button::Back && (remoteInput.button == RemoteButton::Back || wasBackGesture())) ||
+      ((button == Button::NavNext || button == Button::Right) && remoteInput.button == RemoteButton::Next) ||
+      ((button == Button::NavPrevious || button == Button::Left) && remoteInput.button == RemoteButton::Previous);
+  if (singleShot && count == 0) count = 1;
+  return count;
+}
+
+uint8_t MappedInputManager::wasReleasedCount(const Button button) const {
+  uint8_t count = edgeCountSnapshot(button, false);
+  // Same single-shot folds as wasReleased(), for release-mode triggers.
+  const bool singleShot =
+      (button == Button::Confirm &&
+       (remoteInput.button == RemoteButton::Confirm || homeAction == HomeButtonAction::Confirm
+#if FREEINK_CAP_TOUCH
+        || wasPowerConfirmClick()
+#endif
+            )) ||
+      (button == Button::Back && (remoteInput.button == RemoteButton::Back || wasBackGesture())) ||
+      ((button == Button::NavNext || button == Button::Right) && remoteInput.button == RemoteButton::Next) ||
+      ((button == Button::NavPrevious || button == Button::Left) && remoteInput.button == RemoteButton::Previous);
+  if (singleShot && count == 0) count = 1;
+  return count;
 }
 
 template <typename Probe>
@@ -667,6 +770,10 @@ bool MappedInputManager::consumeSuppressedRelease() const {
       // buttons (Nav*/Page*) map to several physical buttons — clear each.
       mapButtonWith(static_cast<Button>(value), [this](const uint8_t physical) {
         frameReleasedEdges &= static_cast<uint8_t>(~(1u << physical));
+        // Count lockstep: a long-press hold's own release is suppressed, so
+        // its drained count must not surface to a release-count consumer
+        // (queued-input aggregation audit #2).
+        frameReleasedCounts[physical] = 0;
         return false;
       });
     }
