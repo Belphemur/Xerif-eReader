@@ -49,6 +49,12 @@ class ReaderActivity : public Activity {
 
   virtual bool handleFormatInput() { return false; }
   virtual bool pageTurn(bool isForward) = 0;
+  // Batched page turn (queued-input aggregation §3.2): |steps| single-step
+  // turns applied back to back with ONE render at the end of the dispatch, so
+  // N rapid presses land as a single N-page jump. Default: the flat page model
+  // (XTC) — steps chain until pageTurn() fails or the end of book clamps.
+  // EpubReaderActivity overrides with the chapter-boundary clamp.
+  virtual bool pageTurnBy(int steps);
   virtual bool skipPages(int amount) { return pageTurn(amount > 0); }
   // A Bluetooth remote asks for the reader menu (true) or a new clipping (false).
   virtual bool remoteShortcut(bool /*readerMenu*/) { return false; }

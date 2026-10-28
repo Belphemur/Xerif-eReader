@@ -11,6 +11,7 @@
 
 #include "HapticFeedback.h"
 #include "MappedInputManager.h"
+#include "TurnNetting.h"
 #include "activities/ActivityManager.h"
 
 namespace ReaderUtils {
@@ -57,38 +58,66 @@ inline void applyOrientation(GfxRenderer& renderer, const uint8_t orientation) {
   }
 }
 
+struct TouchPageTurn {
+  bool prev;
+  bool next;
+  unsigned long heldMs;
+};
+
 struct PageTurnResult {
   bool prev;
   bool next;
   bool fromTilt;
+  // Net pages to move this frame (queued-input aggregation §3.4): positive =
+  // forward, 0 = netted out. Single-shot sources (touch zones, tilt, power
+  // turn, home-key NextPage) contribute ±1 each.
+  int steps;
 };
 
-inline PageTurnResult detectPageTurn(const MappedInputManager& input) {
+// detectPageTurn plus magnitude: the drained per-button edge counts of the
+// direction trigger sets are netted into ONE jump (issue #259 — N rapid
+// presses land as a single N-page jump in one refresh). The boolean fields
+// keep their exact previous meaning; long-press handling (chapter skip /
+// orientation change) still keys off them, never off the magnitude.
+// `touch` folds the touch page-turn zones into the same frame's net.
+inline PageTurnResult detectPageTurnSteps(const MappedInputManager& input,
+                                          const TouchPageTurn& touch = {false, false, 0}) {
   const bool usePress = SETTINGS.longPressButtonBehavior == SETTINGS.OFF;
   const bool tiltNext = SETTINGS.tiltPageTurn && halTiltSensor.wasTiltedForward();
   const bool tiltPrev = SETTINGS.tiltPageTurn && halTiltSensor.wasTiltedBack();
   const bool swapFront = input.isNavDirectionSwapped();
   const auto prevButton = swapFront ? MappedInputManager::Button::Right : MappedInputManager::Button::Left;
   const auto nextButton = swapFront ? MappedInputManager::Button::Left : MappedInputManager::Button::Right;
+  // Fire the long-press latches first (release mode): wasLongPressed arms the
+  // release suppression its own edge class relies on, exactly as the boolean
+  // read below does. The drained counts then reflect the same edge class the
+  // boolean check tests — a long-press hold's own release is suppressed, so a
+  // hold still nets ±1 through its boolean path, never double through counts.
   const auto pageButtonTriggered = [&](const MappedInputManager::Button button) {
     if (usePress) return input.wasPressed(button);
     return input.wasLongPressed(button, SKIP_HOLD_MS) || input.wasReleased(button);
   };
-  const bool prev =
-      tiltPrev || (pageButtonTriggered(MappedInputManager::Button::PageBack) || pageButtonTriggered(prevButton));
-  const bool powerTurn = SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN &&
-                         input.wasReleased(MappedInputManager::Button::Power);
-  const bool next = input.homeButtonAction() == HomeButtonAction::NextPage || tiltNext ||
-                    pageButtonTriggered(MappedInputManager::Button::PageForward) || powerTurn ||
-                    pageButtonTriggered(nextButton);
-  return {prev, next, tiltPrev || tiltNext};
+  const auto pageButtonCount = [&](const MappedInputManager::Button button) {
+    return usePress ? input.wasPressedCount(button) : input.wasReleasedCount(button);
+  };
+  turnnet::TriggerCounts counts;
+  counts.nextCount =
+      static_cast<uint8_t>(pageButtonCount(MappedInputManager::Button::PageForward)) + pageButtonCount(nextButton);
+  counts.prevCount =
+      static_cast<uint8_t>(pageButtonCount(MappedInputManager::Button::PageBack)) + pageButtonCount(prevButton);
+  counts.touchNext = touch.next;
+  counts.touchPrev = touch.prev;
+  counts.tiltNext = tiltNext;
+  counts.tiltPrev = tiltPrev;
+  counts.powerTurn = SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN &&
+                     input.wasReleased(MappedInputManager::Button::Power);
+  counts.homeNextPage = input.homeButtonAction() == HomeButtonAction::NextPage;
+  const bool prev = tiltPrev || pageButtonTriggered(MappedInputManager::Button::PageBack) ||
+                    pageButtonTriggered(prevButton) || touch.prev;
+  const bool next = counts.homeNextPage || tiltNext || pageButtonTriggered(MappedInputManager::Button::PageForward) ||
+                    counts.powerTurn || pageButtonTriggered(nextButton) || touch.next;
+  return {prev, next, tiltPrev || tiltNext, turnnet::net(counts)};
 }
-
-struct TouchPageTurn {
-  bool prev;
-  bool next;
-  unsigned long heldMs;
-};
 
 inline TouchPageTurn detectTouchPageTurn(const GfxRenderer& renderer, const MappedInputManager& input,
                                          const bool rtlBook = false) {

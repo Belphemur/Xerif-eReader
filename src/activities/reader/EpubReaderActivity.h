@@ -34,6 +34,12 @@
 #include "ReadingStatsUtils.h"
 #endif
 
+// Turn-dispatch payload structs (ReaderUtils.h, included by the .cpp only).
+namespace ReaderUtils {
+struct PageTurnResult;
+struct TouchPageTurn;
+}  // namespace ReaderUtils
+
 class EpubReaderActivity final : public ReaderActivity {
   std::shared_ptr<Epub> epub;
   std::unique_ptr<Section> section = nullptr;
@@ -523,6 +529,13 @@ class EpubReaderActivity final : public ReaderActivity {
   void drawClippingHighlights(const Page& page, int fontId, int orientedMarginTop, int orientedMarginLeft) const;
   void renderStatusBar() const;
   void applyOrientation(uint8_t orientation);
+  // Long-press turn dispatch shared by the fresh-turn and pending-turn
+  // (Apply) paths: chapter skip / orientation change for a long press arming
+  // this frame. Returns true when the frame was consumed by the dispatch.
+  // See queued-input aggregation round-2: a long press arming in an Apply
+  // frame must keep its configured action, and the parked magnitude stays
+  // parked for a later frame.
+  bool dispatchLongPressTurn(const ReaderUtils::PageTurnResult& turn, const ReaderUtils::TouchPageTurn& touch);
   void applyInitialOrientation() override;
   // The orientation the current layout was built for. The control center's
   // orientation tile can move SETTINGS.orientation while this reader sits on
@@ -562,6 +575,11 @@ class EpubReaderActivity final : public ReaderActivity {
   void render(RenderLock&& lock) override;
 
   bool pageTurn(bool isForward) override;
+  // Batched jump with the chapter-boundary clamp (queued-input aggregation
+  // §3.2): a step that crossed into another chapter (or reached end of book)
+  // needs a render/load before the next step applies state-safely, so the
+  // jump stops there and lands on the boundary page in this frame's render.
+  bool pageTurnBy(int steps) override;
   bool skipPages(int amount) override;
   bool remoteShortcut(bool readerMenu) override;
   bool isAtEndOfBook() const override;

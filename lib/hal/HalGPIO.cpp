@@ -109,12 +109,17 @@ void HalGPIO::begin() {
   _deviceType = DeviceType::X4;
 #endif
   inputMgr.begin();
-#if defined(BOARD_HAS_PSRAM)
-  // Async input sampling (docs/design/2026-09-20-async-input.md): a 10 ms
-  // poll task keeps sampling buttons during e-ink waits and multi-second
-  // build/render windows, so presses are never dropped. PSRAM-gated: the
-  // queues + 4 KB task cost ~6.5 KB DRAM, which the C3/Classic should not
-  // spend — those boards keep the historical polled behavior.
+#if defined(XERIF_ASYNC_INPUT)
+  // Async input sampling (docs/design/2026-10-26-x3-x4-async-input.md,
+  // extending the 2026-09-20 design): a 10 ms poll task samples buttons
+  // through e-ink flush windows and multi-second build/render windows so
+  // presses are no longer dropped by a main-loop stall (issue #259).
+  // XERIF_ASYNC_INPUT is defined for every env in [base] (platformio.ini);
+  // a board opts out only on later evidence via -UXERIF_ASYNC_INPUT in its
+  // env. Runtime cost is ~6.5 KB DRAM (4 KB task stack + queues + TCB);
+  // safe degradation: if xTaskCreate() fails _asyncTask stays null,
+  // asyncActive() reads false, and every consumer's !asyncActive() branch
+  // keeps the historical polled behavior (SDK InputManager.cpp:324).
   inputMgr.beginAsync(/*taskPriority=*/2, /*pollMs=*/10, /*queueLen=*/16);
 #endif
 #if FREEINK_DEVICE_LILYGO
@@ -138,6 +143,24 @@ void HalGPIO::update() {
   lastUsbConnected = connected;
 }
 
+// Drain and DISCARD the async poll task's queued button edges (press AND
+// release) without delivering them. The silent-boot boundary uses this in
+// place of the sync absorb pair: in async mode update() is a no-op off the
+// poll task, so edges captured during boot/restart would otherwise sit in
+// the queue and dispatch against the freshly painted activity. Level state
+// (isPressed) is untouched — a button still held at the boundary keeps its
+// held state on the poll task and its later release edge is queued
+// normally. No-op on sync builds (popPress returns false with no queue).
+void HalGPIO::discardQueuedButtonEdges() {
+#if CROSSPOINT_EMULATED == 0
+  InputManager::AsyncInputEvent ev;
+  while (inputMgr.popPress(ev)) {
+  }
+#else
+  (void)0;
+#endif
+}
+
 // Consume the poll task's touch/home-key one-shots into the per-tick
 // snapshot (soak-fix7 pop pattern). No-op on sync builds.
 void HalGPIO::consumeTouchFrame() {
@@ -155,6 +178,8 @@ bool HalGPIO::isPressed(uint8_t buttonIndex) const { return inputMgr.isPressed(b
 void HalGPIO::prepareForDeepSleep() {
   if (!inputMgr.prepareForDeepSleep()) LOG_ERR("GPIO", "Failed to put touch controller to sleep");
 }
+
+bool HalGPIO::asyncInputActive() const { return inputMgr.asyncActive(); }
 
 bool HalGPIO::wasPressed(uint8_t buttonIndex) const { return inputMgr.wasPressed(buttonIndex); }
 

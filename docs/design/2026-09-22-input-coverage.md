@@ -54,6 +54,7 @@ refactor/fix plan (§5) before any code change of this round. Paradigm rules
 | B14 | Long-press Back / Confirm / page buttons in lists | go-home/file-browser/mode toggles | fixed thresholds (GO_HOME_MS 1000, LONG_PRESS_MS) — consumer-local UX constants | ReaderUtils.h:246-260, FileBrowserActivity.cpp:538, LibraryListActivity.cpp:713 |
 | B15 | Sticky shared OK/Power GPIO | CONFIRM vs POWER split | YES — `setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == SLEEP)` main.cpp:995 | main.cpp:995, InputManager.h:214-217 |
 | B16 | Long-press threshold events (`wasLongPressed`) | one-shot + release suppression; consumed globally by ActivityManager | n/a (mechanism) | MappedInputManager.cpp:455-461, ActivityManager.cpp:76 |
+| B17 | N queued press/release edges of one button (async poll task) | drained to a per-button count in `update()` (`edgecount::drainCount`, cap = queueLen 16); reader page turns net the counts into ONE N-page jump per refresh (`ReaderUtils::detectPageTurnSteps`, `ReaderActivity::pageTurnBy`); boolean `wasPressed/wasReleased` unchanged (count > 0). List-cursor jump = Phase 2 (per-activity opt-in) | YES — side layout + trigger edge mode (`SETTINGS.sideButtonLayout`, `longPressButtonBehavior`) | MappedInputManager.cpp:46-69, 320-364; ReaderUtils.h:67-122; TurnNetting.h; PageTurnBatch.h |
 
 Audit result: every button consumer reachable in this repo resolves through
 `mapButtonWith` (logical enums) or the main.cpp power zone. Of the power
@@ -150,6 +151,7 @@ Cross-source interference (replay-class):
 |---|---|---|
 | Button edge during touch gesture | 🔒 SDK | buttons + touch flow through independent queues (InputManager.h:259-293); manager snapshot reads both masks every tick; soak-verified |
 | Tap during e-ink refresh window → queued, delivered after | 🔒 SDK | async poll task queues taps (popTouchTap); design 2026-09-20-async-input §2; soak-verified |
+| Button press inside an e-ink refresh window → queued, delivered after when the async task is active | 🔒 | async poll task latches press+release edges on every board (`XERIF_ASYNC_INPUT` in [base]; HalGPIO.cpp beginAsync gate); if task creation fails, `asyncActive()` remains false and the historical polled path is used; design 2026-10-26-x3-x4-async-input §2 — replaces the historical X3/X4 press-loss when active (issue #259) |
 | Swipe followed by tap within one tick / reverse | 🔒 SDK | swipe + tap are separate one-shots from one release edge; classifier exclusivity enforced by moved-beyond-slop gating (InputManager.h fields touchMovedBeyondTapReleaseSlop / touchSuppressed); SDK unit-covered (event pop + classification contract) |
 | Multi-touch arrival while single-touch classifier mid-gesture | 🔒 SDK | `touchMultiContactSequence` suppresses single-contact classifiers until full release (InputManager.h field + multitouch math test) |
 | Home-key tap while touchscreen gesture active | ✅ | HomeButtonInputTest: SwipeCancelsPendingTapAndHoldIsConsumed (extended) — the manager feeds `wasSwipe()` into the classifier, which resets; taps during a hold resolve by gesture precedence |

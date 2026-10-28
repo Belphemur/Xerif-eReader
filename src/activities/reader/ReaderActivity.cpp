@@ -15,6 +15,7 @@
 #include "CrossPointState.h"
 #include "EpubReaderActivity.h"
 #include "FrontlightControl.h"
+#include "PageTurnBatch.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
@@ -48,6 +49,13 @@ std::unique_ptr<ReaderActivity> ReaderActivity::create(GfxRenderer& renderer, Ma
 }
 
 void ReaderActivity::applyInitialOrientation() { ReaderUtils::applyOrientation(renderer, SETTINGS.orientation); }
+
+bool ReaderActivity::pageTurnBy(const int steps) {
+  return pageturn::turnBy(steps, [this](const bool forward) {
+    if (!pageTurn(forward)) return pageturn::Step::Blocked;
+    return isAtEndOfBook() ? pageturn::Step::Boundary : pageturn::Step::Turned;
+  });
+}
 
 void ReaderActivity::disableFastInitialRefresh() { pagesUntilFullRefresh = 0; }
 
@@ -255,19 +263,17 @@ void ReaderActivity::loop() {
   if (handleBackNavigation()) return;
 
   const auto touch = ReaderUtils::detectTouchPageTurn(renderer, mappedInput);
-  auto [prevTriggered, nextTriggered, fromTilt] = ReaderUtils::detectPageTurn(mappedInput);
-  prevTriggered = prevTriggered || touch.prev;
-  nextTriggered = nextTriggered || touch.next;
-  if (!prevTriggered && !nextTriggered) return;
-  if (handleEndOfBookPageTurn(prevTriggered, nextTriggered)) return;
+  const auto turn = ReaderUtils::detectPageTurnSteps(mappedInput, touch);
+  if (!turn.prev && !turn.next) return;
+  if (handleEndOfBookPageTurn(turn.prev, turn.next)) return;
 
   const unsigned long heldMs = (touch.prev || touch.next) ? touch.heldMs : mappedInput.getHeldTime();
-  const bool skip =
-      !fromTilt && SETTINGS.longPressButtonBehavior == SETTINGS.CHAPTER_SKIP && heldMs >= ReaderUtils::SKIP_HOLD_MS;
+  const bool skip = !turn.fromTilt && SETTINGS.longPressButtonBehavior == SETTINGS.CHAPTER_SKIP &&
+                    heldMs >= ReaderUtils::SKIP_HOLD_MS;
 
-  const bool changed = skip ? skipPages(prevTriggered ? -10 : 10) : pageTurn(!prevTriggered);
+  const bool changed = skip ? skipPages(turnnet::chapterSkipAmount(turn.next, 10)) : pageTurnBy(turn.steps);
   // A skip is navigation, not reading: it never counts toward session dwell.
-  notePageTurn(!skip && !prevTriggered, changed);
+  notePageTurn(!skip && !turn.prev, changed);
   if (changed && (touch.prev || touch.next)) haptic_feedback::touchAction(skip);
   requestUpdate();
 }

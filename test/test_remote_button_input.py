@@ -32,10 +32,41 @@ struct HalGPIO {
   bool pressed = false, released = false, held = false;
   uint8_t button = 0;
   void update() {}
-  bool wasAnyPressed() const { return pressed; }
-  bool wasAnyReleased() const { return released; }
-  bool wasPressed(uint8_t b) const { return b == button && pressed; }
-  bool wasReleased(uint8_t b) const { return b == button && released; }
+  // Queued-edge aggregation (docs/design/2026-10-27-queued-input-aggregation.md
+  // §3.1): asyncMode models the SDK consume-on-check queue (each probe consumes
+  // one queued edge); sync mode keeps the historical idempotent event bit.
+  bool asyncMode = false;
+  mutable uint8_t pendingPressCount[7] = {}, pendingReleaseCount[7] = {};
+  bool asyncInputActive() const { return asyncMode; }
+  bool wasAnyPressed() const { return asyncMode ? anyPending() : pressed; }
+  bool wasAnyReleased() const { return asyncMode ? anyPending() : released; }
+  bool anyPending() const {
+    for (int b = 0; b < 7; ++b)
+      if (pendingPressCount[b] > 0 || pendingReleaseCount[b] > 0) return true;
+    return false;
+  }
+  void queuePress(uint8_t b) { if (pendingPressCount[b] < 255) ++pendingPressCount[b]; }
+  void queueRelease(uint8_t b) { if (pendingReleaseCount[b] < 255) ++pendingReleaseCount[b]; }
+  bool wasPressed(uint8_t b) const {
+    if (asyncMode) {
+      if (pendingPressCount[b] > 0) {
+        --pendingPressCount[b];
+        return true;
+      }
+      return false;
+    }
+    return b == button && pressed;
+  }
+  bool wasReleased(uint8_t b) const {
+    if (asyncMode) {
+      if (pendingReleaseCount[b] > 0) {
+        --pendingReleaseCount[b];
+        return true;
+      }
+      return false;
+    }
+    return b == button && released;
+  }
   bool isPressed(uint8_t b) const { return b == button && held; }
   unsigned long getHeldTime() const { return 900; }
   bool wasCapacitivePagePressed() const { return false; }
@@ -117,6 +148,29 @@ int main() {
   }
   gpio.held = false;
   assert(input.injectRemoteClick(RemoteButton::Back));
+
+  // Queued-edge aggregation against the PRODUCTION update() (ADR §6): three
+  // queued presses of one button drain as wasPressedCount() == 3 in one
+  // frame — and do NOT replay over the following frames.
+  input.update();  // clears the remote click above
+  gpio.asyncMode = true;
+  for (int i = 0; i < 3; ++i) gpio.queuePress(static_cast<uint8_t>(Button::Right));
+  input.update();
+  assert(input.wasPressedCount(Button::Right) == 3);
+  assert(input.wasPressed(Button::Right));
+  assert(input.wasPressedCount(Button::Left) == 0);
+  input.update();
+  assert(input.wasPressedCount(Button::Right) == 0 && !input.wasPressed(Button::Right));
+  // A held button queues exactly ONE press edge: the count stays 1 (§3.3).
+  gpio.queuePress(static_cast<uint8_t>(Button::Right));
+  input.update();
+  assert(input.wasPressedCount(Button::Right) == 1 && input.wasPressed(Button::Right));
+  // Release counts drain the same way (release-mode triggers).
+  gpio.queueRelease(static_cast<uint8_t>(Button::Right));
+  gpio.queueRelease(static_cast<uint8_t>(Button::Right));
+  input.update();
+  assert(input.wasReleasedCount(Button::Right) == 2 && input.wasReleased(Button::Right));
+  assert(input.wasPressedCount(Button::Right) == 0);
 }
 """
 manager_source = (ROOT / "src/activities/ActivityManager.cpp").read_text()
