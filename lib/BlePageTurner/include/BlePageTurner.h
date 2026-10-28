@@ -122,8 +122,10 @@ struct Host {
   // The heap is in pieces (shouldRestart): save the reading place and restart into the book.
   void (*restartIntoBook)();
   // The pairing screen's start was refused for memory: restart into the pairing screen, where
-  // the saved opt-in retries the start on the pristine heap.
-  void (*restartIntoPairing)();
+  // the saved opt-in retries the start on the pristine heap. True when the reboot is armed;
+  // false when the host declines (touch boards keep the refusal message) - tick() spends the
+  // restart memo only on true.
+  bool (*restartIntoPairing)();
   // Keep the CPU at full speed while the radio is up or changing state.
   void (*holdFullSpeed)(bool hold);
   // One log line; `format` ends with "\n".

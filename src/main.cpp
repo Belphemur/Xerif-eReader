@@ -237,24 +237,29 @@ void silentRestartToSettings() { silentRestartTo(SILENT_REBOOT_TARGET_SETTINGS, 
 // touch boards skip the reboot entirely (a software reset would cycle their
 // externally powered touch/frontlight rails; they proceed into the flow on the
 // current heap instead). Carries the deepSleep/powerOff guards that the radio
-// reboot must honor, same as silentRestartTo.
-static void silentRestartForRadioFlow(const uint32_t target, const char* targetName) {
-  if (deepSleepInProgress || powerOffInProgress) return;  // sleeping/powering off supersedes the heap-defrag reboot
+// reboot must honor, same as silentRestartTo. True when the reboot is armed;
+// false when the host declined.
+static bool silentRestartForRadioFlow(const uint32_t target, const char* targetName) {
+  if (deepSleepInProgress || powerOffInProgress)
+    return false;  // sleeping/powering off supersedes the heap-defrag reboot
 #if FREEINK_CAP_TOUCH
-  if (BoardConfig::hasTouch()) return;
+  if (BoardConfig::hasTouch()) return false;
 #endif
   armSilentReboot(target);
   LOG_DBG("MAIN", "Silent restart (target=%s)", targetName);
   GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
   delay(50);
   ESP.restart();
+  return true;  // not reached: ESP.restart() does not return
 }
 
 void silentRestartToJoinNetwork() { silentRestartForRadioFlow(SILENT_REBOOT_TARGET_JOIN_NETWORK, "join-network"); }
 
 void silentRestartToHotspot() { silentRestartForRadioFlow(SILENT_REBOOT_TARGET_HOTSPOT, "hotspot"); }
 
-void silentRestartToBleSettings() { silentRestartForRadioFlow(SILENT_REBOOT_TARGET_BLE_SETTINGS, "ble-settings"); }
+bool silentRestartToBleSettings() {
+  return silentRestartForRadioFlow(SILENT_REBOOT_TARGET_BLE_SETTINGS, "ble-settings");
+}
 
 void restartToHomeAfterStorageHandoff() {
   if (deepSleepInProgress || powerOffInProgress) return;  // sleeping/powering off supersedes the storage handoff reboot
@@ -417,7 +422,7 @@ bool deliver(const bleturner::Action action) {
 bool yieldForRadio() { return true; }        // the reader keeps no parser alive between pages
 bool fileTransferActive() { return false; }  // file transfer is a screen of its own: the radio is off there
 void restartIntoBook() { silentRestartToReader(); }
-void restartIntoPairing() { silentRestartToBleSettings(); }
+bool restartIntoPairing() { return silentRestartToBleSettings(); }
 
 // The radio needs a steady clock while it is up or changing state.
 void holdFullSpeed(const bool hold) {

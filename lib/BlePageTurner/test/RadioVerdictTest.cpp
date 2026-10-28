@@ -46,14 +46,14 @@ TEST(RadioVerdictTest, Table) {
       {"idle: idle-stopped", with(Phase::Idle, [](RadioInputs& i) { i.idleStopped = true; }), Why::IdleNoLink},
       {"idle: book indexing", with(Phase::Idle, [](RadioInputs& i) { i.bookIndexing = true; }), Why::Indexing},
       {"idle: heap not asked yet", with(Phase::Idle, [](RadioInputs& i) { i.heap = {0, 0}; }), Why::Ok},
-      {"idle: pairing screen skips the book",
+      {"idle: pairing screen is not a tick start site",
        with(Phase::Idle,
             [](RadioInputs& i) {
               i.where = Where::PairingScreen;
               i.pageShown = false;
               i.bookIndexing = true;
             }),
-       Why::Ok},
+       Why::NotReading},
       {"idle: pairing screen still off",
        with(Phase::Idle,
             [](RadioInputs& i) {

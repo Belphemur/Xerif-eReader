@@ -78,6 +78,9 @@ struct HostState {
   bool transfer = false;
   unsigned restarts = 0;
   unsigned pairingRestarts = 0;
+  // When true, the pairing restart host call declines (the touch-board path): tick() must
+  // then leave the restart memo untouched.
+  bool pairingRestartDeclines = false;
   bool fullSpeed = false;
   std::vector<std::string> logs;
   std::vector<std::string> maps;

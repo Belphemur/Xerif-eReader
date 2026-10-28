@@ -37,12 +37,14 @@ read the same in every language), appended after MAC Address:
 | Free Heap | `ESP.getFreeHeap()` | first input of every gate |
 | Min Free Heap | `ESP.getMinFreeHeap()` | worst watermark since boot — the OOM signal |
 | Largest Free Block | `ESP.getMaxAllocHeap()` | second input of every gate (fragmentation) |
-| PSRAM | `ESP.getPsramSize()` (`No` when 0) | separates S3 profiles from the C3 baseline |
+| PSRAM | `HalMemory::getPsramHeap().totalBytes` (`No` when 0) | separates S3 profiles from the C3 baseline |
 
 Values are a snapshot taken in `onEnter()` (the activity re-enters on every
 navigation to it), which is exactly the moment a support conversation cares
 about: the user walks to About *after* the failure. No allocations beyond the
-existing `rowValues_` strings.
+existing `rowValues_` strings. PSRAM is read through the HAL
+(`HalMemory::getPsramHeap()`) like every other SDK capability, not through
+`ESP` directly.
 
 The simulator's ESP shim (`crosspoint-simulator/src/Arduino.h`) gains the
 missing `getPsramSize()` stub returning 0, per its HAL-stub rule.
@@ -100,10 +102,23 @@ The X3 button-class devices — where #267 lives — get the recovery.
    ```cpp
    if (detail::pairingRestartWanted() && config->enabled && s.where == Where::PairingScreen &&
        !s.sleeping && !s.storageBusy && !busy() && !s.wifiOn) {
-     heapTracker.restarting();
-     host->restartIntoPairing();
+     if (host->restartIntoPairing()) {
+       heapTracker.restarting();  // the reboot is armed: the one restart is spent
+     } else {
+       heapTracker.clearPairingWanted();  // declined: drop the ask, keep the reader's budget
+     }
    }
    ```
+
+   `Host::restartIntoPairing` returns whether the reboot was armed. The memo is
+   spent only on acceptance: a declined ask (touch boards, sleep or power-off in
+   progress) drops the latch and leaves the reader's one restart intact. A new
+   start attempt (`startSync`/`startAsync`) also resets `startRefusal` and drops
+   a stale pairing latch, so only the latest attempt's verdict can ask for the
+   restart. The pairing screen never becomes a tick-driven start site:
+   `radioVerdict(Phase::Idle)` keeps answering `NotReading` there, and the radio
+   starts only through the explicit `switchOn()` (the toggle, and `onEnter()`
+   after the restart).
 3. The reader branch keeps its existing condition and target — the fix removes
    the stale-`wanted`-fires-in-the-reader surprise only in the sense that the
    pairing screen now consumes the latch first; a `HeapInPieces` streak from a

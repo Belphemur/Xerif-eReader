@@ -170,13 +170,15 @@ TEST(RadioVerdictS3Test, TheFourMeasuredSituationsAndThePairingScreenAllPass) {
 }
 
 // The first pairing: the radio has to come up from the Bluetooth screen, which sits on Settings.
+// The tick never starts it there (Idle answers NotReading): the toggle's switchOn() does, and
+// the heap rules below still gate that start.
 TEST(RadioVerdictS3Test, TheFirstPairingStartsFromTheSettingsScreen) {
   RadioInputs in{};
   in.phase = Phase::Idle;
   in.enabled = true;
   in.where = Where::PairingScreen;
   in.heap = kPairingBefore;
-  EXPECT_EQ(radioVerdict(in, kS3Profile), Why::Ok);
+  EXPECT_EQ(radioVerdict(in, kS3Profile), Why::NotReading);
   in.phase = Phase::BeforeStart;
   EXPECT_EQ(radioVerdict(in, kS3Profile), Why::Ok) << "117,360 free and 73,716 largest";
   in.phase = Phase::JustStarted;

@@ -4,6 +4,7 @@
 #include <GfxRenderer.h>
 #include <HalClock.h>
 #include <HalFrontlight.h>
+#include <HalMemory.h>
 #include <HalTiltSensor.h>
 #include <esp_mac.h>
 
@@ -144,7 +145,7 @@ void AboutActivity::onEnter() {
   rowValues_[ITEM_MIN_FREE_HEAP] = buf;
   snprintf(buf, sizeof(buf), "%u kB", static_cast<unsigned>(ESP.getMaxAllocHeap() / 1024u));
   rowValues_[ITEM_LARGEST_BLOCK] = buf;
-  const uint32_t psram = ESP.getPsramSize();
+  const uint32_t psram = static_cast<uint32_t>(HalMemory::getPsramHeap().totalBytes);
   rowValues_[ITEM_PSRAM] = psram != 0 ? std::to_string(psram / 1024u) + " kB" : "No";
 }
 

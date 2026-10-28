@@ -29,7 +29,10 @@ bool hostYield() {
 }
 bool hostTransfer() { return theHost.transfer; }
 void hostRestart() { ++theHost.restarts; }
-void hostPairingRestart() { ++theHost.pairingRestarts; }
+bool hostPairingRestart() {
+  ++theHost.pairingRestarts;
+  return !theHost.pairingRestartDeclines;
+}
 void hostHold(const bool hold) { theHost.fullSpeed = hold; }
 void hostLog(bool error, const char* format, va_list args) {
   char line[256];

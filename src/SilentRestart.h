@@ -22,8 +22,10 @@ void silentRestartToHotspot();
 // Reboot into the Bluetooth Page Turner settings screen on a pristine heap,
 // after a radio start refused for memory there. The saved opt-in retries the
 // start on re-entry. No-op on touch boards (a soft reset would cycle their
-// externally-powered rails); the caller then proceeds.
-void silentRestartToBleSettings();
+// externally-powered rails); the caller then proceeds. False when the host
+// declined the reboot (touch boards, sleep or power-off in progress): the
+// pairing restart must not spend its RTC memo on a declined ask.
+bool silentRestartToBleSettings();
 
 // Reboots immediately after an activity releases exclusive raw storage. The
 // RTC target ensures setup() lands on Home instead of resuming a reader.
