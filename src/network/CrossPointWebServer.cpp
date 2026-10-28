@@ -150,10 +150,10 @@ CrossPointWebServer::CrossPointWebServer() {}
 
 CrossPointWebServer::~CrossPointWebServer() { stop(); }
 
-void CrossPointWebServer::begin() {
+bool CrossPointWebServer::begin() {
   if (running) {
     LOG_DBG("WEB", "Web server already running");
-    return;
+    return true;
   }
 
   // Check if we have a valid network connection (either STA connected or AP mode)
@@ -163,7 +163,7 @@ void CrossPointWebServer::begin() {
 
   if (!isStaConnected && !isInApMode) {
     LOG_DBG("WEB", "Cannot start webserver - no valid network (mode=%d, status=%d)", wifiMode, WiFi.status());
-    return;
+    return false;
   }
 
   // Store AP mode flag for later use (e.g., in handleStatus)
@@ -173,7 +173,15 @@ void CrossPointWebServer::begin() {
   LOG_DBG("WEB", "Network mode: %s", apMode ? "AP" : "STA");
 
   LOG_DBG("WEB", "Creating web server on port %d...", port);
-  server.reset(new CrossPointHttpServer(port));
+  // Every allocation from here to `running = true` is no-throw: under
+  // -fno-exceptions a throwing new aborts the device (issue #258, PC
+  // 0x422cffcd — the WebSocket server allocation with 928 B free).
+  server = makeUniqueNoThrow<CrossPointHttpServer>(port);
+  if (!server) {
+    LOG_ERR("WEB", "Out of memory for web server (free=%u maxblock=%u)", static_cast<unsigned>(ESP.getFreeHeap()),
+            static_cast<unsigned>(ESP.getMaxAllocHeap()));
+    return false;
+  }
 
   // Disable WiFi sleep to improve responsiveness and prevent 'unreachable' errors.
   // This is critical for reliable web server operation on ESP32.
@@ -186,11 +194,6 @@ void CrossPointWebServer::begin() {
   // We rely on disabling WiFi sleep for responsiveness.
 
   LOG_DBG("WEB", "[MEM] Free heap after WebServer allocation: %d bytes", ESP.getFreeHeap());
-
-  if (!server) {
-    LOG_ERR("WEB", "Failed to create WebServer!");
-    return;
-  }
 
   // Add Access-Control-Allow-* headers to every response so web-based clients
   // and PWAs on other origins can use the HTTP API. Preflight OPTIONS requests
@@ -274,14 +277,26 @@ void CrossPointWebServer::begin() {
   const char* collectedHeaders[] = {"Depth",      "Destination", "Overwrite",    "If",
                                     "Lock-Token", "Timeout",     "If-None-Match"};
   server->collectHeaders(collectedHeaders, 7);
-  server->addHandler(new WebDAVHandler());  // Note: WebDAVHandler will be deleted by WebServer when server is stopped
+  auto webdavHandler = makeUniqueNoThrow<WebDAVHandler>();
+  if (!webdavHandler) {
+    LOG_ERR("WEB", "Out of memory for WebDAV handler (free=%u maxblock=%u)", static_cast<unsigned>(ESP.getFreeHeap()),
+            static_cast<unsigned>(ESP.getMaxAllocHeap()));
+    return false;
+  }
+  // WebDAVHandler will be deleted by WebServer when server is stopped
+  server->addHandler(webdavHandler.release());
   LOG_DBG("WEB", "WebDAV handler initialized");
 
   server->begin();
 
   // Start WebSocket server for fast binary uploads
   LOG_DBG("WEB", "Starting WebSocket server on port %d...", wsPort);
-  wsServer.reset(new WebSocketsServer(wsPort));
+  wsServer = makeUniqueNoThrow<WebSocketsServer>(wsPort);
+  if (!wsServer) {
+    LOG_ERR("WEB", "Out of memory for WebSocket server (free=%u maxblock=%u)", static_cast<unsigned>(ESP.getFreeHeap()),
+            static_cast<unsigned>(ESP.getMaxAllocHeap()));
+    return false;
+  }
   wsInstance = const_cast<CrossPointWebServer*>(this);
   wsServer->begin();
   wsServer->onEvent(wsEventCallback);
@@ -303,6 +318,7 @@ void CrossPointWebServer::begin() {
   LOG_DBG("WEB", "Access at http://%s/", ipAddr.c_str());
   LOG_DBG("WEB", "WebSocket at ws://%s:%d/", ipAddr.c_str(), wsPort);
   LOG_DBG("WEB", "[MEM] Free heap after server.begin(): %d bytes", ESP.getFreeHeap());
+  return true;
 }
 
 void CrossPointWebServer::suspendTransferServices() {

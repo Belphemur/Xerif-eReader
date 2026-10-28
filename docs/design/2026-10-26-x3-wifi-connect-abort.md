@@ -292,3 +292,144 @@ fragmentation source nor its throwing allocation; a web server that still
 cannot be allocated now degrades to a visible "go home" instead of a reboot.
 `/crash_report.txt` files from v2.12.0+ will carry the `WEBACT` heap
 breadcrumbs and can no longer abort at this site.
+
+## Addendum 3 (2026-10-27): crash still reproducible in v2.12.1 — the throw
+site moved *into* `begin()`, and the AP (hotspot/QR) path has no heap-defrag
+reboot at all
+
+Reporter dreysnaps posted a v2.12.1-dev `/crash_report.txt` on issue #258 (PC
+`0x422cffcd`). Decoding it (log window is conclusive; PC not symbolized
+— `b51b05b` is a CI build id, not a commit sha present in the repo):
+
+- The v2.12.0 fix (Addendum 2) hardened only the *outer* allocation in
+  `CrossPointWebServerActivity::startWebServer()` with `makeUniqueNoThrow`
+  (`CrossPointWebServerActivity.cpp:319`). The reporter's first attempt
+  behaved exactly as designed — it logged
+  `LOG_ERR("Out of memory for web server ...")` (a87d4018) and returned to
+  Home instead of rebooting — but the *second* attempt still aborted.
+- Log tail shows the outer alloc **succeeded** then the heap collapsed:
+  `[MEM] Free heap after WebServer allocation: 6784 bytes` →
+  `[MEM] Free heap after route setup: 928 bytes` (30 route lambdas consumed
+  the remainder) → `Starting WebSocket server on port 81...` →
+  `abort() was called at PC 0x422cffcd`. The abort lands between the
+  "Starting WebSocket server" and "WebSocket server started" traces, pinning it
+  to the **next** throwing `new` inside `CrossPointWebServer::begin()`:
+- `src/network/CrossPointWebServer.cpp:284` — `wsServer.reset(new WebSocketsServer(wsPort))`.
+  With 928 bytes free, `operator new` throws → `std::bad_alloc` →
+  `std::terminate` → `abort()` under `-fno-exceptions`.
+
+### Remaining throwing allocations in `begin()` (all unguarded by `isRunning()`)
+
+| File:Line | Allocation | AP-only? |
+| --- | --- | --- |
+| `CrossPointWebServer.cpp:176` | `new CrossPointHttpServer(port)` | no  |
+| `CrossPointWebServer.cpp:277` | `new WebDAVHandler()` | no  |
+| `CrossPointWebServer.cpp:284` | `new WebSocketsServer(wsPort)` | no  |
+| `CrossPointWebServerActivity.cpp:288` | `new DNSServer()` (in `startAccessPoint`) | **yes** — AP/QR path |
+
+None of these are reachable by the activity's `isRunning()` failure check —
+they abort before it is evaluated (§5's "log-and-onGoHome" path only covers the
+outer object).
+
+### The AP/QR gap is worse than the STA path
+
+The heap-defrag reboot at mode selection is **Join Network only**:
+`CrossPointWebServerActivity::onNetworkModeSelected()` (`:149`) gates the call to
+`silentRestartToJoinNetwork()` (`main.cpp:233`) on `JOIN_NETWORK`. The
+Create Hotspot / QR flow never defrags; it runs `startAccessPoint()` (`:246`)
+— including the throwing `new DNSServer()` at `:288` — on the current heap
+straight out of the reader, where the e-ink framebuffer (52 KB on X3) + reading
+session state leave the heap already fragmented. This is the path the reporter's
+feature ("start the device in AP mode with a clear QR code for phone/computer to
+send ebooks") actually exercises; Join Network was just his repro vehicle in
+#258 because the two share the same `begin()` tail.
+
+### Why the second attempt got further with *less* heap
+
+The first attempt's graceful `onGoHome()` tore the outer web-server object but
+left WiFi + lwIP + mDNS resident (STA isn't torn down until `onExit()`,
+`:134-137`), so fragmentation deepened for the second attempt. The heap
+accounting on X3 (no PSRAM; 146 KB free at boot per the new report) is
+structural: WiFi (~45 KB per the `onEnter` comment at `:72`) + lwIP + mDNS +
+NTP/tz + SD-font caches already consume the bulk before `begin()`, leaving the
+web stack (http server + 30 route lambdas + WebDAV + WebSocket client array)
+~40 KB short. This is not recoverable by retry alone.
+
+## Design (Addendum 3) — one funnel, DRY over everything
+
+Per the repo coding philosophy (DRY > SOLID > KISS), the "low heap → silent
+restart → graceful fallback" knowledge must live in **one** place, not be
+re-pecified per network mode or per checkpoint.
+
+1. **One heap gate, called from every network entry to `begin()`.** Add
+   `bool CrossPointWebServerActivity::ensureNetworkStackHeap(NetworkMode mode)`
+   — the single copy of: the floor constants, the `ESP.getMaxAllocHeap()/
+   getFreeHeap()` measurement, the breadcrumb log, the bounded-retry latch, the
+   silent-restart arm, and the graceful-fallback decision. Call sites:
+   `onNetworkModeSelected` (both `JOIN_NETWORK` and `CREATE_HOTSPOT`, replacing
+   the `:149` mode-specific gate) and `startWebServer()` before `begin()` (the
+   shared tail both modes reach — `:296` for AP via `startAccessPoint`, `:230`
+   for STA via `onWifiSelectionComplete`).
+
+2. **AP gets the same reboot as Join Network.** Generalize the mode check at
+   `:149` to `mode == JOIN_NETWORK || mode == CREATE_HOTSPOT`, add a
+   `SILENT_REBOOT_TARGET_HOTSPOT` to the existing RTC target table
+   (`main.cpp:149-153`, bumped `TARGET_MAX`), dispatch it to a
+   `goToFileTransfer(startInHotspot=true)` in the boot resolver
+   (`main.cpp:1179-1188`), and replace the two booleans (`startInJoinNetwork`,
+   and a new AP twin) with the boot target the activity is constructed under —
+   one source of truth for "which mode to resume in" and "already rebooted once".
+   Folding `silentRestartToJoinNetwork()` into `silentRestartTo(SILENT_REBOOT_TARGET_HOTSPOT, "hotspot")`
+   also repairs its drift: the inline copy omits the `powerOffInProgress` guard
+   that `silentRestartTo` has (`main.cpp:211` vs `main.cpp:234`).
+
+3. **One failure path.** The preflight's graceful fallback reuses the existing
+   `LOG_ERR` + `onGoHome()` path (`:320-326`, `:341+`); the throwing `new`s in
+   `begin()` (`:176/277/284`) and `new DNSServer()` (`:288`) become
+   `makeUniqueNoThrow` null-checks feeding that same path — no second error
+   discipline. `begin()` reports failure via `isRunning()`; no-op on touch boards
+   (`startInJoinNetwork`'s existing `hasTouch` precedent at `main.cpp:239`).
+
+4. **Bounded retry.** The latch is one bool (`heapDefragRetried`) so a
+   structurally-underprovisioned device degrades to Home with breadcrumbs
+   instead of boot-looping — the load-bearing complexity the philosophy allows.
+   Two named constants, not one (pitfall: equal values ≠ equal jobs): the
+   mode-selection floor = `WEB_STACK_FLOOR + WIFI_WORKING_SET_RESERVE`
+   (~45 KB on X3, the `onEnter` comment), the tail floor = `WEB_STACK_FLOOR`
+   alone (~32-48 KB, mirroring the existing `HttpDownloader::MIN_TLS_FREE_HEAP`
+   style at `src/util/HttpDownloader.h:30-35`).
+
+### Decision log
+
+- (DRY) Funnel over per-mode/per-checkpoint guards — the loser (separate STA
+  and AP preflights, plus a Join-Network-only reboot) would duplicate the
+  threshold, the latch, and the breadcrumbs. (SOLID) the missing
+  `powerOffInProgress` guard in `silentRestartToJoinNetwork` is a race this
+  unification closes for free.
+- (KISS, pitfall exception) Two floor constants kept distinct: `WEB_STACK_FLOOR`
+  and `WIFI_WORKING_SET_RESERVE` compute different things; collapsing them to one
+  value would silently narrow the mode-selection check.
+- (SOLID) Bounded latch over unbounded restart: correctness under structural
+  shortage demands a terminal graceful fallback; KISS cannot excuse a boot loop.
+
+### Out of scope (DEFER)
+
+The symmetric `silentRestart()`-in-`onExit()` duplication across the other five
+WiFi activities (`ClockSyncActivity.cpp:41`, `OtaUpdateActivity.cpp:124`,
+`FontDownloadActivity.cpp:91`, `KOReaderAuthActivity.cpp:76`,
+`TtfFontDownloadActivity.cpp:102`, `CalibreConnectActivity.cpp:61`) — different
+futures, audited but not consolidated in this change.
+
+## Verification (Addendum 3)
+
+- Host unit test for the new `ensureNetworkStackHeap` verdict function
+  (mirrors `tlsheap::verdict` host tests — boundary cases: at-floor, free-heap
+  shortfall, fragmentation shortfall, both low, retry-latch exhausted).
+- `pio run -e x4pro` + CI C3 build compile. clang-format/cppcheck on touched tree.
+- Device check (owner): AP-mode File Transfer on an X3 from a reading session —
+  serial shows `WEBACT` heap breadcrumbs + either a successful QR or a single
+  visible graceful fallback; must not reboot mid-start. A second AP attempt
+  from the same boot must not loop.
+- The reporter's v2.12.1 repro re-run after the fix: expected first attempt
+  graceful (breadcrumbs), second attempt succeeds on the defragged heap, or
+  falls back to Home — never abort.

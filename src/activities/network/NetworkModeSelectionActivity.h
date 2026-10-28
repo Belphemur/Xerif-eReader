@@ -2,9 +2,8 @@
 
 #include <BoardConfig.h>
 
+#include "activities/NetworkMode.h"
 #include "activities/UiListActivity.h"
-
-enum class NetworkMode { JOIN_NETWORK, CONNECT_CALIBRE, CREATE_HOTSPOT, USB_DRIVE };
 
 /**
  * NetworkModeSelectionActivity presents the user with a choice:
