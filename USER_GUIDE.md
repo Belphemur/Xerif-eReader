@@ -215,16 +215,16 @@ Settings are grouped into **System**, **Display**, **Reader**, **Controls**, **L
   - "Dark" (default) - The default dark Crosspoint logo sleep screen
   - "Light" - The same default sleep screen, on a white background
   - "Custom" - Custom images from the SD card; see [Sleep Screen](#37-sleep-screen) below for more information
-  - "Cover" - The book cover image (Note: this is experimental and may not work as expected)
+  - "Cover" - The book cover image
   - "None" - A blank screen
   - "Cover + Custom" - The book cover image while actively reading, falls back to "Custom" behavior otherwise
   - "Quick resume" - The text of the last page read will be displayed on the sleep screen and a moon icon is shown on the edge of the screen. Waking up the device will return to the same page of the opened book. This is useful for quickly resuming reading without waiting for the device to fully wake up and load the book.
   - "Transparent" - A transparent overlay image drawn over the current screen; see [Sleep Screen](#37-sleep-screen) below for more information
   - "Cover + Transparent" - The transparent overlay image drawn over the cover of the last opened book, falls back to "Transparent" behavior if there is no book cover
-- **Sleep Screen Cover Mode**: How to display the book cover when "Cover" sleep screen is selected:
+- **Sleep Screen Cover Mode**: How to display the book cover or custom sleep image:
   
-  - "Fit" (default) - Scale the image down to fit centered on the screen, padding with white borders as necessary
-  - "Crop" - Scale the image down and crop as necessary to try to fill the screen (Note: this is experimental and may not work as expected)
+  - "Fit" (default) - Scale the image to fit centered on the screen, padding with white borders as necessary
+  - "Crop" - Scale the image and crop as necessary to try to fill the screen
 
 - **Sleep Screen Cover Filter**: What filter will be applied to the book cover when "Cover" sleep screen is selected:
   
@@ -571,7 +571,7 @@ The **Sleep Screen** setting controls what is displayed when the device goes to 
 
 #### Cover settings
 
-When using **Cover**, **Cover + Custom** or **Cover + Transparent**, two additional settings apply:
+When using **Custom**, **Cover**, **Cover + Custom** or **Cover + Transparent**, two additional settings apply:
 
 - **Sleep Screen Cover Mode**: **Fit** (scale to fit, white borders) or **Crop** (scale and crop to fill the screen).
 - **Sleep Screen Cover Filter**: **None** (grayscale), **Contrast** (black & white), or **Inverted** (inverted black & white).
@@ -582,6 +582,8 @@ To use custom sleep images, set the sleep screen mode to **Custom** or **Cover +
 
 - **Multiple Images (recommended):** Create a `.sleep` directory in the root of the SD card and place any number of `.bmp` images inside. One will be randomly selected each time the device sleeps. (A directory named `sleep` is also accepted as a fallback.)
 - **Single Image:** Place a file named `sleep.bmp` in the root directory. This takes priority over the `.sleep`/`sleep` directories.
+
+Like book covers, custom images are scaled to the screen using **Sleep Screen Cover Mode**. The first sleep with a new image takes longer while it is converted.
 
 #### Transparent overlay images
 
@@ -600,7 +602,7 @@ Transparent overlay files are intentionally separate from normal sleep images. R
 > - X3: Use a resolution of 528x792 pixels to match the device's screen resolution.
 
 > [!TIP]
-> You can set an image as the sleep screen cover directly from the BMP image viewer in the **[Browse Files](#33-browse-files-screen)** screen.
+> You can set an image as the sleep screen cover directly from the BMP image viewer in the **[Browse Files](#33-browse-files-screen)** screen. On touch devices, long-press the image.
 
 ---
 

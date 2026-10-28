@@ -138,6 +138,9 @@ add_subdirectory(absolute_grayscale)
 add_subdirectory(book_font_loader)
 add_subdirectory(sd_card_cache_storage)
 add_subdirectory(gif_support)
+
+add_subdirectory(bmp_to_bmp)
+
 add_subdirectory(sd_card_font)
 add_subdirectory(psram_image_staging)
 add_subdirectory(ttf_reader_runtime)
