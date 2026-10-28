@@ -341,6 +341,118 @@ TEST_F(RuntimeTest, ShortHeapNeverAsksForARestart) {
   EXPECT_FALSE(bleturner::detail::heapRestartWanted());
 }
 
+// The pairing screen asks with ONE refusal: the user is waiting in front of it, and the restart
+// lands back in the pairing screen, whose onEnter() retries the start on the pristine heap.
+TEST_F(RuntimeTest, PairingRefusalAsksForTheRestartOnTheFirstHeapInPieces) {
+  host().heap = {87308, 23540};
+  ASSERT_FALSE(bleturner::switchOn());
+  bleturner::requestPairingHeapRestart();
+  EXPECT_TRUE(bleturner::detail::pairingRestartWanted());
+
+  bleturner::tick(fake::pairing());
+  EXPECT_EQ(host().pairingRestarts, 1u);
+  EXPECT_EQ(host().restarts, 0u);  // the reader target is not hijacked by a pairing refusal
+  EXPECT_FALSE(bleturner::detail::pairingRestartWanted());
+}
+
+TEST_F(RuntimeTest, PairingRestartWaitsForWiFiOffAndFiresOnce) {
+  host().heap = {87308, 23540};
+  ASSERT_FALSE(bleturner::switchOn());
+  bleturner::requestPairingHeapRestart();
+
+  bleturner::Scene busy = fake::pairing();
+  busy.wifiOn = true;
+  bleturner::tick(busy);
+  EXPECT_EQ(host().pairingRestarts, 0u);
+  EXPECT_TRUE(bleturner::detail::pairingRestartWanted());  // still armed for a later pass
+
+  bleturner::tick(fake::pairing());
+  EXPECT_EQ(host().pairingRestarts, 1u);
+  bleturner::tick(fake::pairing());
+  EXPECT_EQ(host().pairingRestarts, 1u);  // one-shot: the memo is spent
+}
+
+TEST_F(RuntimeTest, ShortHeapAtPairingDoesNotArmTheRestart) {
+  host().heap = {bleturner::kMinimumFreeBytes - 1, 23540};
+  ASSERT_FALSE(bleturner::switchOn());
+  bleturner::requestPairingHeapRestart();
+  EXPECT_FALSE(bleturner::detail::pairingRestartWanted());
+  bleturner::tick(fake::pairing());
+  EXPECT_EQ(host().pairingRestarts, 0u);
+}
+
+TEST_F(RuntimeTest, PairingRestartIsBoundedByTheRadioMemo) {
+  host().heap = {87308, 23540};
+  ASSERT_FALSE(bleturner::switchOn());
+  bleturner::requestPairingHeapRestart();
+  bleturner::tick(fake::pairing());
+  ASSERT_EQ(host().pairingRestarts, 1u);
+
+  // A second refusal before the radio ever came up: the restart was already spent.
+  fake::reset(/*keepMemo=*/true);
+  bleturner::begin(fake::hostFns(), config);
+  host().heap = {87308, 23540};
+  ASSERT_FALSE(bleturner::switchOn());
+  bleturner::requestPairingHeapRestart();
+  EXPECT_FALSE(bleturner::detail::pairingRestartWanted());
+  const unsigned before = host().pairingRestarts;
+  bleturner::tick(fake::pairing());
+  EXPECT_EQ(host().pairingRestarts, before);
+}
+
+// The pairing screen must not become a tick-driven start site: the radio starts there only
+// through the explicit switchOn() (the toggle, and onEnter() after the restart). A per-pass
+// start loop would free the font caches on every main-loop pass and manufacture the three
+// refusals that arm the reader's restart.
+TEST_F(RuntimeTest, PairingScreenDoesNotStartTheRadioFromTheTick) {
+  bleturner::Scene screen = fake::pairing();
+  for (int i = 0; i < 40; ++i) {
+    radio().now += 1000;
+    bleturner::tick(screen);
+  }
+  EXPECT_EQ(radio().beginCalls, 0u);
+  EXPECT_EQ(host().yields, 0u);
+  EXPECT_EQ(host().pairingRestarts, 0u);
+  EXPECT_EQ(host().restarts, 0u);
+}
+
+// A host that declines the pairing restart (touch boards keep the refusal message) must not
+// spend the reader's one restart: the memo stays untouched, so a later heap in pieces in a
+// book still gets its restart.
+TEST_F(RuntimeTest, DeclinedPairingRestartKeepsTheReaderRestartBudget) {
+  host().heap = {87308, 23540};
+  ASSERT_FALSE(bleturner::switchOn());
+  bleturner::requestPairingHeapRestart();
+  host().pairingRestartDeclines = true;
+  bleturner::tick(fake::pairing());
+  EXPECT_EQ(host().pairingRestarts, 1u);                    // the host was asked...
+  EXPECT_FALSE(bleturner::detail::pairingRestartWanted());  // ...and the ask was dropped
+  // The memo is unspent: three fragmented starts in a book still arm the reader restart.
+  host().pairingRestartDeclines = false;
+  for (int i = 0; i < 3; ++i) ASSERT_FALSE(bleturner::switchOn());
+  EXPECT_TRUE(bleturner::detail::heapRestartWanted());
+}
+
+// Only the latest attempt may ask for the restart: a new switchOn() supersedes what an older
+// refusal armed, so a failure that is not about memory cannot reboot through a stale latch.
+TEST_F(RuntimeTest, FreshAttemptDropsAStalePairingRestart) {
+  host().heap = {87308, 23540};
+  ASSERT_FALSE(bleturner::switchOn());
+  bleturner::requestPairingHeapRestart();
+  ASSERT_TRUE(bleturner::detail::pairingRestartWanted());
+
+  // A fresh attempt that fails for a reason other than memory (the stack could not start):
+  // the stale pairing restart goes with the verdict it belonged to.
+  host().heap = {kEnoughFree, kEnoughLargest};
+  radio().beginResult = false;
+  ASSERT_FALSE(bleturner::switchOn());
+  EXPECT_FALSE(bleturner::detail::pairingRestartWanted());
+  bleturner::requestPairingHeapRestart();
+  EXPECT_FALSE(bleturner::detail::pairingRestartWanted());
+  bleturner::tick(fake::pairing());
+  EXPECT_EQ(host().pairingRestarts, 0u);
+}
+
 // X3, 29/09/2026, the 5,000-chapter book: the heap check passed every time (free about 80 KB,
 // largest 61,428), the stack came up and left largest 26,612, so every start rolled back, 7 of
 // 7, and the restart that rescued the same book on 27/09 never came.

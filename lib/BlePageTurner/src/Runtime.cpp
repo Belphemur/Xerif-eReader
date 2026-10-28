@@ -18,9 +18,11 @@ bool noDeliver(Action) { return false; }
 bool noYield() { return true; }
 bool noTransfer() { return false; }
 void noRestart() {}
+bool noRestartAsk() { return false; }
 void noHold(bool) {}
 void noLog(bool, const char*, va_list) {}
-constexpr Host kNoHost{noHeap, noRelease, noDeliver, noYield, noTransfer, noRestart, noHold, noLog, nullptr};
+constexpr Host kNoHost{noHeap,    noRelease,    noDeliver, noYield, noTransfer,
+                       noRestart, noRestartAsk, noHold,    noLog,   nullptr};
 Config noConfig;
 
 const Host* host = &kNoHost;
@@ -202,6 +204,10 @@ bool startSync() {
   readerStartDeferred.store(false, std::memory_order_relaxed);
   bool expected = false;
   if (!attemptInFlight.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) return false;
+  // A fresh attempt speaks for itself: no verdict (and no pairing restart) an older attempt
+  // left behind may answer for this one.
+  startRefusal.store(Why::Ok, std::memory_order_relaxed);
+  heapTracker.clearPairingWanted();
   attemptCancelled.store(false, std::memory_order_release);
   host->holdFullSpeed(true);
   const bool started = beginOwned();
@@ -323,6 +329,9 @@ bool startAsync() {
   readerStartDeferred.store(false, std::memory_order_relaxed);
   bool expected = false;
   if (!attemptInFlight.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) return false;
+  // Same rule as startSync(): the newest attempt owns the verdict and the pairing restart.
+  startRefusal.store(Why::Ok, std::memory_order_relaxed);
+  heapTracker.clearPairingWanted();
   if (port::stopping() || port::running()) {
     const bool running = port::running();
     attemptInFlight.store(false, std::memory_order_release);
@@ -358,6 +367,8 @@ bool stopForIdle() {
 
 bool heapRestartWanted() { return heapTracker.wanted.load(std::memory_order_acquire); }
 
+bool pairingRestartWanted() { return heapTracker.pairingWanted.load(std::memory_order_acquire); }
+
 #ifdef BLETURNER_TESTING
 void resetForTests() {
   host = &kNoHost;
@@ -375,6 +386,7 @@ void resetForTests() {
   startFromHome.store(false);
   heapTracker.fragmentedInRow = 0;
   heapTracker.wanted.store(false);
+  heapTracker.pairingWanted.store(false);
   visit = Visit{};
   lastCleanupMs = 0;
   idleSinceMs = 0;
@@ -549,6 +561,24 @@ bool tick(const Scene& s) {
     heapTracker.restarting();
     host->restartIntoBook();
   }
+  // The pairing screen asked for the radio and was refused for memory: one refusal is enough
+  // there (the user is waiting in front of it). The same guard set as the reader branch minus
+  // the reader-only terms; the restart lands back in the pairing screen, whose onEnter()
+  // retries the start on the pristine heap.
+  if (detail::pairingRestartWanted() && config->enabled && s.where == Where::PairingScreen && !s.sleeping &&
+      !s.storageBusy && !busy() && !s.wifiOn) {
+    const Heap heap = host->heap();
+    say(false, "Heap in pieces at pairing: free=%u largest=%u; silent restart to pairing\n",
+        static_cast<unsigned>(heap.freeBytes), static_cast<unsigned>(heap.largestBlock));
+    if (host->restartIntoPairing()) {
+      heapTracker.restarting();  // the reboot is armed: the one restart is spent
+    } else {
+      // The host declined (touch boards keep the refusal message, sleep supersedes): drop the
+      // ask and leave the reader's restart budget untouched. The next HeapInPieces refusal
+      // asks again.
+      heapTracker.clearPairingWanted();
+    }
+  }
   return acted;
 }
 
@@ -647,6 +677,12 @@ LinkNote linkNote() { return linkNoteNow.load(std::memory_order_relaxed); }
 void acknowledgeLinkNote() { stepLinkNote(false, true); }
 
 bool switchOn() { return startSync(); }
+
+void requestPairingHeapRestart() {
+  // Only a heap in pieces arms the restart: a heap short in total is not the restart's to fix,
+  // and a start that failed for another reason says nothing about the heap.
+  if (startRefusal.load(std::memory_order_relaxed) == Why::HeapInPieces) heapTracker.requestPairingRestart();
+}
 
 bool switchOff() {
   radioIdleStopped.store(false, std::memory_order_relaxed);

@@ -4,6 +4,7 @@
 #include <GfxRenderer.h>
 #include <HalClock.h>
 #include <HalFrontlight.h>
+#include <HalMemory.h>
 #include <HalTiltSensor.h>
 #include <esp_mac.h>
 
@@ -27,14 +28,31 @@ enum MenuItem {
   ITEM_RTC,
   ITEM_IMU,
   ITEM_MAC,
+  ITEM_FREE_HEAP,
+  ITEM_MIN_FREE_HEAP,
+  ITEM_LARGEST_BLOCK,
+  ITEM_PSRAM,
 };
 
 // Deliberately hardcoded English, exempt from the tr() rule: support reads
 // these screenshots across every device language, so the labels must be
 // identical on every unit.
 const char* const menuNames[AboutActivity::ITEM_COUNT] = {
-    "Device", "Firmware",          "Chip",        "Flash", "Display Controller", "Resolution", "Touch", "Frontlight",
-    "RTC",    "Tilt Sensor (IMU)", "MAC Address",
+    "Device",
+    "Firmware",
+    "Chip",
+    "Flash",
+    "Display Controller",
+    "Resolution",
+    "Touch",
+    "Frontlight",
+    "RTC",
+    "Tilt Sensor (IMU)",
+    "MAC Address",
+    "Free Heap",
+    "Min Free Heap",
+    "Largest Free Block",
+    "PSRAM",
 };
 
 // Chip part numbers, not user prose — deliberately untranslated.
@@ -95,7 +113,9 @@ void AboutActivity::onEnter() {
   // Hardware and firmware information is fixed after boot; fill it once here.
   // BoardConfig::ACTIVE reflects RUNTIME detection: selectDevice() picked the
   // profile and applyXteinkDisplayController() may have promoted the display
-  // controller to the panel actually found on the bus.
+  // controller to the panel actually found on the bus. The heap rows below are
+  // the exception: onEnter() runs on every entry, so they read as a snapshot
+  // taken when this screen opened.
   rowValues_[ITEM_DEVICE] = BoardConfig::ACTIVE.name;
   rowValues_[ITEM_FIRMWARE] = CROSSPOINT_VERSION;
   snprintf(buf, sizeof(buf), "%s rev %u", ESP.getChipModel(), static_cast<unsigned>(ESP.getChipRevision()));
@@ -115,6 +135,18 @@ void AboutActivity::onEnter() {
   esp_read_mac(mac, ESP_MAC_WIFI_STA);
   snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
   rowValues_[ITEM_MAC] = buf;
+  // Heap snapshot at screen entry, in kB. Free/Min/Largest are exactly the two
+  // quantities every heap gate in the firmware decides on (web server, TLS
+  // clock sync, BLE radio, font variants); Min is the worst watermark since
+  // boot. PSRAM separates the S3 profiles from the C3 baseline in a screenshot.
+  snprintf(buf, sizeof(buf), "%u kB", static_cast<unsigned>(ESP.getFreeHeap() / 1024u));
+  rowValues_[ITEM_FREE_HEAP] = buf;
+  snprintf(buf, sizeof(buf), "%u kB", static_cast<unsigned>(ESP.getMinFreeHeap() / 1024u));
+  rowValues_[ITEM_MIN_FREE_HEAP] = buf;
+  snprintf(buf, sizeof(buf), "%u kB", static_cast<unsigned>(ESP.getMaxAllocHeap() / 1024u));
+  rowValues_[ITEM_LARGEST_BLOCK] = buf;
+  const uint32_t psram = static_cast<uint32_t>(HalMemory::getPsramHeap().totalBytes);
+  rowValues_[ITEM_PSRAM] = psram != 0 ? std::to_string(psram / 1024u) + " kB" : "No";
 }
 
 void AboutActivity::buildScreen(UiScreen& screen) {

@@ -19,10 +19,7 @@
 #include "HapticFeedback.h"
 #include "MemSentinel.h"
 #include "OpdsServerStore.h"
-#ifdef READING_STATS_ENABLED
 #include "activities/reader/ReadingStatsMenuActivity.h"
-#include "settings/GlobalStatsActivity.h"
-#endif
 #include "boot_sleep/BootActivity.h"
 #include "boot_sleep/SleepActivity.h"
 #include "browser/OpdsBookBrowserActivity.h"
@@ -36,6 +33,8 @@
 #include "plugins/PluginCatalogActivity.h"
 #include "reader/ReaderActivity.h"
 #include "reader/RemoteTurnGate.h"
+#include "settings/BleSettingsActivity.h"
+#include "settings/GlobalStatsActivity.h"
 #include "settings/OpdsServerListActivity.h"
 #include "settings/SettingsListActivity.h"
 #include "util/BmpViewerActivity.h"
@@ -300,6 +299,15 @@ void ActivityManager::goToFileTransfer(const NetworkMode resumeMode) {
   replaceActivity(std::make_unique<CrossPointWebServerActivity>(renderer, mappedInput, resumeMode));
 }
 
+void ActivityManager::goToBleSettings() {
+  auto activity = makeUniqueNoThrow<BleSettingsActivity>(renderer, mappedInput);
+  if (!activity) {
+    LOG_ERR("ACT", "OOM: BleSettingsActivity");
+    return;
+  }
+  replaceActivity(std::move(activity));
+}
+
 void ActivityManager::goToUsbDrive() {
 #if FREEINK_CAP_USB_MSC
   auto activity = makeUniqueNoThrow<UsbDriveActivity>(renderer, mappedInput);
@@ -487,6 +495,10 @@ bool ActivityManager::isForegroundReader() const {
 
 bool ActivityManager::isRemoteReaderContext() const {
   return pendingAction == PendingAction::None && currentActivity && currentActivity->acceptsRemoteInput();
+}
+
+bool ActivityManager::isForegroundBleSettings() const {
+  return pendingAction == PendingAction::None && currentActivity && currentActivity->name == "BleSettings";
 }
 
 bool ActivityManager::remoteClick(const RemoteButton button) {
