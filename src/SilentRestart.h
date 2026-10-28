@@ -19,6 +19,11 @@ void silentRestartToJoinNetwork();
 // (AP/QR file-sharing path), by analogy to Join Network. No-op on touch
 // boards; the caller then proceeds.
 void silentRestartToHotspot();
+// Reboot into the Bluetooth Page Turner settings screen on a pristine heap,
+// after a radio start refused for memory there. The saved opt-in retries the
+// start on re-entry. No-op on touch boards (a soft reset would cycle their
+// externally-powered rails); the caller then proceeds.
+void silentRestartToBleSettings();
 
 // Reboots immediately after an activity releases exclusive raw storage. The
 // RTC target ensures setup() lands on Home instead of resuming a reader.

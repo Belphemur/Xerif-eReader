@@ -101,6 +101,9 @@ class ActivityManager {
   void goToUsbDrive();
   // openSection jumps straight into one group (End = the section list).
   void goToSettings(SettingsSection openSection = SettingsSection::End);
+  // Bluetooth Page Turner settings screen (the pairing screen): also the
+  // silentRestartToBleSettings() resume target.
+  void goToBleSettings();
   void goToFileBrowser(std::string path = {});
   void goToLibrary();
   void goToBrowser();
@@ -145,6 +148,10 @@ class ActivityManager {
   // a page or chapter turn from a remote. False when no book in front took the turn.
   bool isForegroundReader() const;
   bool isRemoteReaderContext() const;
+
+  // Foreground activity is the Bluetooth Page Turner settings screen (the
+  // pairing screen): the BLE runtime answers a pairing-restart request there.
+  bool isForegroundBleSettings() const;
   bool remoteClick(RemoteButton button);
   // Home is in front and has painted a frame of its own (not one left from the screen before).
   bool isForegroundHomeShown() const;

@@ -15,6 +15,7 @@ bool stopForIdle();
 // False while a start is in flight or the stack is still stopping.
 bool suspend(uint32_t endTimeoutMs);
 bool heapRestartWanted();
+bool pairingRestartWanted();
 
 #ifdef BLETURNER_TESTING
 // Back to a fresh boot (the RTC memo excepted).

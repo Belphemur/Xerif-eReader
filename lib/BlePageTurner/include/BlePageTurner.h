@@ -121,6 +121,9 @@ struct Host {
   bool (*fileTransferActive)();
   // The heap is in pieces (shouldRestart): save the reading place and restart into the book.
   void (*restartIntoBook)();
+  // The pairing screen's start was refused for memory: restart into the pairing screen, where
+  // the saved opt-in retries the start on the pristine heap.
+  void (*restartIntoPairing)();
   // Keep the CPU at full speed while the radio is up or changing state.
   void (*holdFullSpeed)(bool hold);
   // One log line; `format` ends with "\n".
@@ -209,6 +212,12 @@ struct Peer {
 // One start now, on the calling task (the user asked for it). Clears the idle and memory
 // reasons first.
 bool switchOn();
+// The pairing screen's start ended for memory (call right after switchOn() returned false):
+// a heap in pieces arms the one-shot pairing restart, which tick() answers by rebooting into
+// the pairing screen (Host::restartIntoPairing) on a pristine heap, where onEnter() retries
+// the start. A heap short in total arms nothing: a restart cannot give back bytes the radio
+// does not need. No-op when the restart was already spent since the radio last came up.
+void requestPairingHeapRestart();
 // The user turned it off: clears the reasons and stops, waiting up to 1 s.
 bool switchOff();
 // Connection work while the settings screen is open. True when it changed the Config (a remote

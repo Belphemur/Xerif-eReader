@@ -77,6 +77,7 @@ struct HostState {
   unsigned yields = 0;
   bool transfer = false;
   unsigned restarts = 0;
+  unsigned pairingRestarts = 0;
   bool fullSpeed = false;
   std::vector<std::string> logs;
   std::vector<std::string> maps;
@@ -89,5 +90,8 @@ void reset(bool keepMemo = false);
 
 // A book in front with its page shown.
 bleturner::Scene reading(uint32_t visit = 1);
+
+// The Bluetooth settings screen in front (Where::PairingScreen).
+bleturner::Scene pairing();
 
 }  // namespace fake

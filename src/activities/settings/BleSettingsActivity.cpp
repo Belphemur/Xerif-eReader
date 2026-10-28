@@ -211,10 +211,15 @@ void BleSettingsActivity::activateIndex(const int index) {
       switch (static_cast<MenuAction>(code)) {
         case MenuAction::Enable:
           SETTINGS.ble.enabled = SETTINGS.ble.enabled ? 0 : 1;
-          if (SETTINGS.ble.enabled)
-            bleturner::switchOn();
-          else
+          if (SETTINGS.ble.enabled) {
+            if (!bleturner::switchOn()) {
+              // The start ended for memory (heap in pieces): arm the one-shot silent restart
+              // back into this screen, where onEnter() retries the start on the pristine heap.
+              bleturner::requestPairingHeapRestart();
+            }
+          } else {
             bleturner::switchOff();
+          }
           SETTINGS.saveToFile();
           break;
         case MenuAction::Scan:

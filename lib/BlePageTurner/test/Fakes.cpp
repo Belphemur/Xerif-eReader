@@ -29,6 +29,7 @@ bool hostYield() {
 }
 bool hostTransfer() { return theHost.transfer; }
 void hostRestart() { ++theHost.restarts; }
+void hostPairingRestart() { ++theHost.pairingRestarts; }
 void hostHold(const bool hold) { theHost.fullSpeed = hold; }
 void hostLog(bool error, const char* format, va_list args) {
   char line[256];
@@ -36,8 +37,8 @@ void hostLog(bool error, const char* format, va_list args) {
   theHost.logs.push_back(std::string(error ? "ERR " : "INF ") + line);
 }
 void hostMap(const char* tag) { theHost.maps.push_back(tag); }
-const bleturner::Host kHost{hostHeap,    hostRelease, hostDeliver, hostYield, hostTransfer,
-                            hostRestart, hostHold,    hostLog,     hostMap};
+const bleturner::Host kHost{hostHeap,    hostRelease,        hostDeliver, hostYield, hostTransfer,
+                            hostRestart, hostPairingRestart, hostHold,    hostLog,   hostMap};
 }  // namespace
 
 Radio& radio() { return theRadio; }
@@ -63,6 +64,13 @@ bleturner::Scene reading(const uint32_t visit) {
   s.where = bleturner::Where::Reader;
   s.visit = visit;
   s.pageShown = true;
+  return s;
+}
+
+// The Bluetooth settings screen in front (Where::PairingScreen).
+bleturner::Scene pairing() {
+  bleturner::Scene s{};
+  s.where = bleturner::Where::PairingScreen;
   return s;
 }
 

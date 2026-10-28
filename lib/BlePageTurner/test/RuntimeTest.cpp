@@ -341,6 +341,65 @@ TEST_F(RuntimeTest, ShortHeapNeverAsksForARestart) {
   EXPECT_FALSE(bleturner::detail::heapRestartWanted());
 }
 
+// The pairing screen asks with ONE refusal: the user is waiting in front of it, and the restart
+// lands back in the pairing screen, whose onEnter() retries the start on the pristine heap.
+TEST_F(RuntimeTest, PairingRefusalAsksForTheRestartOnTheFirstHeapInPieces) {
+  host().heap = {87308, 23540};
+  ASSERT_FALSE(bleturner::switchOn());
+  bleturner::requestPairingHeapRestart();
+  EXPECT_TRUE(bleturner::detail::pairingRestartWanted());
+
+  bleturner::tick(fake::pairing());
+  EXPECT_EQ(host().pairingRestarts, 1u);
+  EXPECT_EQ(host().restarts, 0u);  // the reader target is not hijacked by a pairing refusal
+  EXPECT_FALSE(bleturner::detail::pairingRestartWanted());
+}
+
+TEST_F(RuntimeTest, PairingRestartWaitsForWiFiOffAndFiresOnce) {
+  host().heap = {87308, 23540};
+  ASSERT_FALSE(bleturner::switchOn());
+  bleturner::requestPairingHeapRestart();
+
+  bleturner::Scene busy = fake::pairing();
+  busy.wifiOn = true;
+  bleturner::tick(busy);
+  EXPECT_EQ(host().pairingRestarts, 0u);
+  EXPECT_TRUE(bleturner::detail::pairingRestartWanted());  // still armed for a later pass
+
+  bleturner::tick(fake::pairing());
+  EXPECT_EQ(host().pairingRestarts, 1u);
+  bleturner::tick(fake::pairing());
+  EXPECT_EQ(host().pairingRestarts, 1u);  // one-shot: the memo is spent
+}
+
+TEST_F(RuntimeTest, ShortHeapAtPairingDoesNotArmTheRestart) {
+  host().heap = {bleturner::kMinimumFreeBytes - 1, 23540};
+  ASSERT_FALSE(bleturner::switchOn());
+  bleturner::requestPairingHeapRestart();
+  EXPECT_FALSE(bleturner::detail::pairingRestartWanted());
+  bleturner::tick(fake::pairing());
+  EXPECT_EQ(host().pairingRestarts, 0u);
+}
+
+TEST_F(RuntimeTest, PairingRestartIsBoundedByTheRadioMemo) {
+  host().heap = {87308, 23540};
+  ASSERT_FALSE(bleturner::switchOn());
+  bleturner::requestPairingHeapRestart();
+  bleturner::tick(fake::pairing());
+  ASSERT_EQ(host().pairingRestarts, 1u);
+
+  // A second refusal before the radio ever came up: the restart was already spent.
+  fake::reset(/*keepMemo=*/true);
+  bleturner::begin(fake::hostFns(), config);
+  host().heap = {87308, 23540};
+  ASSERT_FALSE(bleturner::switchOn());
+  bleturner::requestPairingHeapRestart();
+  EXPECT_FALSE(bleturner::detail::pairingRestartWanted());
+  const unsigned before = host().pairingRestarts;
+  bleturner::tick(fake::pairing());
+  EXPECT_EQ(host().pairingRestarts, before);
+}
+
 // X3, 29/09/2026, the 5,000-chapter book: the heap check passed every time (free about 80 KB,
 // largest 61,428), the stack came up and left largest 26,612, so every start rolled back, 7 of
 // 7, and the restart that rescued the same book on 27/09 never came.

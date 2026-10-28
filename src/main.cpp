@@ -151,7 +151,8 @@ constexpr uint32_t SILENT_REBOOT_TARGET_READER = 1;
 constexpr uint32_t SILENT_REBOOT_TARGET_SETTINGS = 2;
 constexpr uint32_t SILENT_REBOOT_TARGET_JOIN_NETWORK = 3;
 constexpr uint32_t SILENT_REBOOT_TARGET_HOTSPOT = 4;
-constexpr uint32_t SILENT_REBOOT_TARGET_MAX = SILENT_REBOOT_TARGET_HOTSPOT;
+constexpr uint32_t SILENT_REBOOT_TARGET_BLE_SETTINGS = 5;
+constexpr uint32_t SILENT_REBOOT_TARGET_MAX = SILENT_REBOOT_TARGET_BLE_SETTINGS;
 constexpr uint32_t SILENT_REBOOT_LIGHT_ON = 1U << 0;
 
 // How the device is coming back to life, resolved once at boot. Both resume
@@ -231,12 +232,13 @@ void silentRestartToReader() { silentRestartTo(SILENT_REBOOT_TARGET_READER, "rea
 
 void silentRestartToSettings() { silentRestartTo(SILENT_REBOOT_TARGET_SETTINGS, "settings"); }
 
-// Network-entry variant of silentRestartTo(): runs on the way *into* a
-// web-server flow, so touch boards skip the reboot entirely (a software reset
-// would cycle their externally powered touch/frontlight rails; they proceed
-// into the flow on the current heap instead). Carries the deepSleep/powerOff
-// guards that the network reboot must honor, same as silentRestartTo.
-static void silentRestartForNetworkMode(const uint32_t target, const char* targetName) {
+// Radio-entry variant of silentRestartTo(): runs on the way *into* a flow that
+// brings a radio up (the WiFi web-server flows, the BLE pairing screen), so
+// touch boards skip the reboot entirely (a software reset would cycle their
+// externally powered touch/frontlight rails; they proceed into the flow on the
+// current heap instead). Carries the deepSleep/powerOff guards that the radio
+// reboot must honor, same as silentRestartTo.
+static void silentRestartForRadioFlow(const uint32_t target, const char* targetName) {
   if (deepSleepInProgress || powerOffInProgress) return;  // sleeping/powering off supersedes the heap-defrag reboot
 #if FREEINK_CAP_TOUCH
   if (BoardConfig::hasTouch()) return;
@@ -248,9 +250,11 @@ static void silentRestartForNetworkMode(const uint32_t target, const char* targe
   ESP.restart();
 }
 
-void silentRestartToJoinNetwork() { silentRestartForNetworkMode(SILENT_REBOOT_TARGET_JOIN_NETWORK, "join-network"); }
+void silentRestartToJoinNetwork() { silentRestartForRadioFlow(SILENT_REBOOT_TARGET_JOIN_NETWORK, "join-network"); }
 
-void silentRestartToHotspot() { silentRestartForNetworkMode(SILENT_REBOOT_TARGET_HOTSPOT, "hotspot"); }
+void silentRestartToHotspot() { silentRestartForRadioFlow(SILENT_REBOOT_TARGET_HOTSPOT, "hotspot"); }
+
+void silentRestartToBleSettings() { silentRestartForRadioFlow(SILENT_REBOOT_TARGET_BLE_SETTINGS, "ble-settings"); }
 
 void restartToHomeAfterStorageHandoff() {
   if (deepSleepInProgress || powerOffInProgress) return;  // sleeping/powering off supersedes the storage handoff reboot
@@ -413,6 +417,7 @@ bool deliver(const bleturner::Action action) {
 bool yieldForRadio() { return true; }        // the reader keeps no parser alive between pages
 bool fileTransferActive() { return false; }  // file transfer is a screen of its own: the radio is off there
 void restartIntoBook() { silentRestartToReader(); }
+void restartIntoPairing() { silentRestartToBleSettings(); }
 
 // The radio needs a steady clock while it is up or changing state.
 void holdFullSpeed(const bool hold) {
@@ -433,8 +438,9 @@ void log(const bool error, const char* format, va_list args) {
 #endif
 }
 
-const bleturner::Host host{heap,          releaseCaches, deliver, yieldForRadio, fileTransferActive, restartIntoBook,
-                           holdFullSpeed, log,           nullptr};
+const bleturner::Host host{
+    heap,          releaseCaches, deliver, yieldForRadio, fileTransferActive, restartIntoBook, restartIntoPairing,
+    holdFullSpeed, log,           nullptr};
 }  // namespace pageturner
 
 constexpr char SLEEP_FRAME_FILE[] = "/.crosspoint/sleep_frame.bin";
@@ -1197,6 +1203,10 @@ void setup() {
   } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_SETTINGS) {
     // Back out of the WiFi rows and the user is where they left off, not on Home.
     activityManager.goToSettings(SettingsSection::Network);
+  } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_BLE_SETTINGS) {
+    // Rebooted after a BLE start refused for memory at the pairing screen; the saved opt-in
+    // retries the start in onEnter() on the pristine heap.
+    activityManager.goToBleSettings();
   } else if (resume == BootResume::Silent) {
     // target == home (or reader with no open book): land on home — don't fall
     // through to the sleep-wake "resume reader" logic, which fires on stale
@@ -1274,11 +1284,15 @@ void loop() {
   // before anything else.
   bleturner::Scene scene{};
   // Home counts only for builds whose radio may start there (the S3 profile, RadioPolicy.h).
+  // The pairing screen is named for the runtime: a refused start there arms the pairing
+  // restart, which tick() answers with silentRestartToBleSettings().
   const bool homeShown = activityManager.isForegroundHomeShown();
   const bool remoteContext = activityManager.isRemoteReaderContext();
-  scene.where = remoteContext ? bleturner::Where::Reader
-                : homeShown   ? bleturner::Where::Home
-                              : bleturner::Where::Elsewhere;
+  const bool pairingShown = activityManager.isForegroundBleSettings();
+  scene.where = remoteContext  ? bleturner::Where::Reader
+                : homeShown    ? bleturner::Where::Home
+                : pairingShown ? bleturner::Where::PairingScreen
+                               : bleturner::Where::Elsewhere;
   scene.visit = activityManager.visit();
   scene.pageShown = homeShown || remoteContext;
   scene.storageBusy = activityManager.requiresExclusiveStorageLoop();
