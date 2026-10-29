@@ -3,6 +3,7 @@
 #include <Epub/converters/ImageDimsProbe.h>
 #include <GfxRenderer.h>
 #include <gtest/gtest.h>
+#include <unistd.h>  // getpid: gtest_discover_tests runs each parametrized case
 
 #include <array>
 #include <cstring>
@@ -13,10 +14,8 @@
 #include <sstream>
 #include <string>
 #include <vector>
-
-#include <unistd.h>  // getpid: gtest_discover_tests runs each parametrized case
-                     // in its own process; a fixed temp name would race between
-                     // the concurrent ParserStopTest variants.
+// in its own process; a fixed temp name would race between
+// the concurrent ParserStopTest variants.
 
 #include "src/ReaderFontSizes.h"
 #include "src/activities/settings/TextSettingsPreview.h"
@@ -215,9 +214,9 @@ TEST_F(ChapterHtmlSlimParserTest, AbandonedLayoutStopsExtractingLines) {
 class ParserStopTest : public ChapterHtmlSlimParserTest {};
 
 TEST_P(ParserStopTest, PageCallbackStopsParsingAndClosesFile) {
-  filepath = (std::filesystem::temp_directory_path() /
-              ("crosspoint-parser-stop-" + std::to_string(::getpid()) + ".xhtml"))
-                 .string();  // unique per discovered-test process (see include note)
+  filepath =
+      (std::filesystem::temp_directory_path() / ("crosspoint-parser-stop-" + std::to_string(::getpid()) + ".xhtml"))
+          .string();  // unique per discovered-test process (see include note)
   std::string html = "<html><body>";
   for (int i = 0; i < 100; ++i) html += GetParam();
   html += "</body></html>";
