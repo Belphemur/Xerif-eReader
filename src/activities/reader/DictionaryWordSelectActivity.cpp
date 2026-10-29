@@ -617,6 +617,9 @@ void DictionaryWordSelectActivity::loop() {
   if (popup == Popup::NotFound || popup == Popup::Error) {
     if (millis() - popupTime >= POPUP_DURATION_MS) {
       if (!lookupText.empty() || (initialX >= 0 && initialY >= 0)) {
+        // An Error popup expiring cancels the lookup result; a NotFound one
+        // does not (the parent distinguishes a failed lookup from an error).
+        result.isCancelled = popup == Popup::Error;
         finish();
       } else {
         popup = Popup::None;
