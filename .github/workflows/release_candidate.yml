@@ -63,7 +63,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.platformio
-          key: pio-v3-${{ runner.os }}-${{ matrix.pio_env }}-${{ hashFiles('platformio.ini') }}
+          key: pio-v3-${{ runner.os }}-${{ matrix.pio_env }}-${{ hashFiles('platformio.ini', 'scripts/patch_pioarduino_cache.py') }}
           restore-keys: |
             pio-v3-${{ runner.os }}-${{ matrix.pio_env }}-
 
