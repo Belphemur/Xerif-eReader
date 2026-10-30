@@ -7317,22 +7317,36 @@ ScreenshotInfo EpubReaderActivity::getScreenshotInfo() const {
       if (pct > 100) pct = 100;
       info.progressPercent = pct;
       info.progressKnown = true;
+      // End of the visible page counts as read, mirroring the section path below;
+      // 100 only on the last page of the final chapter with a complete page cache.
+      const float chapterEnd = static_cast<float>(ttfPage + 1) / static_cast<float>(info.totalPages);
+      const int endPct = static_cast<int>(epub->calculateProgress(currentSpineIndex, chapterEnd) * 100.0f);
+      const bool cacheComplete = ttf_->cacheReady() && !ttf_->cachePartial();
+      const bool lastPage = cacheComplete && currentSpineIndex == epub->getSpineItemsCount() - 1 &&
+                            ttfPage >= static_cast<int>(ttfPageCount) - 1;
+      info.endProgressPercent = lastPage ? 100 : std::clamp(endPct, 0, 99);
     }
     return info;
   }
 #endif
-  if (section) {
-    info.currentPage = section->currentPage + 1;
-    info.totalPages = section->estimatedTotalPages();
-    if (epub && epub->getBookSize() > 0 && info.totalPages > 0) {
-      const float chapterProgress = static_cast<float>(section->currentPage) / static_cast<float>(info.totalPages);
-      int pct = static_cast<int>(epub->calculateProgress(currentSpineIndex, chapterProgress) * 100.0f + 0.5f);
-      if (pct < 0) pct = 0;
-      if (pct > 100) pct = 100;
-      info.progressPercent = pct;
+  // With the section released (reader left from the chapter list), the saved position stands in.
+  const ChapterPosition position = chapterPosition();
+  if (section || position.hasTotal()) {
+    info.currentPage = position.displayPage();
+    info.totalPages = position.totalPages;
+    if (epub && epub->getBookSize() > 0 && position.hasTotal()) {
+      info.progressPercent = bookPercentFor(position);
       info.progressKnown = true;
+      // 100 only on the last page of a fully laid-out chapter: rounding must not
+      // report a long book finished early. Without the section that is unknown.
+      const bool lastPage = section && currentSpineIndex == epub->getSpineItemsCount() - 1 && !section->isBuilding() &&
+                            !section->isPartial() && position.displayPage() >= position.totalPages;
+      const float chapterEnd = static_cast<float>(position.displayPage()) / static_cast<float>(position.totalPages);
+      const int endPct = static_cast<int>(epub->calculateProgress(currentSpineIndex, chapterEnd) * 100.0f);
+      info.endProgressPercent = lastPage ? 100 : std::clamp(endPct, 0, 99);
     }
   }
+  if (isAtEndOfBook()) info.endProgressPercent = 100;
   return info;
 }
 

@@ -140,7 +140,12 @@ namespace {
 //      upstream numbered v71 (RTL focus split), so the merged layout is
 //      max(72, 72) + 1 = v73 per the version-collision rule and both
 //      parents' v72 caches are invalidated.
-constexpr uint8_t SECTION_FILE_VERSION = 73;
+// v74: TrueType vector fonts load and advance .notdef for missing glyphs
+//      (upstream #4256, its v73). Both parents consumed v73 for different
+//      changes (the fork: ruby Chromium-style layout; upstream: this .notdef
+//      change), so the merged layout is max(73, 73) + 1 = v74 per the
+//      version-collision rule and both parents' v73 caches are invalidated.
+constexpr uint8_t SECTION_FILE_VERSION = 74;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects

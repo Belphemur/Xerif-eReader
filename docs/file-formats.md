@@ -102,6 +102,16 @@ every character in the base text as well as at the start and the end of the
 base text so that it becomes the same length as the ruby annotation. Book
 metadata and saved progress are kept.
 
+### Version 74
+
+Version 74 keeps the binary layout and rebuilds completed and partial sections.
+TrueType vector fonts now render and advance the .notdef glyph for missing
+characters instead of omitting them. Cached line breaks and word positions change
+for text containing glyph fallbacks. Book metadata and saved progress are kept. (Both sides' version 73 caches are invalidated too: the fork's
+version 73 is the ruby change above and upstream's version 73 was this .notdef
+change, so the merged layout takes 74.)
+
+
 ### Version 72
 
 Version 72 keeps the binary layout and rebuilds completed and partial sections.
