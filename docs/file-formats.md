@@ -90,6 +90,18 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
+### Version 73
+
+Version 73 keeps the binary layout and rebuilds completed and partial
+sections. Ruby layout now follows how Chromium renders ruby by default
+(`ruby-align: space-around; ruby-overhang: auto`): a ruby annotation can
+overhang neighboring base text by at most the smaller of half the ruby
+edge-character width and 1/4 of the neighboring word width, and when the
+ruby annotation is wider than its base text, spacing is inserted between
+every character in the base text as well as at the start and the end of the
+base text so that it becomes the same length as the ruby annotation. Book
+metadata and saved progress are kept.
+
 ### Version 72
 
 Version 72 keeps the binary layout and rebuilds completed and partial sections.

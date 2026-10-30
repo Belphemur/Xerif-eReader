@@ -133,7 +133,14 @@ namespace {
 //      SD-font glyph advance rounding; upstream: this RTL focus split), so the
 //      merged layout is max(71, 71) + 1 = v72 per the version-collision rule
 //      and both parents' v71 caches are invalidated.
-constexpr uint8_t SECTION_FILE_VERSION = 72;
+// v73: Ruby layout follows how Chromium renders ruby by default (upstream
+//      #4204, its v72): space-around alignment with bounded overhang into
+//      neighboring base text, and W3C simple-placement spacing when the ruby
+//      is wider than its base text. The fork's v72 carries the same change
+//      upstream numbered v71 (RTL focus split), so the merged layout is
+//      max(72, 72) + 1 = v73 per the version-collision rule and both
+//      parents' v72 caches are invalidated.
+constexpr uint8_t SECTION_FILE_VERSION = 73;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
