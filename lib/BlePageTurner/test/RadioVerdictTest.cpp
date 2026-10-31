@@ -155,7 +155,8 @@ TEST(RadioVerdictTest, Table) {
 TEST(RadioVerdictTest, Thresholds) {
   EXPECT_EQ(kMinimumFreeBytes, 65536u);
   EXPECT_EQ(kMinimumLargestBlockBytes, 32768u);
-  EXPECT_EQ(kStartFreeBytes, 81920u);
+  // Moved with the NimBLE pool trim (#267); see RadioPolicy.h for the delta.
+  EXPECT_EQ(kStartFreeBytes, 76240u);
   // The smallest stack in the X3 logs (106,140 free before, 55,496 after): a start the check refuses
   // could not have kept the reader's block.
   EXPECT_LT(kStartFreeBytes - 50644u, kMinimumLargestBlockBytes);

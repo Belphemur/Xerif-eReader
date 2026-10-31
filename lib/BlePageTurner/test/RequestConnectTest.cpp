@@ -69,7 +69,7 @@ TEST_F(RequestConnectTest, T3LinkedRemoteKeepsLinkAndReportsItsName) {
 }
 
 TEST_F(RequestConnectTest, T4LowTotalIsRefusedWithNoteAndNoRestart) {
-  fake::host().heap = {81919, 32768};
+  fake::host().heap = {76239, 32768};  // one under kStartFreeBytes: the take fails on total bytes
   bleturner::requestConnect();
   pass();
   pass();
@@ -83,7 +83,7 @@ TEST_F(RequestConnectTest, T4LowTotalIsRefusedWithNoteAndNoRestart) {
 }
 
 TEST_F(RequestConnectTest, T4FragmentedIsRefusedWithNoteAndNoRestart) {
-  fake::host().heap = {81920, 32767};
+  fake::host().heap = {76240, 32767};
   bleturner::requestConnect();
   pass();
   pass();
@@ -97,7 +97,7 @@ TEST_F(RequestConnectTest, T4FragmentedIsRefusedWithNoteAndNoRestart) {
 }
 
 TEST_F(RequestConnectTest, T4ExactHeapBoundaryStartsAndArmsSavedPick) {
-  fake::host().heap = {81920, 32768};
+  fake::host().heap = {76240, 32768};
   bleturner::requestConnect();
   EXPECT_EQ(fake::radio().creates, 0u);
   pass();
