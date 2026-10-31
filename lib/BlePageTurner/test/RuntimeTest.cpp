@@ -14,7 +14,7 @@ using bleturner::Config;
 using fake::host;
 using fake::radio;
 
-constexpr size_t kEnoughFree = 81920;
+constexpr size_t kEnoughFree = 76240;  // the gate: kStartFreeBytes after the #267 NimBLE trim
 constexpr size_t kEnoughLargest = 32768;
 
 class RuntimeTest : public ::testing::Test {
@@ -69,8 +69,8 @@ TEST_F(RuntimeTest, LowMemorySkipsHostWithoutInitialization) {
   EXPECT_EQ(host().releaseCalls, 1u);
   ASSERT_EQ(host().logs.size(), 1u);
   EXPECT_NE(host().logs.front().find("ERR HID begin skipped (insufficient-internal-heap)"), std::string::npos);
-  EXPECT_NE(host().logs.front().find("free=81919"), std::string::npos);
-  EXPECT_NE(host().logs.front().find("required_free=81920"), std::string::npos);
+  EXPECT_NE(host().logs.front().find("free=76239"), std::string::npos);
+  EXPECT_NE(host().logs.front().find("required_free=76240"), std::string::npos);
   EXPECT_EQ(host().maps.size(), 1u) << "a refusal prints the heap map (twice per boot at most)";
 }
 
@@ -490,7 +490,7 @@ TEST_F(RuntimeTest, HeapTheStackCannotLeaveABlockInIsRefusedBeforeTheStack) {
   for (int i = 0; i < 3; ++i) EXPECT_FALSE(bleturner::switchOn());
   EXPECT_EQ(radio().beginCalls, 0u);
   EXPECT_TRUE(bleturner::detail::heapRestartWanted());
-  EXPECT_NE(host().logs.back().find("free=73656 largest=47092 required_free=81920"), std::string::npos);
+  EXPECT_NE(host().logs.back().find("free=73656 largest=47092 required_free=76240"), std::string::npos);
 }
 
 // Refusals before the start and rollbacks after it are one streak; a start the stack itself

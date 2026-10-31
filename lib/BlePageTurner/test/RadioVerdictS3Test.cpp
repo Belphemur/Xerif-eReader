@@ -56,8 +56,9 @@ TEST(RadioVerdictS3Test, TheNumbersAreTheMeasuredOnesPlusMargin) {
 }
 
 TEST(RadioVerdictS3Test, TheDefaultProfileIsStillTheX3One) {
-  EXPECT_EQ(kStackBytes, 49152u);
-  EXPECT_EQ(kStartFreeBytes, 81920u);
+  // The X3 numbers moved with the NimBLE pool trim (#267): 49,152 − 5,680 computed static delta.
+  EXPECT_EQ(kStackBytes, 43472u);
+  EXPECT_EQ(kStartFreeBytes, 76240u);
   EXPECT_EQ(kX3Profile.stackBytes, kStackBytes);
   EXPECT_EQ(kX3Profile.startFreeBytes, kStartFreeBytes);
   EXPECT_EQ(kX3Profile.homeStartLargest, 0u);
