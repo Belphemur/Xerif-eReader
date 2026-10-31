@@ -171,7 +171,7 @@ TEST_F(LinkNoteTest, Journeys) {
        [](LinkNoteTest& t) {
          host().heap = {65535, 32768};
          t.pass(fake::reading());
-         host().heap = {81920, 32768};
+         host().heap = {76240, 32768};  // the gate after the #267 NimBLE trim
          for (int i = 0; i < 8; ++i) {
            radio().now += 1000;
            t.pass(fake::reading());
@@ -207,7 +207,7 @@ TEST_F(LinkNoteTest, Journeys) {
          t.pass(fake::reading());
          bleturner::acknowledgeLinkNote();
          t.pass(home());
-         host().heap = {81920, 32768};
+         host().heap = {76240, 32768};  // the gate after the #267 NimBLE trim
          t.pass(fake::reading(2));
        },
        LinkNote::Connecting},

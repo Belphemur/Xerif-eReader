@@ -20,7 +20,11 @@ inline constexpr size_t kMinimumLargestBlockBytes = 32768;
 // less than that plus the reader's block free can only roll back, and while it is up the render task
 // runs out of heap beside it: X3, 07/10/2026, free 73,656 before the start, 22,676 after, then
 // abort() in a page restore. It is refused before the stack comes up.
-inline constexpr size_t kStackBytes = 49152;
+// 31/10/2026 (#267): the NimBLE pools shrank for a computed static delta of 5,680 B (MSYS1 and MSYS2
+// 12→6, ACL-from-LL 8→4, host task stack 4096→3072; the controller act buffers are prebuilt, so
+// EX_CTRL_MAX_ACT=4→2 is not counted). The constant followed. The measured take on an X3 with the
+// trimmed pools is still to be confirmed on the device; re-pin here from the fresh measurement.
+inline constexpr size_t kStackBytes = 43472;  // 49152 − 5680
 inline constexpr size_t kStartFreeBytes = kStackBytes + kMinimumLargestBlockBytes;
 // A radio nobody connected to for this long stops: left on, it keeps the CPU at full speed
 // and a device lying still eats its battery.
