@@ -113,6 +113,33 @@ fixed.
 - `BLE_PAGE_TURNER_PROBE` is a diagnostic-only define, not shipped; use it to measure, do not
   leave it in `build_flags`.
 
+## Addendum (2026-10-31, owner directive): second trim pass in the same PR
+
+After pass 1 landed (PR #275, head `83040a2c`): computed static delta 5,680 B, gate re-pinned
+to `kStackBytes` 43,472 / `kStartFreeBytes` 76,240. The measured pristine X3 pairing offer
+(71,404 B free) is still **4,836 B short** of the new gate. The owner directs a second trim
+pass on the same branch/PR.
+
+**Superseded bound:** "MSYS_*=6 is the floor for this pass" no longer holds. The new bound is
+functional, not numeric: one-connection HID pairing and page-turning with a real remote must
+keep working; every additional trim cites the static size it frees from the generated
+sdkconfig or library source (`count × size`, file cited); anything not statically
+determinable counts as 0 (the pass-1 precedent for `MAX_ACT`).
+
+**Candidates** (sizes to be confirmed from the tree before applying):
+`CONFIG_BT_NIMBLE_ACL_BUF_COUNT` (host-side ACL mbuf pool, default 12 × ~264 B),
+MSYS_1/MSYS_2 below 6, `ACL_FROM_LL` below 4, controller scan duplicate-list sizes, and any
+other count-based `CONFIG_BT_NIMBLE_*`/`CONFIG_BT_CTRL_*` pool the sweep finds.
+
+**Closing math:** pass-2 target is an additional static delta ≥ 4,836 B so the gate meets the
+measured pristine offer. If the safe subset totals less, apply it, re-pin by the computed
+delta, and record the residual explicitly — the on-device measurement (real take + real
+`MAX_ACT` effect) then decides whether a further re-pin closes it.
+
+Change 2's derivation rule, Change 3's test-sync rule, and the Verification section apply
+unchanged to the second pass. Task-stack floors are NOT lowered below 3,072 (stack exhaustion
+crashes; the `BLE_PAGE_TURNER_STACK_PROBE` high-water check is a device step).
+
 ## Verification
 
 Build parity and host tests are the implementer's CI gate (steps 1-2). The device steps (step 3)
