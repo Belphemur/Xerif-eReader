@@ -24,7 +24,11 @@ inline constexpr size_t kMinimumLargestBlockBytes = 32768;
 // 12→6, ACL-from-LL 8→4, host task stack 4096→3072; the controller act buffers are prebuilt, so
 // EX_CTRL_MAX_ACT=4→2 is not counted). The constant followed. The measured take on an X3 with the
 // trimmed pools is still to be confirmed on the device; re-pin here from the fresh measurement.
-inline constexpr size_t kStackBytes = 43472;  // 49152 − 5680
+// 31/10/2026 (#267, second pass): another computed static delta of 3,024 B (MSYS1 6→4 ×256,
+// MSYS2 6→4 ×320, event pool 30→8 ×72, discardable event pool 8→4 ×72; ACL-from-LL stays 4 and
+// the host task stack stays 3,072). Cumulative computed delta 8,704 B. The measured take on an X3
+// with both trims is still to be confirmed on the device; re-pin here from the fresh measurement.
+inline constexpr size_t kStackBytes = 40448;  // 49152 − 5680 − 3024
 inline constexpr size_t kStartFreeBytes = kStackBytes + kMinimumLargestBlockBytes;
 // A radio nobody connected to for this long stops: left on, it keeps the CPU at full speed
 // and a device lying still eats its battery.

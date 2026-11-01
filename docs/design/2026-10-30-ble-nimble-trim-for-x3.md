@@ -140,6 +140,39 @@ Change 2's derivation rule, Change 3's test-sync rule, and the Verification sect
 unchanged to the second pass. Task-stack floors are NOT lowered below 3,072 (stack exhaustion
 crashes; the `BLE_PAGE_TURNER_STACK_PROBE` high-water check is a device step).
 
+## Addendum 2 (2026-10-31, as-built pass 2)
+
+Sweep result (NimBLE-Arduino 2.5.1, rebuilt `sdkconfig.default`): the only heap pools whose size
+is count-configurable are the transport/msys pools of `nimble/transport/src/transport.c` and
+`porting/nimble/src/os_msys_init.c`, sized `count × block` in 4-byte units
+(`typedef uint32_t os_membuf_t`). Every other candidate is 0: `ATT_MAX_PREP_ENTRIES`
+(server-side, role off) and `GATT_MAX_PROCS` live in static BSS (`ble_gattc_proc_mem`),
+`MAX_CCCDS`/`MAX_BONDS` in the store, `WHITELIST_SIZE`/`ADV_DUP_FILT_MAX` in the prebuilt
+controller blob, and `ACL_BUF_COUNT`/`ACL_BUF_SIZE` are dead knobs (syscfg `#undef`, no
+consumer). The FreeRTOS NPL pools of `porting/npl/freertos/src/npl_os_freertos.c` (80 events,
+8 callouts, 3 queues, 10 semaphores, 4 mutexes) are hard-coded, not knob-driven — out of scope
+for this pass.
+
+Applied (static delta 3,024 B): `TRANSPORT_EVT_COUNT` 30→8 (−1,584 B, 22 × 72 B),
+`TRANSPORT_EVT_DISCARD_COUNT` 8→4 (−288 B, 4 × 72 B), `MSYS_1_BLOCK_COUNT` 6→4 (−512 B),
+`MSYS_2_BLOCK_COUNT` 6→4 (−640 B). Per-event block 72 B = 4 × ⌈70/4⌉ (`EVT_SIZE`=70). ACL-from-LL
+stays 4: each frame block is `OS_ALIGN(255 + 40 + 4, 4)` = 300 B and pass 1 recorded it as one
+connection's headroom; the host task stack stays at the 3,072 floor. Functional bound: the msys
+total (8 blocks) is over 2× the ~3-4 concurrent mbufs a one-remote HID discovery needs, and 8
+non-discardable events are 2× the Apache NimBLE transport default (4); the ESP default of 30
+serves nine connections. If pairing regresses, raise `EVT_COUNT` to 16 first, then `MSYS_*`
+to 6.
+
+Derived target NOT met: 3,024 < 4,836, so the gate (kStackBytes 40,448, kStartFreeBytes 73,216)
+still sits 1,812 B above the measured pristine offer of 71,404. The closure relies on the
+trimmed pools lowering the real take on the device; the on-device measurement (fresh `free=` at
+the pairing screen, real take, real `MAX_ACT` effect) decides whether a further re-pin closes
+the 1,812 B.
+
+Test sync: the pinned constants moved to 40,448/73,216; the two behavioral X3-crash samples
+(RadioVerdictTest/RuntimeTest free 73,656) are re-based to 70,632 = gate − 2,584, because the
+trimmed pools free 8,704 B and the stock measurement cannot recur.
+
 ## Verification
 
 Build parity and host tests are the implementer's CI gate (steps 1-2). The device steps (step 3)
