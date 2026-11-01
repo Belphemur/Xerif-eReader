@@ -20,15 +20,28 @@ inline constexpr size_t kMinimumLargestBlockBytes = 32768;
 // less than that plus the reader's block free can only roll back, and while it is up the render task
 // runs out of heap beside it: X3, 07/10/2026, free 73,656 before the start, 22,676 after, then
 // abort() in a page restore. It is refused before the stack comes up.
-// 31/10/2026 (#267): the NimBLE pools shrank for a computed static delta of 5,680 B (MSYS1 and MSYS2
-// 12→6, ACL-from-LL 8→4, host task stack 4096→3072; the controller act buffers are prebuilt, so
-// EX_CTRL_MAX_ACT=4→2 is not counted). The constant followed. The measured take on an X3 with the
-// trimmed pools is still to be confirmed on the device; re-pin here from the fresh measurement.
-// 31/10/2026 (#267, second pass): another computed static delta of 3,024 B (MSYS1 6→4 ×256,
-// MSYS2 6→4 ×320, event pool 30→8 ×72, discardable event pool 8→4 ×72; ACL-from-LL stays 4 and
-// the host task stack stays 3,072). Cumulative computed delta 8,704 B. The measured take on an X3
-// with both trims is still to be confirmed on the device; re-pin here from the fresh measurement.
-inline constexpr size_t kStackBytes = 40448;  // 49152 − 5680 − 3024
+// 31/10/2026 (#267, first pass): computed static delta 5,680 B — MSYS1 and MSYS2 12→6, ACL-from-LL
+// 8→4, host task stack 4096→3072 (the controller act buffers are prebuilt, so MAX_ACT=4→2 is not
+// counted). The stack trim (−1,024 B) only leaves .bss — nimble_port_freertos.c's hs_stack is a
+// xTaskCreateStatic StackType_t — so it raises the boot offer and never appeared in the measured
+// drop; the other 4,656 B come out of the heap drop.
+// 1/11/2026 (review round 3): Copilot's finding held — NimBLE-Arduino's nimconfig.h redefines
+// CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT/_DISCARD_COUNT unconditionally (30/8), so the pass-2 sdkconfig
+// knobs had not reached the pools. scripts/patch_nimble.py now guards those two defines (the same
+// guard upstream already uses for ACL_FROM_LL 12 lines up) and a preprocessor probe verified the
+// effective counts follow the sdkconfig. MSYS_1 needed no patch: the generated sdkconfig.h maps the
+// legacy name CONFIG_BT_NIMBLE_MSYS1_BLOCK_COUNT onto the modern one (deprecated-options block),
+// and nimconfig.h's legacy branch reads exactly that.
+// Every trimmed pool allocates inside the measured drop (Runtime.cpp takes the samples before
+// port::begin() and right after it; os_msys_init/transport buf_alloc run inside): MSYS1 12→4
+// (−2,048), MSYS2 12→4 (−2,560), ACL 8→4 (−1,200), events 30→8 (−1,584), discardable 8→4 (−288) =
+// 7,680 B verified.
+// 1/11/2026 (review, same round): the constant is derived from the measured take with the constants
+// moving together (as CodeRabbit asked) instead of the historical 49,152 base minus deltas:
+// worst-case take 51,188 − verified heap savings 7,680 = 43,508. Predicted pristine offer =
+// 71,404 (measured, stock pools) + 1,024 (.bss stack) + 7,680 (heap pools) = 80,108, above this
+// 76,276 gate by 3,832. The on-device take remains the owner's re-pin step.
+inline constexpr size_t kStackBytes = 43508;  // 51188 − 7680
 inline constexpr size_t kStartFreeBytes = kStackBytes + kMinimumLargestBlockBytes;
 // A radio nobody connected to for this long stops: left on, it keeps the CPU at full speed
 // and a device lying still eats its battery.

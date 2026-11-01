@@ -169,6 +169,54 @@ trimmed pools lowering the real take on the device; the on-device measurement (f
 the pairing screen, real take, real `MAX_ACT` effect) decides whether a further re-pin closes
 the 1,812 B.
 
+## Addendum 3 (2026-11-01, review round 3: effective knobs and the take-based re-pin)
+
+Review round 3 of PR #275 put the pool arithmetic itself under the compile pipeline. Results,
+each verified with a riscv32-esp-elf preprocessor probe over the exact include chain the
+firmware compiles (sdkconfig.h → nimconfig.h → esp_nimble_cfg.h → syscfg/syscfg.h) with the
+post-rebuild sdkconfig values injected:
+
+| knob | reaches the pool? | mechanism |
+| --- | --- | --- |
+| `MSYS_1_BLOCK_COUNT=4` | yes | the generated core `sdkconfig.h` deprecated-options block maps the legacy name `CONFIG_BT_NIMBLE_MSYS1_BLOCK_COUNT` onto the modern one, and nimconfig.h's legacy branch reads exactly that |
+| `MSYS_2_BLOCK_COUNT=4` | yes | esp_nimble_cfg.h's `#ifndef` mapping reads the modern sdkconfig value |
+| `TRANSPORT_ACL_FROM_LL_COUNT=4` | yes | nimconfig.h guards its own define with `#ifndef` (sdkconfig wins) |
+| `TRANSPORT_EVT_COUNT=8` / `EVT_DISCARD_COUNT=4` | **no — until this addendum** | nimconfig.h lines 303-307 redefine both counts unconditionally (30/8) *after* `#include "sdkconfig.h"`; transport.c allocates 30+8 blocks and the claimed −1,584/−288 B did not exist |
+| host task stack 3072 | yes, but not of the heap drop | `nimble_port_freertos.c:129` compiles `hs_stack[NIMBLE_HS_STACK_SIZE]` as a static `StackType_t` array: the −1,024 B leaves .bss (boot offer grows) and never appeared in the measured take |
+
+**Fix (fix, not doc):** `scripts/patch_nimble.py` (wired as a pre-script in platformio.ini)
+guards the two nimconfig.h count defines with `#ifndef` — the same guard NimBLE-Arduino already
+uses for `TRANSPORT_ACL_FROM_LL_COUNT` twelve lines up — so the rebuilt sdkconfig wins. The
+splice is idempotent and fails the build on an unexpected upstream shape. The MSYS_1 legacy-name
+reliance is left untouched: the deprecated-options alias ships in the generated sdkconfig.h of
+the pioarduino framework this repo pins; if a framework bump ever drops it, the probe task below
+flags it.
+
+**Timing model (rejecting the qodo premise):** every trimmed pool allocates inside the measured
+startup drop — Runtime.cpp samples `BeforeStart` at :131-158, `port::begin()` runs in between,
+and `os_msys_init.c:157/164` (nimble_platform_mem_calloc) and transport.c's `ble_buf_alloc` run
+inside it; the JustStarted re-sample at :171 closes the window. So pool savings *do* shrink the
+take; what does not is the .bss stack.
+
+**Verified heap-pool savings, cumulative pass 1 + 2:** MSYS1 12→4 (−2,048) + MSYS2 12→4 (−2,560)
++ ACL 8→4 (−1,200) + events 30→8 (−1,584) + discardable 8→4 (−288) = **7,680 B**. The stack
+saving is accounted alongside as a boot-offer bump, not part of the take.
+
+**Re-pin (accepting CodeRabbit):** `kStackBytes` is now derived from the measured take at its
+worst case, not from the historical 49,152 base: 51,188 − 7,680 = **43,508**;
+`kStartFreeBytes` = 76,276. Predicted pristine offer = 71,404 (measured, stock pools) + 1,024
+(.bss stack) + 7,680 (heap pools) = 80,108, which clears the gate by 3,832 B — contingent on the
+savings being real at runtime, which step 3 confirms. Pinned tests moved in the same commit
+(RadioVerdictS3Test 43508/76276; Fakes.h/RequestConnectTest/RuntimeTest/LinkNoteTest 76276;
+the two behavioral X3-crash samples re-base to 73,692 = gate − 2,584, preserving the
+shortfall-under-gate semantics of the earlier re-base). The pass-2 figures of Addendum 2
+(3,024 B, gate 40,448/73,216) are superseded by this addendum.
+
+**Open probe:** at the next framework/dependency bump, re-run the table's probe
+definition (docs in scripts/patch_nimble.py) — one preprocessor pass asserting
+`MYNEWT_VAL(MSYS_1_BLOCK_COUNT) == 4`, `MYNEWT_VAL(BLE_TRANSPORT_EVT_COUNT) == 8` and
+`MYNEWT_VAL(BLE_TRANSPORT_EVT_DISCARDABLE_COUNT) == 4` catches a silent core change cheaply.
+
 Test sync: the pinned constants moved to 40,448/73,216; the two behavioral X3-crash samples
 (RadioVerdictTest/RuntimeTest free 73,656) are re-based to 70,632 = gate − 2,584, because the
 trimmed pools free 8,704 B and the stock measurement cannot recur.
@@ -185,8 +233,14 @@ are the owner's and may land after the PR opens — the PR body says so explicit
    `kStackBytes`/`kStartFreeBytes` (step 3 assertions) and still pass.
 3. X3 device (owner, post-PR), flash `pio run -e default -t upload -t monitor`:
    - trigger Settings → Bluetooth; capture the `required_free`/`largest` line and the new
-     `free=`/`largest=` pair. Assert `free ≥ 81,920` (or the re-pinned value) and
-     `largest ≥ 32,768` are now satisfied and the `Could not start Bluetooth` refusal is gone.
+     `free=`/`largest=` pair. Assert `free ≥ 76,276` (`kStartFreeBytes` after the Addendum 3
+     re-pin; the owner's fresh on-device take may move it again) and `largest ≥ 32,768` are now
+     satisfied. The refusal can come from two different paths — tell them apart by the log line:
+     the pre-start gate logs `HID begin skipped (insufficient-internal-heap)`
+     (Runtime.cpp logSkipped), a start that came up and failed the post-init checks logs
+     `HID begin rolled back (post-init-headroom)` (Runtime.cpp); both leave the same
+     `Could not start Bluetooth` status in the settings screen, so only the log line says
+     whether the constant or the real take is still wrong.
    - confirm the "Loading" overlay no longer appears (no silent restart needed).
    - pair a real BLE page-turner remote (many-service HID profile) and turn a page; assert the
      radio stays up once a book opens (the `RadioVerdict` Running phase must still see the bond).

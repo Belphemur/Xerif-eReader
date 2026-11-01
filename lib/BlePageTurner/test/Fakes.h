@@ -66,7 +66,7 @@ struct Radio {
 Radio& radio();
 
 struct HostState {
-  bleturner::Heap heap{73216, 32768};  // exactly at the X3 gate (kStartFreeBytes, #267 trims)
+  bleturner::Heap heap{76276, 32768};  // exactly at the X3 gate (kStartFreeBytes, #267 trims)
   unsigned heapReads = 0;
   unsigned releaseCalls = 0;
   // The render lock is held by someone else: releaseCaches fails while true.
