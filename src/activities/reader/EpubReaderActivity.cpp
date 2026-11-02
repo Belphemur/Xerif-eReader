@@ -1005,6 +1005,9 @@ bool EpubReaderActivity::loadBook() {
   if (!CLIPPINGS.loadForBook(epub->getPath(), epub->getTitle(), epub->getAuthor(), "epub")) {
     LOG_ERR("CLIP", "Failed to load clippings for %s", epub->getPath().c_str());
   }
+  // Second book_open sample: reopen + progress/bookmark/clipping init above can
+  // still lower the high-water mark after the one at the top of the function.
+  logLoopTaskHwm("book_open");
   return true;
 }
 

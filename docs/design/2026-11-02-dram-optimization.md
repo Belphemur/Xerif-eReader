@@ -2,7 +2,9 @@
 
 Date: 2026-11-02
 Author: Antoine Aflalo (Belphemur) via analysis agent
-Status: proposed — analysis only, no code changes in this job
+Status: implemented in PR #279 — Phase 0 (candidates 1–3) + Phase 1 (candidate 5) + loop HWM
+instrumentation; Phase 2 constant is measurement-only. See §7 addendum.
+Candidate 8 (AudioManager) was approved but is a no-op — see §7.5.
 Related: PR #275 (NimBLE X3 trim), PR #278 (sdk digest), upstream e8299b5f (web-server memory fix)
 
 ## Executive summary
@@ -424,10 +426,10 @@ is truly unused.
 |---|---|---|
 | x4pro | Phase 0 framebuffer in PSRAM | Open book → page turns → sleep → wake. No visible refresh lag. Serial log shows no `heap_caps_malloc` DRAM fallback for framebuffer. |
 | x4pro | Phase 0 InflateReader in PSRAM | Open large EPUB (>10 MB). `InflateReader` ring allocation succeeds. No OOM in serial log. |
-| x4pro | Phase 3 TTF scratch 192 KB | Open known "large chapter" book. Host tests pass; device shows no `Arena::alloc` failure in log. |
-| default | Phase 1 FontCacheManager 128 | Render mixed-script page (e.g. Russian + English). Page renders correctly; no infinite prewarm loop. |
-| default | Phase 2 loop stack measurement | Instrumented build logs HWM after every heavy path. Stable HWM < new stack size − 2 KB margin. |
-| default | Phase 6 sleep-frame RLE | Sleep 10×. `sleep_frame.bin` size < 20 KB each time. Resume shows correct frame. Legacy uncompressed frame loads after OTA rollback. |
+| x4pro | Phase 0 (candidate 3) TTF scratch 192 KB | Open known "large chapter" book. Host tests pass; device shows no `Arena::alloc` failure in log. |
+| default | Phase 1 (candidate 5) FontCacheManager 128 | Render mixed-script page (e.g. Russian + English). Page renders correctly; no infinite prewarm loop. |
+| default | Phase 2 (candidate 4, measurement-only) loop stack | Instrumented build logs HWM after every heavy path. Stable HWM < new stack size − 2 KB margin. |
+| default | Phase 3 (candidate 6) sleep-frame RLE | Sleep 10×. `sleep_frame.bin` size < 20 KB each time. Resume shows correct frame. Legacy uncompressed frame loads after OTA rollback. **Excluded from PR #279 — owner-gated follow-up (§6).** |
 | default | BLE gate (regression check) | Settings → Bluetooth. `free=` ≥ `kStartFreeBytes` (76,276). Pair many-service remote. Page-turn. No reboot loop on second toggle. |
 
 ---
@@ -488,6 +490,9 @@ The 1,536 B saving on both envs is from `MAX_SCAN_CODEPOINTS` 512→128
 
 - **Phase 2: loop stack right-sizing** — HWM instrumentation (Task 1) prints
   measurements; the constant stays at 49,152 B until owner reviews device logs.
+  The helper compiles out entirely unless the build enables
+  `ENABLE_SERIAL_LOG` with `LOG_LEVEL >= 2`, so telemetry-less builds pay
+  nothing for the stack scan.
 - **Phase 3: sleep-frame RLE + FIBP PSRAM cache** — excluded per owner
   decision; require separate sign-off.
 
@@ -501,3 +506,19 @@ The 1,536 B saving on both envs is from `MAX_SCAN_CODEPOINTS` 512→128
 | 74283c7c | fix | fix(build): add missing esp_heap_caps.h include in InflateReader.cpp |
 | df541cbd | Task 5 | feat(dram): enable FREEINK_FB_PSRAM for x4pro envs |
 | 7d07c30b | Task 6 | feat(dram): downsize TtfBookRuntime scratch 256→192 KB |
+
+### 7.5 Deviations from the approved scope
+
+- **Candidate 8 (AudioManager removal) is a no-op.** The candidate's evidence
+  (`platformio.ini:295`) was stale: `AudioManager` has never been an entry in
+  any `platformio.ini` `lib_deps` section (verified across the file's history),
+  so there is nothing to `lib_ignore` and no flash/static saving exists. The
+  approval is recorded here as implemented-by-finding-nothing-to-remove; no
+  code change ships for it.
+- **Phase numbering in the §5 soak table** now cites the §4 phase plus the
+  candidate number (the original rows used bare candidate numbers as phase
+  labels, which clashed with §4's phase list).
+- The loop-HWM helper is compile-gated to builds that emit `LOG_DBG`
+  telemetry (`ENABLE_SERIAL_LOG` + `LOG_LEVEL >= 2`). Measurement builds opt
+  in the same way they do for all `LOG_*` output; production and
+  serial-disabled builds no longer pay the stack-scan cost.

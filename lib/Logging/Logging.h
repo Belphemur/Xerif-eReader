@@ -110,11 +110,17 @@ inline void logMemAt(const char* stage) {
 #ifdef ESP_PLATFORM
 // Log the loop task's stack high-water mark after heavy paths.
 // Used for measurement-only builds to determine safe stack constants.
-// Gated behind LOG_DBG so normal runs are not spammed.
+// Compiled out entirely unless this build actually emits LOG_DBG telemetry:
+// the stack scan costs a whole-pass walk that telemetry-less builds should
+// never pay (release and serial-disabled builds).
+#if defined(ENABLE_SERIAL_LOG) && LOG_LEVEL >= 2
 inline void logLoopTaskHwm(const char* stage) {
   const UBaseType_t hwm = uxTaskGetStackHighWaterMark(nullptr);
   LOG_DBG("STACK", "Stage=%s LoopHWM=%u bytes", stage, static_cast<unsigned>(hwm));
 }
+#else
+inline void logLoopTaskHwm(const char*) {}
+#endif
 #else
 inline void logLoopTaskHwm(const char*) {}
 #endif
