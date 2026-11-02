@@ -141,3 +141,23 @@ TEST(FontCacheManagerTest, IncrementalPrewarmRequestsAccumulation) {
   ASSERT_EQ(1, font.prewarmCallCount);
   EXPECT_TRUE(font.prewarmCalls[0].accumulate);
 }
+
+TEST(FontCacheManagerTest, ScanOverflowDropsExcessCodepointsWithoutLooping) {
+  SdCardFont font;
+  const std::map<int, EpdFontFamily> noBuiltinFonts;
+  const std::map<int, SdCardFont*> sdFonts{{7, &font}};
+  FontCacheManager manager(noBuiltinFonts, sdFonts);
+
+  auto scope = manager.createPrewarmScope();
+  // Record 129 unique single-byte codepoints (> MAX_SCAN_CODEPOINTS = 128).
+  for (int i = 0; i < 129; i++) {
+    char text[2] = {static_cast<char>(' ' + i), '\0'};
+    manager.recordText(text, 7, EpdFontFamily::REGULAR);
+  }
+  scope.endScanAndPrewarm();
+
+  // Degradation: the 129th codepoint is silently dropped.
+  // With one font + one style the first 128 still batch into a single call.
+  ASSERT_EQ(1, font.prewarmCallCount);
+  EXPECT_EQ(0x01, font.prewarmCalls[0].styleMask);
+}
