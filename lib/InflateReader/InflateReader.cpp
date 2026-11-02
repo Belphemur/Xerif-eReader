@@ -1,5 +1,9 @@
 #include "InflateReader.h"
 
+#ifdef ESP_PLATFORM
+#include <esp_heap_caps.h>
+#endif
+
 #include <cstring>
 #include <type_traits>
 
