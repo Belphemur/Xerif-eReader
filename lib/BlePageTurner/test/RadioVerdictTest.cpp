@@ -85,8 +85,12 @@ TEST(RadioVerdictTest, Table) {
       {"start: too little to leave the reader's block",
        with(Phase::BeforeStart, [](RadioInputs& i) { i.heap = {kStartFreeBytes - 1, kMinimumLargestBlockBytes}; }),
        Why::HeapInPieces},
-      // X3, 07/10/2026: started at these numbers, 22,676 free after the stack, then abort().
-      {"start: X3 crash heap", with(Phase::BeforeStart, [](RadioInputs& i) { i.heap = {73656, 47092}; }),
+      // X3, 07/10/2026: started at stock-pools free 73,656, 22,676 free after the stack, then abort().
+      // The trimmed pools free 7,680 B of the drop and the host-stack trim leaves 1,024 B of .bss, so
+      // the stock measurement cannot recur; the sample is re-based on the gate (73,656 − 2,584, the
+      // stock-firmware shortfall under it, added 2026-10-31 #267 pass 2, moved to the 76,276 gate in
+      // the round-3 re-pin).
+      {"start: X3 crash heap", with(Phase::BeforeStart, [](RadioInputs& i) { i.heap = {73692, 47092}; }),
        Why::HeapInPieces},
       {"start: short in total is not in pieces",
        with(Phase::BeforeStart,
@@ -155,7 +159,8 @@ TEST(RadioVerdictTest, Table) {
 TEST(RadioVerdictTest, Thresholds) {
   EXPECT_EQ(kMinimumFreeBytes, 65536u);
   EXPECT_EQ(kMinimumLargestBlockBytes, 32768u);
-  EXPECT_EQ(kStartFreeBytes, 81920u);
+  // Moved with the NimBLE pool trims (#267); see RadioPolicy.h for the deltas.
+  EXPECT_EQ(kStartFreeBytes, 76276u);
   // The smallest stack in the X3 logs (106,140 free before, 55,496 after): a start the check refuses
   // could not have kept the reader's block.
   EXPECT_LT(kStartFreeBytes - 50644u, kMinimumLargestBlockBytes);

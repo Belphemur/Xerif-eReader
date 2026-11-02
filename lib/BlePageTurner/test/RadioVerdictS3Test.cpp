@@ -56,8 +56,10 @@ TEST(RadioVerdictS3Test, TheNumbersAreTheMeasuredOnesPlusMargin) {
 }
 
 TEST(RadioVerdictS3Test, TheDefaultProfileIsStillTheX3One) {
-  EXPECT_EQ(kStackBytes, 49152u);
-  EXPECT_EQ(kStartFreeBytes, 81920u);
+  // The X3 numbers moved with the NimBLE pool trims (#267): the worst-case measured take
+  // 51,188 minus the 7,680 B of verified heap savings (Addendum 3).
+  EXPECT_EQ(kStackBytes, 43508u);
+  EXPECT_EQ(kStartFreeBytes, 76276u);
   EXPECT_EQ(kX3Profile.stackBytes, kStackBytes);
   EXPECT_EQ(kX3Profile.startFreeBytes, kStartFreeBytes);
   EXPECT_EQ(kX3Profile.homeStartLargest, 0u);

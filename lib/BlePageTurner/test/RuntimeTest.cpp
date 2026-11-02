@@ -14,7 +14,7 @@ using bleturner::Config;
 using fake::host;
 using fake::radio;
 
-constexpr size_t kEnoughFree = 81920;
+constexpr size_t kEnoughFree = 76276;  // the gate: kStartFreeBytes after the #267 NimBLE trims
 constexpr size_t kEnoughLargest = 32768;
 
 class RuntimeTest : public ::testing::Test {
@@ -69,8 +69,8 @@ TEST_F(RuntimeTest, LowMemorySkipsHostWithoutInitialization) {
   EXPECT_EQ(host().releaseCalls, 1u);
   ASSERT_EQ(host().logs.size(), 1u);
   EXPECT_NE(host().logs.front().find("ERR HID begin skipped (insufficient-internal-heap)"), std::string::npos);
-  EXPECT_NE(host().logs.front().find("free=81919"), std::string::npos);
-  EXPECT_NE(host().logs.front().find("required_free=81920"), std::string::npos);
+  EXPECT_NE(host().logs.front().find("free=76275"), std::string::npos);
+  EXPECT_NE(host().logs.front().find("required_free=76276"), std::string::npos);
   EXPECT_EQ(host().maps.size(), 1u) << "a refusal prints the heap map (twice per boot at most)";
 }
 
@@ -482,15 +482,18 @@ TEST_F(RuntimeTest, PostInitRollbackInPiecesAsksForOneRestartUntilTheRadioComesU
   EXPECT_FALSE(bleturner::detail::heapRestartWanted());
 }
 
-// X3, 07/10/2026: the heap check passed at free 73,656 largest 47,092, the stack left 22,676 free,
-// and the render task restoring a page beside it ran the heap dry: abort(). The start never comes up
-// now, and still counts toward the restart as the rollback did.
+// X3, 07/10/2026: the stock heap check passed at free 73,656 largest 47,092, the stack left 22,676
+// free, and the render task restoring a page beside it ran the heap dry: abort(). The trimmed pools
+// free 7,680 B of the drop and the host-stack trim leaves 1,024 B of .bss, so the stock measurement
+// cannot recur; the sample is re-based on the gate (73,656 − 2,584, the stock-firmware shortfall
+// under it, moved to the 76,276 gate in the round-3 re-pin). The start never comes up now, and
+// still counts toward the restart as the rollback did.
 TEST_F(RuntimeTest, HeapTheStackCannotLeaveABlockInIsRefusedBeforeTheStack) {
-  host().heap = {73656, 47092};
+  host().heap = {73692, 47092};
   for (int i = 0; i < 3; ++i) EXPECT_FALSE(bleturner::switchOn());
   EXPECT_EQ(radio().beginCalls, 0u);
   EXPECT_TRUE(bleturner::detail::heapRestartWanted());
-  EXPECT_NE(host().logs.back().find("free=73656 largest=47092 required_free=81920"), std::string::npos);
+  EXPECT_NE(host().logs.back().find("free=73692 largest=47092 required_free=76276"), std::string::npos);
 }
 
 // Refusals before the start and rollbacks after it are one streak; a start the stack itself
