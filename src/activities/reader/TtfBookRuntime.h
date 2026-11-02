@@ -45,7 +45,7 @@ class TtfBookRuntime : public ChapterIndexTarget {
   // inflate state (~46KB window + decompressor + XML headroom).
   static constexpr size_t kBookArenaBytes = 128 * 1024;
   static constexpr size_t kCacheArenaBytes = 48 * 1024;
-  static constexpr size_t kScratchBytes = 256 * 1024;
+  static constexpr size_t kScratchBytes = 192 * 1024;
   static constexpr size_t kParseArenaBytes = 64 * 1024;
   static constexpr size_t kPrescanBytes = 64 * 1024;
   static constexpr size_t kPrefetchArenaBytes = 48 * 1024;
