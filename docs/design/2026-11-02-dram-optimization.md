@@ -456,3 +456,48 @@ The following items **must not be implemented without explicit owner sign-off**:
 6. **No change to PR #275 BLE constants** — `kStackBytes`/`kStartFreeBytes`
    must only be re-pinned with the same measured discipline documented in
    `2026-10-30-ble-nimble-trim-for-x3.md`.
+
+---
+
+## 7. Implementation addendum (2026-11-02)
+
+### 7.1 Owner scope decisions applied
+
+- Approved: Phase 0 (candidates 1–3) + Phase 1 (candidates 5, 8) + loop HWM
+  instrumentation (measurement only).
+- Excluded from this PR: sleep-frame RLE (candidate 6), FIBP PSRAM LRU cache
+  (candidate 7), loop-stack constant change (candidate 4 measurement-only).
+
+### 7.2 Measured after-values vs baseline
+
+| Metric | `default` before | `default` after | delta | `x4pro` before | `x4pro` after | delta |
+|---|---|---|---|---|---|---|
+| `.dram0.data` | 21,613 B | 21,613 B | 0 B | 31,914 B | 31,914 B | 0 B |
+| `.dram0.bss` | 77,784 B | 76,248 B | **−1,536 B** | 115,600 B | 114,064 B | **−1,536 B** |
+| DRAM static total | 99,397 B | 97,861 B | **−1,536 B** | 147,514 B | 145,978 B | **−1,536 B** |
+
+The 1,536 B saving on both envs is from `MAX_SCAN_CODEPOINTS` 512→128
+(Task 2). The remaining candidates are runtime-only and do not appear in
+`.bss`/`.data`:
+
+- InflateReader ring → PSRAM (Task 4): 32,768 B runtime DRAM saved on x4pro.
+- Framebuffer → PSRAM (Task 5): 48,000 B runtime DRAM saved on x4pro.
+- TtfBookRuntime scratch 256→192 KB (Task 6): 64 KB PSRAM saved on x4pro.
+
+### 7.3 Deferred items
+
+- **Phase 2: loop stack right-sizing** — HWM instrumentation (Task 1) prints
+  measurements; the constant stays at 49,152 B until owner reviews device logs.
+- **Phase 3: sleep-frame RLE + FIBP PSRAM cache** — excluded per owner
+  decision; require separate sign-off.
+
+### 7.4 Commits
+
+| commit | task | description |
+|---|---|---|
+| 83b32859 | Task 1 | feat(dram): add loop-task HWM instrumentation after heavy paths |
+| 3e5db91e | Task 2 | feat(dram): shrink FontCacheManager scan table 512→128 |
+| d84213e8 | Task 3/4 | feat(dram): route InflateReader ring to PSRAM on x4pro with DRAM fallback |
+| 74283c7c | fix | fix(build): add missing esp_heap_caps.h include in InflateReader.cpp |
+| df541cbd | Task 5 | feat(dram): enable FREEINK_FB_PSRAM for x4pro envs |
+| 7d07c30b | Task 6 | feat(dram): downsize TtfBookRuntime scratch 256→192 KB |
