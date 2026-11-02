@@ -17,7 +17,12 @@ bool InflateReader::init(const bool streaming) {
   deinit();  // free any previously allocated ring buffer and reset state
 
   if (streaming) {
-    ringBuffer = static_cast<uint8_t*>(malloc(INFLATE_DICT_SIZE));
+#ifdef ESP_PLATFORM
+    ringBuffer = static_cast<uint8_t*>(heap_caps_malloc(INFLATE_DICT_SIZE, MALLOC_CAP_SPIRAM));
+#endif
+    if (!ringBuffer) {
+      ringBuffer = static_cast<uint8_t*>(malloc(INFLATE_DICT_SIZE));
+    }
     if (!ringBuffer) return false;
     memset(ringBuffer, 0, INFLATE_DICT_SIZE);
     streamingMode = true;
@@ -43,7 +48,11 @@ bool InflateReader::initWithSegments(uint8_t* const (&segments)[RING_SEGMENTS]) 
 }
 
 void InflateReader::deinit() {
+#ifdef ESP_PLATFORM
+  heap_caps_free(ringBuffer);
+#else
   free(ringBuffer);
+#endif
   ringBuffer = nullptr;
   streamingMode = false;
   memset(&decomp, 0, sizeof(decomp));
