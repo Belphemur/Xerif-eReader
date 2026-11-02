@@ -3,6 +3,7 @@
 #include <BlePageTurner.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <Logging.h>
 
 #include <cstring>
 #include <iterator>
@@ -33,6 +34,7 @@ void BleSettingsActivity::onEnter() {
   radioVisit = activityManager.visit();
   // A saved opt-in brings the radio up here, so scanning and pairing work at once.
   if (SETTINGS.ble.enabled) bleturner::switchOn();
+  logLoopTaskHwm("ble_pairing");
   refresh();
   requestUpdate();
 }

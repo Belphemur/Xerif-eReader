@@ -859,6 +859,7 @@ bool EpubReaderActivity::loadBook() {
 #endif
   }
   logMemAt("book_open");
+  logLoopTaskHwm("book_open");
   if (!loaded) {
     // Surfaced by handleLoadFailure() as a dialog; loadedEpub dies with this
     // scope, so carry the reason out in a member.
