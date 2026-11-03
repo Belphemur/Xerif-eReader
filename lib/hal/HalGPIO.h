@@ -47,6 +47,12 @@ class HalGPIO {
   bool usbStateChanged = false;
   uint8_t previousCapacitivePageButtons = 0;
   bool capacitivePagePressed = false;
+  // Raw power-pin level sampled inside begin(), strictly between the pin's
+  // pinMode setup and the async poll task's first edge sample
+  // (docs/design/2026-11-03-wake-release-shutdown-swallow.md). A press held
+  // here started this boot — the shutdown-wake hold the classification cannot
+  // see on rail-button boards like the X4 Pro.
+  bool powerButtonHeldAtInputStart_ = false;
 
  public:
   enum class DeviceType : uint8_t { X4, X3 };
@@ -87,6 +93,9 @@ class HalGPIO {
   // False on sync builds, where an edge probe is idempotent within a frame
   // (the event bit lives until update()) and must be called exactly once.
   bool asyncInputActive() const;
+  // True when the power button was physically held at input init (see the
+  // member comment). False on emulated (host) builds: no input hardware.
+  bool powerButtonHeldAtInputStart() const { return powerButtonHeldAtInputStart_; }
   bool wasPressed(uint8_t buttonIndex) const;
   bool wasAnyPressed() const;
   bool wasReleased(uint8_t buttonIndex) const;

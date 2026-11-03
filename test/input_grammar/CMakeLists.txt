@@ -1,4 +1,4 @@
-add_executable(InputGrammarTest PowerClickWindowTest.cpp)
+add_executable(InputGrammarTest PowerClickWindowTest.cpp WakeReleaseSwallowTest.cpp)
 
 target_include_directories(InputGrammarTest PRIVATE
   ${REPO_ROOT}/src

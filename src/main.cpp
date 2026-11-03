@@ -63,6 +63,7 @@
 #include "util/PluginEvents.h"
 #include "util/ScreenshotUtil.h"
 #include "util/SlideSwitch.h"
+#include "util/WakeReleaseSwallow.h"
 
 GfxRenderer renderer(display);
 MappedInputManager mappedInputManager(gpio, renderer);
@@ -1094,18 +1095,35 @@ void setup() {
                                   : (SETTINGS.frontlightOn != 0 && SETTINGS.frontlightRestoreOnWake != 0);
   Frontlight.begin(SETTINGS.frontlightBrightness, SETTINGS.frontlightWarmth, restoreLightOn);
 
+  // A power press that started this boot must never dispatch an in-app action
+  // on its own release (docs/design/2026-11-03-wake-release-shutdown-swallow.md).
+  // The classification covers deep-sleep wakes; on rail-button boards like the
+  // X4 Pro the shutdown wake classifies as Other (commit e37164ca keeps it
+  // unclassified — a post-flash POWERON would misclassify), so the held-at-
+  // input-init sample arms instead: it is taken in gpio.begin() before the
+  // poll task's first edge sample, so the wake press's release can never
+  // dispatch before the swallow is armed.
+  const bool wakePowerHeld = gpio.powerButtonHeldAtInputStart();
+  if (WakeReleaseSwallow::shouldArm(wakeupReason == HalGPIO::WakeupReason::PowerButton, wakePowerHeld,
+                                    isSilentReboot)) {
+    wakePowerReleasePending = true;
+    LOG_DBG("MAIN", "Wake-release swallow armed: reason=%d powerHeldAtInputStart=%d", static_cast<int>(wakeupReason),
+            wakePowerHeld ? 1 : 0);
+  }
+
   switch (wakeupReason) {
     case HalGPIO::WakeupReason::PowerButton:
       // With Short Power Button Press = Sleep, a single click wakes on any
       // device; otherwise the button must still be held (ghost-wake debounce).
       // Picco: plugging in USB pulses the wake line; power on, as stock does.
+      // The wake-release swallow is armed above, so this case only owns the
+      // ghost-wake re-sleep.
       if (!wakeHoldVerified && SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::SLEEP &&
           !(FREEINK_DEVICE_PICCO && gpio.isUsbConnected())) {
         LOG_DBG("MAIN", "Power-button wake not held through verification, sleeping");
         Storage.prepareForDeepSleep();
         powerManager.startDeepSleep(gpio);
       }
-      wakePowerReleasePending = true;
       break;
     case HalGPIO::WakeupReason::AfterUSBPower:
       // Most devices return to sleep after a USB-powered cold boot.
@@ -1484,7 +1502,8 @@ void loop() {
   // a page turn, refresh, or other short power-button action.
   // Wake release swallow and the screenshot combo read LEVELS through the
   // manager (logical buttons map 1:1 for Power/Down); no raw BTN reads here.
-  if (wakePowerReleasePending && !mappedInputManager.isPressed(MappedInputManager::Button::Power)) {
+  if (WakeReleaseSwallow::shouldConsume(wakePowerReleasePending,
+                                        mappedInputManager.isPressed(MappedInputManager::Button::Power))) {
     wakePowerReleasePending = false;
     // The wake release armed the frontlight double-click window in this
     // tick's update() — its deferred expiry would republish the swallowed

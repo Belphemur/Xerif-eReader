@@ -109,6 +109,13 @@ void HalGPIO::begin() {
   _deviceType = DeviceType::X4;
 #endif
   inputMgr.begin();
+  // Sample the raw power level BEFORE the async poll task exists (the call
+  // above only configures the pin): this read strictly precedes the first
+  // edge sample, so a shutdown/USB boot's wake hold is recorded without
+  // racing the poll queue, and a release before this point is invisible to
+  // the input subsystem — nothing to swallow. main.cpp arms the wake-release
+  // swallow from it (docs/design/2026-11-03-wake-release-shutdown-swallow.md).
+  powerButtonHeldAtInputStart_ = inputMgr.isPowerButtonPhysicallyPressed();
 #if defined(XERIF_ASYNC_INPUT)
   // Async input sampling (docs/design/2026-10-26-x3-x4-async-input.md,
   // extending the 2026-09-20 design): a 10 ms poll task samples buttons
