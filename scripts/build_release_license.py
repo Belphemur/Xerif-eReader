@@ -13,7 +13,11 @@ import subprocess
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 LIBRARY_NOTICES = {
-    "Arduino-wolfSSL": ("LICENSING", "COPYING"),
+    # Our fork pins wolfSSL as a GIT dependency (platformio.ini, Arduino-wolfSSL
+    # tag 5.8.4): PlatformIO names the libdeps directory after the package name
+    # in its library.json ("wolfssl"), NOT the GitHub repo name, and never
+    # writes .piopm for git deps.
+    "wolfssl": ("LICENSING", "COPYING"),
     "ArduinoJson": ("LICENSE.txt",),
     "JPEGDEC": ("LICENSE",),
     "NimBLE-Arduino": ("LICENSE", "NOTICE"),
@@ -49,9 +53,30 @@ def source_reference(directory: Path) -> str:
             f"{name}/{version}/{name}-{version}.tar.gz"
         )
     # Git dependencies keep their exact URL and revision in platformio.ini.
-    if directory.name == "JPEGDEC":
-        return "See the JPEGDEC URL and commit in platformio.ini."
+    # Registry installs carry .piopm; git deps may not (PIO version dependent),
+    # so name every git dep in lib_deps explicitly instead of guessing.
+    GIT_DEP_REFERENCES = {
+        "JPEGDEC": "See the JPEGDEC URL and commit in platformio.ini.",
+        "PNGdec": "See the PNGdec URL and commit in platformio.ini.",
+        "AnimatedGIF": "See the AnimatedGIF URL and commit in platformio.ini.",
+        "NimBLE-Arduino": "See the NimBLE-Arduino URL and commit in platformio.ini.",
+        "wolfssl": "See the Arduino-wolfSSL URL and 5.8.4 tag in platformio.ini.",
+    }
+    if directory.name in GIT_DEP_REFERENCES:
+        return GIT_DEP_REFERENCES[directory.name]
     raise ValueError(f"Missing source package metadata: {directory}")
+
+
+def dependency_dir(dependencies: Path, name: str) -> Path:
+    """Resolve a libdeps directory; older PIO names git deps by repo name."""
+    directory = dependencies / name
+    if directory.is_dir():
+        return directory
+    if name == "wolfssl":
+        alias = dependencies / "Arduino-wolfSSL"
+        if alias.is_dir():
+            return alias
+    return directory
 
 
 def build_license(environment: str, repository: str, packages_dir: Path) -> str:
@@ -83,7 +108,7 @@ def build_license(environment: str, repository: str, packages_dir: Path) -> str:
     dependencies = PROJECT_DIR / ".pio" / "libdeps" / environment
     dependency_sources = []
     for name, filenames in LIBRARY_NOTICES.items():
-        directory = dependencies / name
+        directory = dependency_dir(dependencies, name)
         dependency_sources.extend(
             path for path in (directory / "src").rglob("*")
             if path.suffix in {".h", ".c", ".cpp"}
