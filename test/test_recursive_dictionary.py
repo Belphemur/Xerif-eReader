@@ -57,6 +57,7 @@ back_handler = "  int sx = 0;" + back_handler
 lookup_source = (ROOT / "src/activities/reader/DictionaryWordSelectActivity.cpp").read_text()
 definition_result = block(lookup_source, "[this](const ActivityResult& result)")
 reader_source = (ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text()
+return_selection_for = block(reader_source, "ClipSelectionActivity::Selection lookupReturnSelectionFor")
 lookup_result = block(reader_source.split("startActivityForResult(std::move(lookup)", 1)[1],
                       "[this](const ActivityResult& result)")
 reader_constants = (ROOT / "src/activities/reader/ReaderUtils.h").read_text().split("namespace ReaderUtils {", 1)[1].split(
@@ -195,6 +196,7 @@ struct ClipSelectionActivity {
 ''' + selection + r'''
   template<typename... Args> explicit ClipSelectionActivity(Args&&...) {}
 };
+''' + return_selection_for + r'''
 bool styledAvailable = false;
 bool buildDictionaryHtmlPages(Renderer& renderer, const std::string&, uint16_t, uint16_t,
                                std::vector<std::unique_ptr<Page>>& pages) {
@@ -217,6 +219,8 @@ struct DictionaryDefinitionActivity {
   bool messageVisible = false;
   bool finished = false;
   bool selectionOpened = false;
+  ClipSelectionActivity::Selection pendingLookupSelection;
+  ClipSelectionActivity::Selection lookupReturnSelection;
   ActivityResult result;
   std::unique_ptr<ClipSelectionActivity> child;
   ActivityResultHandler callback;
@@ -440,11 +444,33 @@ int main() {
         exitResult.isCancelled = cancelled;
         lookupParent.onDefinitionResult(exitResult);
         bookReader.mappedInput.touch = touch;
+        ClippingResult clipped;
+        clipped.action = ClippingResult::Action::Lookup;
+        clipped.startWordIndex = 3;
+        clipped.endWordIndex = 5;
+        bookReader.lookupReturnSelection = lookupReturnSelectionFor(clipped);
         bookReader.onLookupResult(lookupParent.result);
         assert(bookReader.selectionOpened == (!touch && !cancelled));
+        // The restored range is handed to the reopened selection only when it opens.
+        assert(bookReader.pendingLookupSelection.valid == bookReader.selectionOpened);
+        if (bookReader.selectionOpened) {
+          assert(bookReader.pendingLookupSelection.firstWord == 3 && bookReader.pendingLookupSelection.lastWord == 5);
+        }
       }
     }
   }
+  // A clipping that spans pages cannot be restored; a single-page one keeps its word range.
+  ClippingResult multiPage;
+  multiPage.startPageOffset = 0;
+  multiPage.endPageOffset = 1;
+  multiPage.startWordIndex = 3;
+  multiPage.endWordIndex = 5;
+  assert(!lookupReturnSelectionFor(multiPage).valid);
+  ClippingResult singlePage = multiPage;
+  singlePage.endPageOffset = 0;
+  const auto restored = lookupReturnSelectionFor(singlePage);
+  assert(restored.valid && restored.firstPage == 0 && restored.lastPage == 0 && restored.firstWord == 3 &&
+         restored.lastWord == 5);
   // Long Back also exits at the first definition, where there are no ancestors.
   DictionaryDefinitionActivity root;
   root.lookup = std::make_unique<DictionaryDefinitionActivity::LookupState>(dictionary);

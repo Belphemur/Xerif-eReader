@@ -517,6 +517,9 @@ class EpubReaderActivity final : public ReaderActivity {
   // SETTINGS.touchLongPressAction global.
   void openDictionaryWordSelect(int touchX = -1, int touchY = -1,
                                 TouchLongPressMode mode = TouchLongPressMode::Dictionary);
+  // Selection to restore when returning from a dictionary lookup.
+  ClipSelectionActivity::Selection pendingLookupSelection;
+  ClipSelectionActivity::Selection lookupReturnSelection;
   void startClipSelection(int initialX = -1, int initialY = -1,
                           ClipSelectionActivity::Mode mode = ClipSelectionActivity::Mode::Clip);
   int clippingAtPoint(const Page& page, int x, int y) const;
