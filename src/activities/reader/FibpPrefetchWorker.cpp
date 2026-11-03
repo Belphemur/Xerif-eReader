@@ -411,8 +411,8 @@ FibpPrefetchWorker::SpawnResult FibpPrefetchWorker::spawnTask() {
   // whether the exit token needs restoring; the buffers survive and the next
   // trigger retries with the same allocation.
   if (taskStack_ == nullptr) {
-    taskStack_ = static_cast<uint8_t*>(heap_caps_aligned_alloc(portBYTE_ALIGNMENT, kStackBytes,
-                                                               MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    taskStack_ = static_cast<uint8_t*>(
+        heap_caps_aligned_alloc(portBYTE_ALIGNMENT, kStackBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     if (taskStack_ == nullptr) {
       LOG_ERR("PREF", "Stack alloc failed: %u", static_cast<unsigned>(kStackBytes));
       return SpawnResult::Failed;

@@ -41,10 +41,9 @@
 #include <BookFontLoader.h>
 #include <FreeRTOS.h>
 #include <Memory.h>
+#include <esp_heap_caps.h>
 #include <semphr.h>
 #include <task.h>
-
-#include <esp_heap_caps.h>
 
 #include "TtfBookRuntime.h"
 #endif
