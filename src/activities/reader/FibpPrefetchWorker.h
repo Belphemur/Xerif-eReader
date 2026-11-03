@@ -224,6 +224,13 @@ class FibpPrefetchWorker {
   // reserve keeps prefetch disabled for the session (no spawn-time retry),
   // and a successful one makes the spawn-path allocation dead code.
   bool stackReserveAttempted_ = false;
+  // Set when ensureTask() actually created a task (SpawnResult::Started) and
+  // cleared in cancel(). A worker whose spawns were all deferred (ReapBlocked
+  // on a name still owned by another object's task) never created one: its
+  // cancel() must not wait on the "fibpprefetch" name, which belongs to that
+  // other task and could time out and leak this object's 32 KB stack for
+  // nothing (CodeRabbit).
+  bool taskCreated_ = false;
 
   char epubPath_[BeginContext::kEpubPathCap] = {};
   char cacheDir_[BeginContext::kCacheDirCap] = {};

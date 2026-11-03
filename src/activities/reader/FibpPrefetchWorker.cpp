@@ -362,7 +362,10 @@ bool FibpPrefetchWorker::ensureTask() {
   }
   running_.store(true, std::memory_order_release);
   const SpawnResult spawned = spawnTask();
-  if (spawned == SpawnResult::Started) return true;
+  if (spawned == SpawnResult::Started) {
+    taskCreated_ = true;
+    return true;
+  }
   running_.store(false, std::memory_order_release);
   if (spawned == SpawnResult::Failed) {
     vSemaphoreDelete(exitedSem_);  // restore the invariant: no sem ⇒ no task
@@ -511,7 +514,12 @@ bool FibpPrefetchWorker::cancel() {
   // timeout keep the whole object alive: leak beats use-after-free (same
   // contract as the join-timeout path above — the caller releases
   // ownership without destroying).
-  if (exitedSem_ != nullptr && taskStack_ != nullptr && !reapSettled(kReapWaitMaxMs)) {
+  // The reap wait only applies when THIS object created a task: a spawn
+  // deferred by the name probe (ReapBlocked) saw another worker's lingering
+  // "fibpprefetch" — waiting on that name here would block on (and possibly
+  // leak this object for) a task this object does not own (CodeRabbit). A
+  // never-started worker has no task of its own to reap.
+  if (taskCreated_ && exitedSem_ != nullptr && taskStack_ != nullptr && !reapSettled(kReapWaitMaxMs)) {
     LOG_ERR("PREF", "Worker task not reaped at cancel — leaking worker + stack");
     return false;
   }
@@ -537,6 +545,7 @@ bool FibpPrefetchWorker::cancel() {
   // A re-begin on this same object (cancel + begin without destroy) must be
   // able to reserve again: the session boundary resets the attempted flag.
   stackReserveAttempted_ = false;
+  taskCreated_ = false;
   if (runtime_ != nullptr) runtime_->close();
   runtime_.reset();
   teardownFaces();

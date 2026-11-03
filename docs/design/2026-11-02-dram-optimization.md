@@ -35,7 +35,8 @@ gate (`kStartFreeBytes = 76,276` after #275) already consumes most of that.
 1. **Move InflateReader ring to PSRAM on X4 Pro** — explicit pin only; no net
    DRAM change (plain `malloc` already prefers PSRAM for the 32 KB request),
    one-line change.
-2. **Enable `FREEINK_FB_PSRAM` for X4 Pro** — 48,000 B framebuffer to PSRAM.
+2. **Enable `FREEINK_FB_PSRAM` for X4 Pro** — explicit PSRAM pin; no net DRAM
+   change (plain `malloc` already prefers PSRAM at 48 KB).
 3. **Right-size loop-task stack on X3** — potentially 10–20 KB, but requires
 device HWM measurement (high risk).
 4. **FIBP LRU PSRAM cache on X4 Pro** — owner-brainstormed idea; trades PSRAM
@@ -167,10 +168,17 @@ same DRAM on X3-class boards.
   via `allocFrameBufferStorage()` which calls `malloc()` because
   `FREEINK_FB_PSRAM` is off for X3-class boards.  Lines:
   `freeink-sdk/libs/display/FreeInkDisplay/src/FreeInkDisplay.cpp:443-454`.
-- **x4pro**: 48,000 B (`800 × 480 ÷ 8`) — **also allocated via `malloc()`**
+- **x4pro**: 48,000 B (`800 × 480 ÷ 8`) — allocated via `malloc()`
   because `FREEINK_FB_PSRAM` is only auto-enabled for M5Paper and PaperMono
   (`BoardConfig.h:398`).  Confirmed by nm: no framebuffer symbol in `.bss`;
-  it is heap-allocated at runtime.
+  it is heap-allocated at runtime.  **Placement:** despite the `malloc()`
+  call, the block lands in PSRAM — the prebuilt S3 Arduino core is compiled
+  with `CONFIG_SPIRAM_USE_MALLOC=y` and
+  `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096`
+  (`framework-arduinoespressif32-libs/esp32s3/sdkconfig`), so every
+  `malloc()` at or above 4,096 B prefers PSRAM.  The x4pro framebuffer was
+  PSRAM-resident before this PR; `FREEINK_FB_PSRAM` only makes the placement
+  explicit (correction of 2026-11-03, CodeRabbit round).
 
 ### 2.2 Inflate / decompression rings
 
@@ -258,7 +266,7 @@ constraint.
 | # | candidate | file:line | X3 saving | x4pro saving | SD cost | risk | reversibility |
 |---|---|---|---|---|---|---|---|
 | 1 | **Route InflateReader ring to PSRAM** | `lib/InflateReader/InflateReader.cpp:20` | 0 (no PSRAM, no change) | **0 net DRAM** — explicit pin; plain `malloc` already prefers PSRAM at 32 KB | 0 | Low: fallback to DRAM on PSRAM OOM keeps safety | Revert 1 line |
-| 2 | **Enable `FREEINK_FB_PSRAM` for x4pro** | `platformio.ini:521` (add `-DFREEINK_FB_PSRAM=1`) or `BoardConfig.h:398` | 0 | **48,000 B** | 0 | Med: PSRAM cache-miss latency during panel refresh; needs device soak | Revert build flag |
+| 2 | **Enable `FREEINK_FB_PSRAM` for x4pro** | `platformio.ini:521` (add `-DFREEINK_FB_PSRAM=1`) or `BoardConfig.h:398` | 0 | **0 net DRAM** — explicit pin; plain `malloc` already prefers PSRAM at 48 KB | 0 | Med: PSRAM cache-miss latency during panel refresh; needs device soak (placement pre-dates the flag) | Revert build flag |
 | 3 | **Shrink TtfBookRuntime `kScratchBytes`** | `src/activities/reader/TtfBookRuntime.h:48` | N/A (TTF not compiled) | **~64 KB** (256→192 KB) | 0 | Med: engine peaks ~152 KB; 192 KB gives 26 % headroom but needs host test coverage | Revert constant |
 | 4 | **Right-size main loop stack on X3** | `src/main.cpp:881` | **~10–20 KB** (needs device HWM) | 0 (S3 has DRAM margin) | 0 | **High**: stack overflow = instant panic; must measure HWM on every path first | Revert constant |
 | 5 | **Shrink `FontCacheManager` scan table** | `lib/GfxRenderer/FontCacheManager.h:65` | **~1.5 KB** (MAX_SCAN_CODEPOINTS 512→128) | ~1.5 KB | 0 | Low: rare pages with >128 distinct codepoints degrade to cache miss (single extra pass) | Revert constant |
@@ -284,14 +292,34 @@ where the fallback path is still needed.
 **Candidate 2 — Framebuffer to PSRAM**
 `freeink-sdk/libs/display/FreeInkDisplay/src/FreeInkDisplay.cpp:443-454`
 already contains the `#if FREEINK_FB_PSRAM` branch.  On x4pro the flag is
-off, so `allocFrameBufferStorage()` falls through to `malloc()` and the
-48 KB framebuffer sits in DRAM.  Enabling the flag routes it to
-`heap_caps_malloc(MALLOC_CAP_SPIRAM)`.  Risk is display-refresh latency:
-the panel controller does a large linear read of the framebuffer during
-`displayBuffer()`.  PSRAM on ESP32-S3 is cacheable (32 KB cache line), so
-linear reads hit cache well, but the first uncached burst is slower than
-DRAM.  A device soak with the e-ink refresh scope is required to confirm no
-visible lag.
+off, so `allocFrameBufferStorage()` falls through to `malloc()`.  With
+malloc integration enabled in the prebuilt S3 core
+(`CONFIG_SPIRAM_USE_MALLOC=y`, `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096`),
+that 48 KB request already prefers PSRAM — the same mechanism candidate 1
+documents for the 32 KB inflate ring — so enabling the flag recovers **no
+DRAM**.  It routes the allocation through
+`heap_caps_malloc(MALLOC_CAP_SPIRAM)` with an explicit `malloc()` fallback,
+making the placement immune to a future core rebuild that drops malloc
+integration; it is kept as a pin on that basis, not as a saving.
+  The display-refresh latency risk below is therefore pre-existing (the
+framebuffer already sat in PSRAM before this PR), not introduced by the
+flag.  The panel controller does a large linear read of the framebuffer
+during `displayBuffer()`.  PSRAM on ESP32-S3 is cacheable (32 KB cache
+line), so linear reads hit cache well, but the first uncached burst is
+slower than DRAM.  A device soak confirms no visible lag; it validates the
+status quo rather than a placement change.
+
+**Correction of 2026-11-03 (CodeRabbit round).**  The original text of this
+section and the §2.1 x4pro bullet claimed the framebuffer "sits in DRAM"
+before the flag and credited `FREEINK_FB_PSRAM` with a 48,000 B DRAM
+recovery.  That contradicted this document's own candidate-1 analysis:
+`framework-arduinoespressif32-libs/esp32s3/sdkconfig` (the config the
+prebuilt Arduino core the x4pro envs link against was compiled with) sets
+`CONFIG_SPIRAM_USE_MALLOC=y` and `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096`,
+so any `malloc()` at or above 4,096 B already prefers PSRAM.  The figures
+at lines 38, 261 and 375 were corrected to 0 net DRAM; the flag ships as an
+explicit pin, and the refresh-latency soak validates pre-existing
+behaviour.
 
 **Candidate 3 — TtfBookRuntime scratch downsize**
 `kScratchBytes = 256 * 1024` (`TtfBookRuntime.h:48`).  The design comment says
@@ -372,8 +400,12 @@ is truly unused.
 2. **Enable FREEINK_FB_PSRAM for x4pro** (candidate 2)
    - Add `-DFREEINK_FB_PSRAM=1` to `env:x4pro` build flags, or patch
      `BoardConfig.h:398` to include `FREEINK_DEVICE_X4PRO`.
-   - x4pro gets 48 KB DRAM back; X3 unchanged.
-   - **Device soak required**: verify e-ink refresh timing is unchanged.
+   - **No net DRAM change**: the prebuilt S3 core's malloc integration
+     (`SPIRAM_MALLOC_ALWAYSINTERNAL=4096`) already places the 48 KB
+     framebuffer in PSRAM; the flag is an explicit pin (same rationale as
+     candidate 1).  X3 unchanged.
+   - **Device soak required**: verify e-ink refresh timing is unchanged
+     (confirms the pre-existing PSRAM placement, does not change it).
 
 3. **TtfBookRuntime scratch downsize** (candidate 3)
    - Change `kScratchBytes` 256→192 KB.
@@ -435,7 +467,7 @@ is truly unused.
 
 | env | soak item | pass criteria |
 |---|---|---|
-| x4pro | Phase 0 framebuffer in PSRAM | Open book → page turns → sleep → wake. No visible refresh lag. Serial log shows no `heap_caps_malloc` DRAM fallback for framebuffer. |
+| x4pro | Phase 0 framebuffer in PSRAM | Open book → page turns → sleep → wake. No visible refresh lag. Placement is unchanged by the flag (malloc already preferred PSRAM); the soak confirms the status quo. |
 | x4pro | Phase 0 InflateReader in PSRAM | Open large EPUB (>10 MB). `InflateReader` ring allocation succeeds. No OOM in serial log. |
 | x4pro | Phase 0 (candidate 3) TTF scratch 192 KB | Open known "large chapter" book. Host tests pass; device shows no `Arena::alloc` failure in log. |
 | default | Phase 1 (candidate 5) FontCacheManager 128 | Render mixed-script page (e.g. Russian + English). Page renders correctly; no infinite prewarm loop. |
@@ -451,7 +483,10 @@ The following items **must not be implemented without explicit owner sign-off**:
 
 1. **Candidate 2 (framebuffer in PSRAM)** — owner must flash-test x4pro and
    confirm e-ink refresh timing is acceptable.  If panel controller DMA reads
-   stutter, this is rejected.
+   stutter, this is rejected.  Note the placement is unchanged by the flag
+   (malloc integration already preferred PSRAM); the soak validates the
+   pre-existing behaviour, and the flag itself is revertible without a DRAM
+   effect.
 2. **Candidate 4 (loop stack right-sizing)** — requires a separate
    measurement-only build first.  Do not lower the constant until HWM data is
    collected on a real X3.
@@ -495,7 +530,10 @@ The 1,536 B saving on both envs is from `MAX_SCAN_CODEPOINTS` 512→128
 
 - InflateReader ring → PSRAM (Task 4): explicit pin, no net DRAM change on
   x4pro (plain `malloc` already prefers PSRAM for the 32 KB request).
-- Framebuffer → PSRAM (Task 5): 48,000 B runtime DRAM saved on x4pro.
+- Framebuffer → PSRAM (Task 5): explicit pin, **no net DRAM change** on
+  x4pro — malloc integration in the prebuilt S3 core already preferred
+  PSRAM at 48 KB (correction of 2026-11-03, CodeRabbit round: the original
+  "48,000 B saved" figure ignored `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL`).
 - TtfBookRuntime scratch 256→192 KB (Task 6): 64 KB PSRAM saved on x4pro.
 
 ### 7.3 Deferred items

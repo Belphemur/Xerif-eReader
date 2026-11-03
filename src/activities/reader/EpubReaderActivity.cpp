@@ -3895,19 +3895,21 @@ void EpubReaderActivity::renderBookTtf() {
       fibpWorker_->requestResumeClaim(static_cast<uint16_t>(currentSpineIndex));
       // Start the task with the claim: only a live worker consumes it, and
       // updateFibpWorker's notifyChapterProgress may not run again until the
-      // next user-driven render (an idle reader produces none).
-      (void)fibpWorker_->ensureTask();
+      // next user-driven render (an idle reader produces none). A failed or
+      // deferred spawn arms the per-pass retry below; a started one closes it.
+      fibpResumeSpawnPending_ = !fibpWorker_->ensureTask();
       LOG_INF("ERS", "Resume build handed to worker: spine %d (%u pages cached)", currentSpineIndex,
               static_cast<unsigned>(ttfPageCount));
-    } else if (!fibpResumeSeenBuilding_ && !fibpWorker_->active()) {
+    } else if (fibpResumeSpawnPending_ && !fibpResumeSeenBuilding_ && !fibpWorker_->active()) {
       // Deferred-spawn retry (CodeRabbit): the claim-set pass's ensureTask()
       // may return ReapBlocked once (the non-blocking reap probe), and small
       // partials get no later threshold trigger before the inline grace falls
-      // back. While the claim is pending, was never seen building, and no
-      // worker runs, retry the (near-free, non-blocking) spawn each pass; the
-      // claim clearance below (grace timeout / commit / seen-building) bounds
-      // the retry either way.
-      (void)fibpWorker_->ensureTask();
+      // back. Retry only while the claim's last spawn attempt did NOT start a
+      // task: once a task has run, respawning per pass would make each exit
+      // re-open the book runtime from SD until the grace timeout (kody). The
+      // pending flag is armed at claim-set and cleared as soon as a task
+      // starts (or the claim is released below).
+      fibpResumeSpawnPending_ = !fibpWorker_->ensureTask();
     }
   } else if (fibpResumeClaimedSpine_ != -1 && fibpResumeClaimedSpine_ != currentSpineIndex) {
     fibpResumeClaimedSpine_ = -1;  // left the chapter
@@ -4056,6 +4058,7 @@ void EpubReaderActivity::renderBookTtf() {
            millis() - fibpResumeRequestMs_ > kFibpResumeClaimGraceMs)) {
         fibpResumeClaimedSpine_ = -1;
         fibpResumeSeenBuilding_ = false;
+        fibpResumeSpawnPending_ = false;
         if (committed) {
           LOG_INF("ERS", "Worker resume build committed: %u pages", static_cast<unsigned>(ttfPageCount));
         }
@@ -4099,6 +4102,7 @@ void EpubReaderActivity::renderBookTtf() {
     LOG_INF("ERS", "Resume claim: worker stopped in %lu ms", millis() - joinStartMs);
     fibpResumeClaimedSpine_ = -1;
     fibpResumeSeenBuilding_ = false;
+    fibpResumeSpawnPending_ = false;
     ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), generation);
     ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
   }
@@ -4968,6 +4972,7 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
       stopFibpWorker();
       fibpResumeClaimedSpine_ = -1;
       fibpResumeSeenBuilding_ = false;
+      fibpResumeSpawnPending_ = false;
     }
     freeink::book::LayoutParams params;
     ttf_->makeLayoutParams(renderer, params, automaticPageTurnActive);
@@ -5082,6 +5087,7 @@ void EpubReaderActivity::stopFibpWorker() {
   fibpDeferParkLatched_ = false;
   fibpResumeClaimedSpine_ = -1;
   fibpResumeSeenBuilding_ = false;
+  fibpResumeSpawnPending_ = false;
 }
 
 void EpubReaderActivity::ttfPrefetchTick() {

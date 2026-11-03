@@ -269,6 +269,12 @@ class EpubReaderActivity final : public ReaderActivity {
   // worker (requestResumeClaim) while the reader paints from the partial.
   int16_t fibpResumeClaimedSpine_ = -1;
   bool fibpResumeSeenBuilding_ = false;  // worker observed holding the claim
+  // The claim's last ensureTask() did not start a task (deferred/failed) —
+  // further respawns are allowed until one starts. Once a task HAS started,
+  // no respawn: a started worker either commits (claim released on commit)
+  // or consumes/exits without committing, and re-spawning it per render pass
+  // would run a full SD book open each pass until the grace timeout (kody).
+  bool fibpResumeSpawnPending_ = false;
   unsigned long fibpResumeRequestMs_ = 0;
   int ttfSpine = -1;          // spine the runtime's reader/session belong to
   int ttfPage = 0;            // chapter-local page index
