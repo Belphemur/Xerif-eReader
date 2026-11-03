@@ -335,6 +335,7 @@ struct FibpWorkerRawDelete {
     heap_caps_free(p);
   }
 };
+using FibpWorkerPtr = std::unique_ptr<FibpPrefetchWorker, FibpWorkerRawDelete>;
 
 }  // namespace book
 }  // namespace freeink
