@@ -374,7 +374,7 @@ bool FibpPrefetchWorker::ensureTask() {
   return false;
 }
 
-bool FibpPrefetchWorker::waitForReap() {
+FibpPrefetchWorker::SpawnResult FibpPrefetchWorker::waitForReap() {
   // A self-deleting task is parked on xTasksWaitingTermination until the
   // idle task unlinks it; recreating a task on the same static buffers while
   // that stale node is still linked would corrupt the new task. The name
