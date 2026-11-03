@@ -223,9 +223,23 @@ the loop.** `requestUpdateAndWait()` only renders — it polls no input
 (`lib/BlePageTurner/src/Runtime.cpp:606-617`), so a claim that called it
 inside one frame would leave `Back` dead for the whole wait. Each suspension
 step is therefore at most ONE non-blocking pass, re-driven on the next
-activity pass; input is pumped every loop pass, the same cadence the
-download states already use for progress
-(`src/activities/settings/TtfFontDownloadActivity.cpp:676-690`).
+activity pass; input is pumped where the loop actually returns control —
+the transfer-progress callback (`TtfFontDownloadActivity.cpp:760`, the
+screen's only in-transfer input pump) and between activity passes.
+**The manifest stage is a structuring change, not a free reuse.** Today
+`fetchAndParseManifest()` runs synchronously inside
+`onWifiSelectionComplete` (`TtfFontDownloadActivity.cpp:106` sets
+`LOADING_MANIFEST`, `:118` calls the fetch inline) and the activity header
+documents the download path as blocking the main loop until it completes
+(`TtfFontDownloadActivity.h:42-44`, the `preventAutoSleep` comment). An
+implementation that followed the loop below inside that callback would
+either busy-wait within one pass or never reach a second pass — with `Back`
+locked out either way, which §5 forbids. The implementation PR therefore
+makes `LOADING_MANIFEST` a true state handled on the activity's per-pass
+update (`requestUpdateAndWait()` returns after one render,
+`ActivityManager.cpp:579-592`): fetch/parse and every claim step run on
+activity passes that return to the loop, never inside the
+`onWifiSelectionComplete` callback.
 
 ```text
 activity lifetime:
@@ -246,20 +260,40 @@ activity lifetime:
       Defrag    -> render the current frame once ("Freeing memory…" only if
                    the step will actually change something), then pull ONE
                    step:
-                   FontCaches: synchronous within the pass, re-plan same pass
+                   FontCaches: synchronous within the pass —
+                               releaseSdFontCaches() is immediate
+                               (FontCacheManager.cpp:28-34), so record the
+                               lever (stepsTried) in the SAME pass and
+                               re-plan. A release that freed nothing
+                               (caches already empty) still counts as
+                               pulled: re-suggesting a no-op lever spins
+                               the pass forever and Back never runs (§9
+                               property).
                    Radio:      issue ONE non-blocking stop pass:
                                bleturner::beforeScreenChange(0, false) ==
                                suspend(0) — one cancel/disconnect pass that
-                               returns false while work remains
+                               returns FALSE while teardown work remains
                                (Runtime.cpp:585-592, :349-360;
-                               BleKeyboardHost.cpp:718-722, :736);
-                               stepsTried++, NEXT pass re-plans
+                               BleKeyboardHost.cpp:718-722, :736). Do NOT
+                               record the lever until the pass reports the
+                               stop settled: a teardown that needs a second
+                               pass would otherwise be recorded as pulled
+                               and verdicted Fallback before the deadline
+                               below. Record it only on `suspend(0) ==
+                               true`; unsettled passes re-issue ONE stop
+                               pass per activity pass and plan()
+                               re-suggests Radio until it settles or the
+                               deadline latches it as pulled (per the
+                               Boundedness paragraph below).
       Fallback  -> existing ERROR screen, STR_MEMORY_ERROR (unchanged UX)
   per-family transfers (downloadFamily :681-720) run with the levers already
   applied and re-check their own floors as today — the claim is NOT ended
   at the manifest stage:
   claim.end()     (activity exit: normal finish, Back/cancel, goHome, or any
-                   early return) — restore, see 3.3
+                   early return) — records restore state ONLY, never a
+                   blocking call: the exit path runs under Activity-
+                   Manager's RenderLock and the radio start must not run
+                   there (see 3.3 and the §4 radioRestore note)
 ```
 
 Boundedness per step: `releaseSdFontCaches()` is synchronous and immediate
@@ -271,8 +305,11 @@ same primitive the screen-change hook already drives across passes
 `suspend(0)`'s refusal + `attemptCancelled` latch across passes
 (`Runtime.cpp:352-353`), no inline sleep. If the radio stop has not settled
 after `kBuildReleaseTimeoutMs` (3,000 ms, `Runtime.cpp:37`) while the floor
-is still unmet, the Radio lever counts as pulled and the next plan can only
-verdict `Fallback`. `Back` at any pass cancels the claim (levers stay as
+is still unmet, the Radio lever is recorded as pulled (the deadline rule
+above) and the next plan can only verdict `Fallback` — the 3,000 ms budget
+is consumed by the re-issued passes, so a teardown that would have settled
+on a later pass is never misreported as a memory error before those passes
+have run. `Back` at any pass cancels the claim (levers stay as
 pulled, restore per §3.3); a still-pending stop completes harmlessly in the
 background through the tick's 250 ms stop-finisher (`Runtime.cpp:419-422`),
 so a cancelled claim cannot strand a half-torn-down stack.
@@ -289,8 +326,22 @@ Restore ownership is the activity object itself: a RAII `Claim` member (or an
 explicit `claim.end()` in the activity's exit/teardown path), so every early
 return — fetch failure, per-transfer TLS refusal (`:703-707`), SD-space
 refusal (`:717-720`), Back, goHome — ends the claim exactly once, after the
-last transfer. The transfer stages run with the levers already applied and
-keep re-checking their own floors as today; they never re-restore.
+last transfer. **`claim.end()` only records state** (was-up, enabled,
+claim-end verdicts); it NEVER executes the radio start itself. Activity
+teardown (`exitActivity` for Pop/Replace) runs while `ActivityManager` holds
+the RenderLock (`ActivityManager.cpp:170/:194`, `:233/:237`), and the only
+restore start, `switchOn()` → `startSync()` → `beginOwned()`, spins on
+`host->releaseCaches()` (`Runtime.cpp:141-145`) whose implementation only
+TRIES the render mutex (`src/main.cpp:395-399`) — from the task already
+holding it the try never succeeds, `startSync()` has just cleared
+`attemptCancelled` (`Runtime.cpp:211`) and `buildWaiting` is false, so
+neither spin-exit latch can fire: the restore would hang the loop with the
+render lock held. The restore is realized exclusively by the runtime tick's
+scene-conditioned re-arm outside the lock (`Runtime.cpp:449-459`), which
+`claim.end()` leaves armed by not touching `radioIdleStopped` (a plain
+`suspend(0)` stop never sets it). The transfer stages run with the levers
+already applied and keep re-checking their own floors as today; they never
+re-restore.
 
 ## 4. Where the gate lives
 
@@ -309,9 +360,15 @@ same header) that owns the two real levers:
   widens the claim to them).
 - `radioSuspend()` / `radioRestore()` — thin wrappers: `radioSuspend()`
   issues one non-blocking `suspend(0)` pass and reads back
-  `bleturner::status()` (`Runtime.cpp:654-666`); `radioRestore()` is the
-  §3.3 scene-conditioned re-arm (`switchOn()` only when the verdicts at
-  claim end permit a start).
+  `bleturner::status()` (`Runtime.cpp:654-666`). `radioRestore()` does NOT
+  call `switchOn()` synchronously — it records the was-up/enabled/verdict
+  state that lets the runtime tick's scene-conditioned re-arm
+  (`Runtime.cpp:449-459`) do the start outside the RenderLock; a synchronous
+  `switchOn()` from `claim.end()` would deadlock inside teardown
+  (`beginOwned()` spins on the release-caches Try-lock it cannot take from
+  the RenderLock holder — §3.3). On the screens where the verdicts already
+  defer the restore to the next eligible scene (§3.3), `radioRestore()` is
+  that record alone.
 
 **Call sites in this design's scope** (the ones the owner directive names,
 "font managing or any other background that take memory"):
@@ -481,7 +538,7 @@ radio-held case is a measured question (F3), not a design assertion.
 
 | step | pass criteria |
 |---|---|
-| host `ctest` — new `test/memory_claim_gate/` | planner is total: every (free, maxBlock, floors, stepsTried) input maps to a verdict; no step suggested twice; `Proceed` claim at exactly the `tlsheap` floors |
+| host `ctest` — new `test/memory_claim_gate/` | planner is total: every (free, maxBlock, floors, stepsTried) input maps to a verdict; a lever recorded in `stepsTried` is NEVER re-suggested (`FontCaches` after a no-op release goes to `Radio`/`Fallback`, not back to `FontCaches`); the Radio lever re-suggests across passes ONLY while `suspend(0)` has not settled and its deadline has not expired; `Proceed` claim at exactly the `tlsheap` floors |
 | per-screen behavior | with any lever actually pullable (radio genuinely up on a device log, caches resident), the first claim frame's `[MEM]` log shows the pre/post lever deltas against the measured §7/F3 numbers; when the radio is down at claim entry the `[MEM]` line records `status().running=false` (F3's confirmation leg) |
 | regression guards | `pio run -e default` + `-e x4pro` green; BLE regression pins from #275/#279 untouched (`RadioVerdictTest`, `RadioVerdictS3Test`, `RuntimeTest`); `git diff --exit-code` after format clean |
 | device | owner runs one font install with BLE on and one with BLE off, capturing the `[MEM] claim` lines so F3's measurements (free/maxBlock at the TLS stages, the identified failing allocation, `status().running` at claim entry) exist before any X4 Pro fix claim is asserted; classic-class installs still error honestly until F2 lands |
