@@ -25,6 +25,8 @@
 
 #include <layout/ChapterLayout.h>
 
+#include <esp_heap_caps.h>
+#include <new>
 #include <atomic>
 #include <cstdint>
 #include <vector>
@@ -301,15 +303,41 @@ class FibpPrefetchWorker {
 #error \
     "CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL missing from sdkconfig.h — FibpPrefetchWorker's TCB residency guard cannot compile; the object could silently be placed in PSRAM (invalid for a task TCB)"
 #endif
-// The static TCB resides in this heap-allocated object; the allocator only
-// keeps a block in internal DRAM while it is below the PSRAM-prefer
-// threshold (CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL, 4096). A task TCB in
-// PSRAM is invalid — pin the residency with a compile-time size check.
+// Secondary guard only (kody-rr9): staying <= the threshold makes the
+// PSRAM-preferred default path correct in the common case, but the real
+// residency guarantee is makeFibpWorkerInternal()'s MALLOC_CAP_INTERNAL
+// allocation — the default new can still fall back to PSRAM under a
+// fragmented heap.
 static_assert(sizeof(FibpPrefetchWorker) <= CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL,
               "FibpPrefetchWorker grew past the PSRAM-prefer threshold; taskTcb_ would no longer be DRAM-resident");
 #endif
 
 }  // namespace book
+
+// kody-rr9: the task TCB is a member of the worker object, and a TCB in
+// PSRAM is invalid — but the default allocator only PREFERS internal DRAM
+// below CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL and falls back to PSRAM under a
+// fragmented heap (Memory.h). Every allocation of the worker therefore goes
+// through the hard-capped factory below; the size static_assert stays as a
+// secondary guard only (≤ threshold means the usual PSRAM-preferred path
+// would almost always be correct — not that it must be).
+inline FibpPrefetchWorker* makeFibpWorkerInternal() {
+  void* raw = heap_caps_aligned_alloc(alignof(FibpPrefetchWorker), sizeof(FibpPrefetchWorker),
+                                      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (raw == nullptr) return nullptr;
+  return new (raw) FibpPrefetchWorker();
+}
+
+// Pairs with makeFibpWorkerInternal(): explicit destructor + heap free (the
+// memory did not come from operator new).
+struct FibpWorkerRawDelete {
+  void operator()(FibpPrefetchWorker* p) const {
+    if (p == nullptr) return;
+    p->~FibpPrefetchWorker();
+    heap_caps_free(p);
+  }
+};
+
 }  // namespace freeink
 
 #endif  // CROSSPOINT_TTF_READER

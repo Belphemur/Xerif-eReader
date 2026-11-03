@@ -253,9 +253,11 @@ class EpubReaderActivity final : public ReaderActivity {
   // read the same values on both paths.
   std::unique_ptr<freeink::book::TtfBookRuntime> ttf_;
   // Index-ahead prefetch worker (R1): transient, per book. Created lazily on
-  // the first TTF render (generation known), cancelled in onExit(). Inert on
-  // non-PSRAM/stb builds (stub).
-  std::unique_ptr<freeink::book::FibpPrefetchWorker> fibpWorker_;
+  // the first TTF render (generation known), cancelled in onExit() via
+  // stopFibpWorker(). Inert on non-PSRAM/stb builds (stub). The custom
+  // deleter pairs with the internal-DRAM-capped allocation the TCB needs
+  // (FibpPrefetchWorker.h, kody-rr9).
+  freeink::book::FibpWorkerPtr fibpWorker_;
   bool fibpBegun_ = false;
   char fibpFamily_[48] = {};  // family the worker's faces were built for
   uint32_t fibpNotifiedGen_ = 0;

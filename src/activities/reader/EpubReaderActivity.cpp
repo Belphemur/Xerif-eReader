@@ -837,7 +837,7 @@ bool EpubReaderActivity::loadBook() {
   // still holds the big fresh-boot block, so the reserve always lands here.
   // The worker keeps its buffers until stopFibpWorker() at reader teardown.
   if (fibpWorker_ == nullptr) {
-    fibpWorker_ = makeUniqueNoThrow<freeink::book::FibpPrefetchWorker>();
+    fibpWorker_ = makeFibpWorkerInternal();  // internal-DRAM-capped (kody-rr9): the StaticTask_t member must never fall back to PSRAM
     if (fibpWorker_ == nullptr) {
       LOG_ERR("ERS", "FIBP worker object alloc failed — prefetch disabled");
     }
@@ -4992,7 +4992,7 @@ void EpubReaderActivity::updateFibpWorker(const uint32_t generation, const freei
     stopFibpWorker();
   }
   if (fibpWorker_ == nullptr) {
-    fibpWorker_ = makeUniqueNoThrow<freeink::book::FibpPrefetchWorker>();
+    fibpWorker_ = makeFibpWorkerInternal();  // internal-DRAM-capped (kody-rr9): the StaticTask_t member must never fall back to PSRAM
     if (fibpWorker_ == nullptr) return;
     // Re-creation (family swap, takeover) must re-reserve: loadBook()'s
     // call only armed the ORIGINAL object, and cancel() freed that object's

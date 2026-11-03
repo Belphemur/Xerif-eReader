@@ -647,4 +647,12 @@ a symbol no build defined. Second review pass: the inert stub gained a
 `reserveStack()` no-op so rollback builds that set TTF without PSRAM+FT
 still compile, and mid-session worker re-creation (family swap, takeover)
 re-reserves at the `updateFibpWorker()` creation site — `loadBook()`'s
-reserve died with the original object.
+reserve died with the original object. Third pass: the worker object itself
+is now allocated through `makeFibpWorkerInternal()`
+(`heap_caps_aligned_alloc` with `MALLOC_CAP_INTERNAL` + placement new, custom
+deleting deleter `FibpWorkerRawDelete`) — the size assert is a secondary
+guard only, because the default allocator's internal preference falls back
+to PSRAM on a fragmented heap (Memory.h), and a PSRAM-resident TCB is
+invalid. The bounded `cancel()` reap wait (≤50 ms, correctness-mandatory
+after a live worker) is accepted once-per-teardown, not copied to the render
+path.
