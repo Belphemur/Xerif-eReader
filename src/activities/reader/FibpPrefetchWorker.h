@@ -294,7 +294,8 @@ class FibpPrefetchWorker {
 #endif
 #endif
 #if !defined(CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL)
-#error "CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL missing from sdkconfig.h — FibpPrefetchWorker's TCB residency guard cannot compile; the object could silently be placed in PSRAM (invalid for a task TCB)"
+#error \
+    "CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL missing from sdkconfig.h — FibpPrefetchWorker's TCB residency guard cannot compile; the object could silently be placed in PSRAM (invalid for a task TCB)"
 #endif
 // The static TCB resides in this heap-allocated object; the allocator only
 // keeps a block in internal DRAM while it is below the PSRAM-prefer
