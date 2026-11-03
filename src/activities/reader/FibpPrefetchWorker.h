@@ -312,8 +312,6 @@ static_assert(sizeof(FibpPrefetchWorker) <= CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL,
               "FibpPrefetchWorker grew past the PSRAM-prefer threshold; taskTcb_ would no longer be DRAM-resident");
 #endif
 
-}  // namespace book
-
 // kody-rr9: the task TCB is a member of the worker object, and a TCB in
 // PSRAM is invalid — but the default allocator only PREFERS internal DRAM
 // below CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL and falls back to PSRAM under a
@@ -338,6 +336,7 @@ struct FibpWorkerRawDelete {
   }
 };
 
+}  // namespace book
 }  // namespace freeink
 
 #endif  // CROSSPOINT_TTF_READER
