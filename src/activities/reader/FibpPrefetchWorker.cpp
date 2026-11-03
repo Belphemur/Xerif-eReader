@@ -374,6 +374,24 @@ bool FibpPrefetchWorker::ensureTask() {
   return false;
 }
 
+bool FibpPrefetchWorker::reserveStack() {
+  // Idempotent: the one-shot allocation runs once per object lifetime. The
+  // reader calls this at reader entry, before the EPUB open loads its ZIP
+  // index cache — that cache (entry-count dependent, ~56 KB at 465 entries)
+  // can leave no contiguous 32 KB DRAM block for the first spawn (2nd soak,
+  // build 0e652a97). Failures are NOT retried by design: the worker stays
+  // inert for the session, exactly like today's failed first spawn.
+  stackReserveAttempted_ = true;
+  if (taskStack_ != nullptr) return true;
+  taskStack_ = static_cast<uint8_t*>(
+      heap_caps_aligned_alloc(portBYTE_ALIGNMENT, kStackBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  if (taskStack_ == nullptr) {
+    LOG_ERR("PREF", "Stack reserve failed: %u", static_cast<unsigned>(kStackBytes));
+    return false;
+  }
+  return true;
+}
+
 FibpPrefetchWorker::SpawnResult FibpPrefetchWorker::waitForReap() {
   // A self-deleting task is parked on xTasksWaitingTermination until the
   // idle task unlinks it; recreating a task on the same static buffers while
@@ -409,8 +427,16 @@ FibpPrefetchWorker::SpawnResult FibpPrefetchWorker::spawnTask() {
   // image-heavy books). Stack depth is in BYTES on ESP-IDF (vanilla FreeRTOS
   // counts words). On any failure the returned SpawnResult tells ensureTask
   // whether the exit token needs restoring; the buffers survive and the next
-  // trigger retries with the same allocation.
+  // trigger retries with the same allocation. The reader reserves the stack
+  // at entry (reserveStack); this path's own allocation is only a fallback
+  // for callers that never reserved — once reserveStack() ran, a spawn-time
+  // allocation would just re-fight the fragmentation the reserve avoids.
   if (taskStack_ == nullptr) {
+    if (stackReserveAttempted_) {
+      // Reader-entry reserve failed this session: prefetch stays disabled,
+      // no spawn-time retry (the reserve failure was already logged).
+      return SpawnResult::Failed;
+    }
     taskStack_ = static_cast<uint8_t*>(
         heap_caps_aligned_alloc(portBYTE_ALIGNMENT, kStackBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     if (taskStack_ == nullptr) {
@@ -493,6 +519,9 @@ bool FibpPrefetchWorker::cancel() {
     heap_caps_free(taskStack_);
     taskStack_ = nullptr;
   }
+  // A re-begin on this same object (cancel + begin without destroy) must be
+  // able to reserve again: the session boundary resets the attempted flag.
+  stackReserveAttempted_ = false;
   if (runtime_ != nullptr) runtime_->close();
   runtime_.reset();
   teardownFaces();

@@ -1593,7 +1593,9 @@ void Epub::ZipFileCache::load(const std::string& epubPath) {
   if (!zf.open()) return;
   if (!zf.loadAllFileStatSlims()) return;
   // Move the cache out of zf to avoid the ~2x transient copy the const& getter
-  // would force. The map is small (~5-20 KB) but copy is avoidable.
+  // would force. The map lives in DRAM and is entry-count dependent
+  // (~115 B/entry incl. heap nodes; ~56 KB at 465 entries — measured in the
+  // 2026-11-03 soak), big enough to make the copy worth avoiding.
   cache_ = zf.takeFileStatSlimCache();
   loaded_ = true;
   LOG_DBG("ZIP", "ZIP cache loaded: %zu entries", static_cast<size_t>(cache_.size()));

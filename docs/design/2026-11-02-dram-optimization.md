@@ -584,7 +584,51 @@ toggle is already gate-refused below ~50 KB free while reading — no gate
 changes. X3-class envs do not compile this file (TTF-only), so they cannot
 regress.
 
-### 8.4 Owner directive
+### 8.4 Follow-up soak (build 0e652a97, 2026-11-03) — reserve moved to reader entry
+
+A second soak of the same image-heavy 177-spine book, opened FIRST after a
+fresh boot, exposed a gap in §8.2's lazy allocation point. Log order:
+
+- `[CPRO] open: free=110348 max_block=69620` — reader entry, plenty of
+  contiguous DRAM for the 32 KB stack.
+- `[ZIP] ZIP cache loaded: 465 entries` — the open path's DRAM index
+  `unordered_map` lands before the worker ever spawns (§8.5).
+- `MaxAlloc=31732` stays flat for the whole reading session.
+- `[PREF] Worker armed` → `[ERR] [PREF] Stack alloc failed: 32768` ×6 —
+  the first threshold trigger arrives AFTER the cache load, so the lazy
+  §8.2 allocation finds no contiguous block. Deterministic across both
+  soak logs; a 93-entry book loses only ~13 KB in the same window and never
+  shows it.
+
+Fix (owner-decided, same PR #279): `FibpPrefetchWorker::reserveStack()` —
+public, idempotent, performs the §8.2 one-shot stack allocation — is called
+from `EpubReaderActivity::loadBook()` at reader entry, before the EPUB open
+loads anything. `spawnTask()` only uses the pre-reserved buffers afterwards;
+its own allocation remains purely as a fallback for paths where the reader
+never called `reserveStack()`. Reserve failure at entry logs once and keeps
+prefetch disabled for the session (same shape as today, and the armies of
+spawn failure logs disappear with it). The buffer is still freed by
+`cancel()` at reader teardown — the held-memory window is the reading
+session, unchanged from §8.3.
+
+### 8.5 Newly-exposed finding: the ZIP index cache (next candidate, owner decision pending)
+
+The reserve gets its room from the 69,620 B block at reader entry, but that
+block is already the DRAM ceiling because of the open path itself: the EPUB
+open builds a
+`std::unordered_map<std::string, FileStatSlim>` in DRAM
+(`lib/ZipFile/ZipFile.h:77,80`, filled by `loadAllFileStatSlims()` at
+`lib/ZipFile/ZipFile.cpp:87`) and keeps it the whole reading session. Footprint
+is entry-count dependent (~115 B/entry incl. heap nodes; ~56 KB at 465
+entries — measured in the 2026-11-03 soak; the old "~5-20 KB" comment in
+`lib/Epub/Epub.cpp` was stale and is corrected in this PR). For book-heavy
+e.readers this map is the largest remaining runtime DRAM consumer on the X4
+Pro reading path and the true fragmentation driver behind §8.1 and §8.4.
+Redesigning it (slimmed value, swapped storage, or not caching everything
+in DRAM) is logged as the NEXT candidate for this campaign — owner decision
+pending, deliberately not touched in this PR.
+
+### 8.6 Owner directive
 
 Fix shipped in the same PR #279 as the DRAM-optimization work (direct human
 instruction, 2026-11-03).

@@ -93,6 +93,16 @@ class FibpPrefetchWorker {
   // generation (scalar params are swapped under paramsMux_).
   // Respawns the task when it had already finished ("fully indexed").
   void notifyGeneration(uint32_t generation, const LayoutParams& pods);
+  // Main thread. Marks the one-shot task stack as reserved (see the
+  // taskStack_ members) WITHOUT spawning. Called by the reader at reader
+  // entry, before the EPUB open loads the ZIP index cache — that cache can
+  // leave no contiguous 32 KB DRAM block for the first spawn (2nd soak,
+  // build 0e652a97). Idempotent; returns false once the reserve failed, and
+  // the reserve is NOT retried later (prefetch stays disabled for the
+  // session, same failure shape as a failed first spawn). The StaticTask_t
+  // TCB needs no allocation: it is the DRAM-resident member taskTcb_,
+  // pinned by the static_assert below.
+  bool reserveStack();
   // Main thread. Spawns the worker task when it is not running (initial
   // spawn and self-exit respawns — the capped window makes the task exit
   // after each window drains, so chapter entries must respawn it). Returns
@@ -203,6 +213,11 @@ class FibpPrefetchWorker {
   // for the idle task's unlink of the self-deleted task.
   uint8_t* taskStack_ = nullptr;  // one-shot kStackBytes DRAM block, freed in cancel()
   StaticTask_t taskTcb_ = {};     // static TCB, part of this (DRAM-resident) object
+  // Set by reserveStack() and cleared again in cancel() (the session
+  // boundary). While set, spawnTask() never allocates: a failed reader-entry
+  // reserve keeps prefetch disabled for the session (no spawn-time retry),
+  // and a successful one makes the spawn-path allocation dead code.
+  bool stackReserveAttempted_ = false;
 
   char epubPath_[BeginContext::kEpubPathCap] = {};
   char cacheDir_[BeginContext::kCacheDirCap] = {};

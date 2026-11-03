@@ -827,6 +827,24 @@ void EpubReaderActivity::setBookCompleted(bool completed) {
 #endif
 
 bool EpubReaderActivity::loadBook() {
+#if defined(CROSSPOINT_TTF_READER)
+  // dram-pref soak follow-up (build 0e652a97): reserve the FIBP worker's
+  // one-shot 32 KB DRAM stack HERE, before the EPUB open loads the ZIP index
+  // cache — that DRAM unordered_map is entry-count dependent (~115 B/entry,
+  // ~56 KB at 465 entries) and can leave no contiguous block for the worker's
+  // first spawn, which only fires later at the 10%-remaining trigger
+  // (EpubReaderActivity.cpp:4976 updateFibpWorker). The reader-entry heap
+  // still holds the big fresh-boot block, so the reserve always lands here.
+  // The worker keeps its buffers until stopFibpWorker() at reader teardown.
+  if (fibpWorker_ == nullptr) {
+    fibpWorker_ = makeUniqueNoThrow<freeink::book::FibpPrefetchWorker>();
+    if (fibpWorker_ == nullptr) {
+      LOG_ERR("ERS", "FIBP worker object alloc failed — prefetch disabled");
+    }
+  }
+  if (fibpWorker_ != nullptr) fibpWorker_->reserveStack();
+#endif
+
   auto loadedEpub = makeUniqueNoThrow<Epub>(bookPath, "/.crosspoint");
   if (!loadedEpub) {
     LOG_ERR("ERS", "Failed to allocate EPUB object");
