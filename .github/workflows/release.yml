@@ -150,6 +150,22 @@ jobs:
           echo "xpoint_name=$xpoint_asset" >> "$GITHUB_OUTPUT"
           echo "xerif_name=$xerif_asset" >> "$GITHUB_OUTPUT"
 
+      - name: Prepare license asset
+        # Upstream #4064, hand-ported: the fork's matrix carries the build env
+        # directly in pio_env (upstream's release_env/rc_env pair only exists in
+        # release_candidate.yml, which this workflow does not use).
+        if: matrix.device == 'x3-x4'
+        run: python3 scripts/build_release_license.py --env ${{ matrix.pio_env }} --output dist/LICENSE
+
+      - name: Stage license asset
+        if: matrix.device == 'x3-x4'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-license
+          path: dist/LICENSE
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Upload Artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -192,6 +208,10 @@ jobs:
               cp "$bin" "dist/$(basename "$bin")"
             done < <(find "$d" -type f \( -name 'xpoint-*.bin' -o -name 'xerif-*.bin' \))
           done
+          # License notices asset (upstream #4064, hand-ported): the x3-x4 job
+          # builds dist/LICENSE, the download-artifact above carries it in as
+          # artifacts/release-license/LICENSE.
+          cp artifacts/release-license/LICENSE dist/LICENSE
           # Upstream parity check (hand-ported from the Picco sync): every device
           # in the matrix must have produced its xerif asset before a release is
           # cut — a silently missing device would otherwise ship half a release.
@@ -200,6 +220,7 @@ jobs:
             test -f "dist/xerif-${version}-${device}.bin"
           done
           test "$(find dist -maxdepth 1 -type f -name 'xerif-*.bin' | wc -l)" -eq 8
+          test -s dist/LICENSE
           ls -la dist
           echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
 
@@ -326,4 +347,4 @@ jobs:
             --title "Xerif ${{ steps.collect.outputs.tag }}" \
             --notes-file dist/NOTES.md \
             dist/xpoint-*.bin dist/xerif-*.bin \
-            dist/manifest.json dist/manifest.json.sig
+            dist/manifest.json dist/manifest.json.sig dist/LICENSE

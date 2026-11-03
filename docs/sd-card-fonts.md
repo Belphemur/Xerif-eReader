@@ -3,6 +3,10 @@
 CrossPoint supports loading additional fonts from the SD card, including fonts
 with extended Unicode coverage (CJK, Cyrillic, Greek, etc.).
 
+The font releases include a `LICENSE` file with the original font notices.
+If you distribute font copies, keep the applicable notices with those copies.
+The source notices are in [licenses/fonts.txt](../licenses/fonts.txt).
+
 ## Installing Fonts
 
 There are three ways to install fonts:
