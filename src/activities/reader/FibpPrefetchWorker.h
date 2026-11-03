@@ -161,6 +161,7 @@ class FibpPrefetchWorker {
   // today's delete-sem invariant).
   enum class SpawnResult : uint8_t { Started, Failed, ReapBlocked };
   SpawnResult spawnTask();
+  SpawnResult waitForReap();
   static bool yieldHook(void* ctx, uint16_t pagesBuilt);
 
   static constexpr UBaseType_t kPriority = 1;

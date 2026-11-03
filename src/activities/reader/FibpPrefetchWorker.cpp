@@ -421,8 +421,7 @@ FibpPrefetchWorker::SpawnResult FibpPrefetchWorker::spawnTask() {
   const SpawnResult reaped = waitForReap();
   if (reaped != SpawnResult::Started) return reaped;
   if (xTaskCreateStaticPinnedToCore(taskTrampoline, "fibpprefetch", kStackBytes, this, kPriority,
-                                    reinterpret_cast<StackType_t*>(taskStack_), &taskTcb_, &task_,
-                                    kCore) == nullptr) {
+                                    reinterpret_cast<StackType_t*>(taskStack_), &taskTcb_, kCore) == nullptr) {
     // Same failure visibility as the old dynamic spawn; the buffers persist
     // for the next respawn attempt.
     LOG_ERR("PREF", "Task respawn failed");
