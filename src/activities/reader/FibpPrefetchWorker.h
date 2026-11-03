@@ -44,6 +44,8 @@
 #include <semphr.h>
 #include <task.h>
 
+#include <esp_heap_caps.h>
+
 #include "TtfBookRuntime.h"
 #endif
 
@@ -151,6 +153,14 @@ class FibpPrefetchWorker {
   // for their notified-spine change detection so plan and comparison share
   // one read.
   uint16_t replan(uint32_t generation);
+  // static-spawn helper (dram-x3 Finding 1): allocates taskStack_ once and
+  // spawns the worker task on it; waits for the idle task to unlink a
+  // self-deleted previous static task before reusing the buffers. ReapBlocked
+  // leaves the exit token back on exitedSem_ so the next trigger retries the
+  // same wait instead of timing out on a dead join (spawn failure keeps
+  // today's delete-sem invariant).
+  enum class SpawnResult : uint8_t { Started, Failed, ReapBlocked };
+  SpawnResult spawnTask();
   static bool yieldHook(void* ctx, uint16_t pagesBuilt);
 
   static constexpr UBaseType_t kPriority = 1;
@@ -173,6 +183,26 @@ class FibpPrefetchWorker {
   SemaphoreHandle_t exitedSem_ = nullptr;                           // worker gives before self-delete
   SemaphoreHandle_t paramsMux_ = nullptr;                           // guards params_ scalar swaps
   TaskHandle_t task_ = nullptr;
+
+  // Session-persistent static task storage (dram-x3 Finding 1): the worker
+  // self-exits per one-spine plan, and respawning a dynamically-created task
+  // frees its 32 KB stack right where fractional DRAM blocks (image pages)
+  // pinch the hole — after a few cycles MaxAlloc settles below the spawn
+  // requirement and prefetch dies for the session. Allocating the stack once
+  // and reusing it with a static TCB removes the create/destroy churn: a
+  // respawn can never fail on fragmentation because its required block is
+  // never returned to the heap. 32.8 KB DRAM is then held for the whole
+  // session — acceptable while reading, where no other subsystem requests
+  // >32 KB DRAM (inflate/TTF-scratch/image decode go to PSRAM).
+  //
+  // Stack and TCB must stay DRAM-internal (a task stack in PSRAM would fault
+  // the windowed ABI once the cache flips); heap_caps_aligned_alloc with
+  // FreeRTOS' portBYTE_ALIGNMENT satisfies the kernel's stack-alignment
+  // assert. Reuse is legal only after the previous task is fully deleted:
+  // ensureTask() reuses them behind the exitedSem_ join plus a bounded wait
+  // for the idle task's unlink of the self-deleted task.
+  uint8_t* taskStack_ = nullptr;  // one-shot kStackBytes DRAM block, freed in cancel()
+  StaticTask_t taskTcb_ = {};     // static TCB, part of this (DRAM-resident) object
 
   char epubPath_[BeginContext::kEpubPathCap] = {};
   char cacheDir_[BeginContext::kCacheDirCap] = {};
@@ -237,6 +267,15 @@ class FibpPrefetchWorker {
   uint16_t buildingProgressPages() const { return 0; }
 #endif  // FIBP_WORKER_ENABLED
 };
+
+#if FIBP_WORKER_ENABLED && defined(SPIRAM_MALLOC_ALWAYSINTERNAL)
+// The static TCB resides in this heap-allocated object; the allocator only
+// keeps a block in internal DRAM while it is below the PSRAM-prefer
+// threshold. A task TCB in PSRAM is invalid — pin the residency with a
+// compile-time size check.
+static_assert(sizeof(FibpPrefetchWorker) <= SPIRAM_MALLOC_ALWAYSINTERNAL,
+              "FibpPrefetchWorker grew past the PSRAM-prefer threshold; taskTcb_ would no longer be DRAM-resident");
+#endif
 
 }  // namespace book
 }  // namespace freeink

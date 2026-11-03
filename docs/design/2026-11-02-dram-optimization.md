@@ -522,3 +522,69 @@ The 1,536 B saving on both envs is from `MAX_SCAN_CODEPOINTS` 512→128
   telemetry (`ENABLE_SERIAL_LOG` + `LOG_LEVEL >= 2`). Measurement builds opt
   in the same way they do for all `LOG_*` output; production and
   serial-disabled builds no longer pay the stack-scan cost.
+
+## 8. Amendment of 2026-11-03 — persistent static stack for the FIBP worker
+
+### 8.1 Soak Finding 1 (owner-approved fix, same PR #279)
+
+Soaking the CI x4pro artifact with an image-heavy 177-spine TTF book
+("Le ti-pou d'Amérique", `ttfGrayPath: images=1`) shows
+`[PREF] Task respawn failed` ×5, each inside a `[MEM]` window with
+`MaxAlloc=31732`. Chain (file:line at commit 79ae6af2):
+
+1. `FibpPrefetchWorker.h:124` — the worker stack floor is `kStackBytes = 32 * 1024`
+   (load-bearing: 24 KB overflowed on device, a long 93-page spine measured
+   HWM 1,792 B ⇒ peak ≈ 22.8 KB; not touched here).
+2. The worker self-exits after each one-spine plan
+   (`FibpPrefetchWorker.cpp:322-329`), so FreeRTOS frees the 32 KB stack, and
+   the next spine respawns the task (`notifyChapterProgress` → `ensureTask`,
+   `FibpPrefetchWorker.cpp:315-331`).
+3. The create/destroy cycle interleaves with ≤4 KB DRAM blocks from
+   image-heavy pages (those stay in DRAM per `SPIRAM_MALLOC_ALWAYSINTERNAL=4096`)
+   that pinch the freed hole. One cycle later the fragmentation settles at
+   `MaxAlloc=31732 < 32768`, `xTaskCreatePinnedToCore`
+   (`FibpPrefetchWorker.cpp:356`) fails, and prefetch is dead for the rest of
+   the session — silently, exactly on the books that need it most.
+
+### 8.2 Fix (decided by owner): allocate the task stack once, respawn reuses it
+
+- `FibpPrefetchWorker` allocates the stack buffer ONCE, lazily at the first
+  `ensureTask()` spawn: one DRAM block of `kStackBytes` via
+  `heap_caps_aligned_alloc` with `MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT`
+  (INTERNAL is mandatory — a FreeRTOS task stack can never live in PSRAM;
+  see the fix comment for the alignment detail), plus an inline
+  `StaticTask_t` member for the TCB. Both are held as members until
+  `cancel()` (reader teardown).
+- Spawn switched to `xTaskCreateStaticPinnedToCore(taskTrampoline,
+  "fibpprefetch", kStackBytes, ...)` — stack depth stays in BYTES: ESP-IDF
+  differs from vanilla FreeRTOS there (`idf_additions.h` task API docs;
+  `portSTACK_TYPE` is `uint8_t` on the Xtensa port).
+- Respawn reuses the same buffers; join semantics, the self-exit design, the
+  `lastPrefetchFiredSpine_` dedup and the heap floors are unchanged.
+- One correction beyond the original design sketch: a self-deleting task is
+  NOT fully deleted at its join semaphore — `vTaskDelete(NULL)` parks the
+  TCB on `xTasksWaitingTermination` until the idle task unlinks it, and
+  recreating a task on the same buffers while that stale node is still
+  linked would corrupt the new task. The respawn therefore also waits
+  (bounded) until `xTaskGetHandle("fibpprefetch")` returns null (the name
+  search covers the termination list; the worker name is unique in the
+  system) before reusing the buffers — the exitedSem_ join itself is
+  untouched.
+- If the one-time allocation fails (`MaxAlloc < 32768` at first spawn; not
+  observed — first spawn happens at book open with 57-69 KB free), the
+  respawn fails with the same `LOG_ERR("PREF", ...)` as today; single
+  failure path, no dynamic fallback.
+
+### 8.3 Trade-off
+
+32.8 KB DRAM is now held for the whole reading session instead of being
+freed between plans. During reading nothing else requests >32 KB DRAM
+(inflate ring, TTF scratch and image decode route to PSRAM), and the BLE
+toggle is already gate-refused below ~50 KB free while reading — no gate
+changes. X3-class envs do not compile this file (TTF-only), so they cannot
+regress.
+
+### 8.4 Owner directive
+
+Fix shipped in the same PR #279 as the DRAM-optimization work (direct human
+instruction, 2026-11-03).

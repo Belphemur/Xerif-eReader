@@ -15,6 +15,14 @@
 
 #include "ChapterIndexEngine.h"
 
+// Reap-wait bound (dram-x3 Finding 1): the idle task unlinks a self-deleted
+// task on its next pass; on this device that is well under 1 tick. 50 ms is
+// orders of magnitude above the steady state yet bounded if the scheduler is
+// wedged — the respawn then fails with today's ERR and a later trigger
+// retries.
+static constexpr uint32_t kReapWaitMaxMs = 50;
+static constexpr uint32_t kReapWaitStepMs = 5;
+
 namespace freeink {
 namespace book {
 
@@ -353,15 +361,74 @@ bool FibpPrefetchWorker::ensureTask() {
     }
   }
   running_.store(true, std::memory_order_release);
-  if (xTaskCreatePinnedToCore(taskTrampoline, "fibpprefetch", kStackBytes, this, kPriority, &task_, kCore) != pdPASS) {
-    LOG_ERR("PREF", "Task respawn failed");
-    running_.store(false, std::memory_order_release);
+  const SpawnResult spawned = spawnTask();
+  if (spawned == SpawnResult::Started) return true;
+  running_.store(false, std::memory_order_release);
+  if (spawned == SpawnResult::Failed) {
     vSemaphoreDelete(exitedSem_);  // restore the invariant: no sem ⇒ no task
     exitedSem_ = nullptr;
     task_ = nullptr;
-    return false;
   }
-  return true;
+  // ReapBlocked: spawnTask put the exit token back on the semaphore, so the
+  // next trigger joins instantly and re-waits for the idle reap.
+  return false;
+}
+
+bool FibpPrefetchWorker::waitForReap() {
+  // A self-deleting task is parked on xTasksWaitingTermination until the
+  // idle task unlinks it; recreating a task on the same static buffers while
+  // that stale node is still linked would corrupt the new task. The name
+  // search covers the termination-list too, and "fibpprefetch" is unique in
+  // the system, so a null return ⟺ the previous static task was unlinked by
+  // the idle task. No live worker carries the name under the running_ guard,
+  // and the probe answers instantly when nothing waits (first spawn,
+  // already-reaped respawn) — always run it so the cancel()+re-begin path on
+  // this same object is covered too.
+  const uint32_t start = millis();
+  for (;;) {
+    if (xTaskGetHandle("fibpprefetch") == nullptr) return SpawnResult::Started;
+    if (millis() - start >= kReapWaitMaxMs) {
+      LOG_ERR("PREF", "Previous task not reaped in %ums", static_cast<unsigned>(kReapWaitMaxMs));
+      // Restore the consumed exit token so the retry path joins this
+      // semaphore again instead of dead-waiting on a fresh, empty one.
+      xSemaphoreGive(exitedSem_);
+      return SpawnResult::ReapBlocked;
+    }
+    vTaskDelay(pdMS_TO_TICKS(kReapWaitStepMs));
+  }
+}
+
+FibpPrefetchWorker::SpawnResult FibpPrefetchWorker::spawnTask() {
+  // One-shot static buffers: the stack is a single INTERNAL DRAM block (a
+  // task stack can never live in PSRAM — the Xtensa windowed ABI faults once
+  // the PSRAM cache flips; heap_caps_aligned_alloc satisfies the kernel's
+  // 16-byte stack alignment assert) and the TCB is a member of this DRAM-
+  // resident object. The buffers persist across self-exit respawns: the
+  // required block is never returned to the heap, so respawning cannot fail
+  // on fragmentation (the churn that permanently disabled prefetch on
+  // image-heavy books). Stack depth is in BYTES on ESP-IDF (vanilla FreeRTOS
+  // counts words). On any failure the returned SpawnResult tells ensureTask
+  // whether the exit token needs restoring; the buffers survive and the next
+  // trigger retries with the same allocation.
+  if (taskStack_ == nullptr) {
+    taskStack_ = static_cast<uint8_t*>(heap_caps_aligned_alloc(portBYTE_ALIGNMENT, kStackBytes,
+                                                               MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (taskStack_ == nullptr) {
+      LOG_ERR("PREF", "Stack alloc failed: %u", static_cast<unsigned>(kStackBytes));
+      return SpawnResult::Failed;
+    }
+  }
+  const SpawnResult reaped = waitForReap();
+  if (reaped != SpawnResult::Started) return reaped;
+  if (xTaskCreateStaticPinnedToCore(taskTrampoline, "fibpprefetch", kStackBytes, this, kPriority,
+                                    reinterpret_cast<StackType_t*>(taskStack_), &taskTcb_, &task_,
+                                    kCore) == nullptr) {
+    // Same failure visibility as the old dynamic spawn; the buffers persist
+    // for the next respawn attempt.
+    LOG_ERR("PREF", "Task respawn failed");
+    return SpawnResult::Failed;
+  }
+  return SpawnResult::Started;
 }
 
 void FibpPrefetchWorker::notifyGeneration(const uint32_t generation, const LayoutParams& pods) {
@@ -417,6 +484,16 @@ bool FibpPrefetchWorker::cancel() {
     paramsMux_ = nullptr;
   }
   task_ = nullptr;
+  // Release the session-persistent stack back to the DRAM heap (dram-x3
+  // Finding 1). Safe even if the self-deleted task is still on the kernel's
+  // termination list: the idle reap of a static task only unlinks the TCB
+  // node, never reads or frees the stack. The join-timeout path above returns
+  // before this point — a wedged task keeps its state (leak beats UAF) and
+  // the stack leaks with the rest of the object.
+  if (taskStack_ != nullptr) {
+    heap_caps_free(taskStack_);
+    taskStack_ = nullptr;
+  }
   if (runtime_ != nullptr) runtime_->close();
   runtime_.reset();
   teardownFaces();
