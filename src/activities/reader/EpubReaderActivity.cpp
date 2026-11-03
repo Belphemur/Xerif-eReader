@@ -4994,6 +4994,10 @@ void EpubReaderActivity::updateFibpWorker(const uint32_t generation, const freei
   if (fibpWorker_ == nullptr) {
     fibpWorker_ = makeUniqueNoThrow<freeink::book::FibpPrefetchWorker>();
     if (fibpWorker_ == nullptr) return;
+    // Re-creation (family swap, takeover) must re-reserve: loadBook()'s
+    // call only armed the ORIGINAL object, and cancel() freed that object's
+    // stack. reserveStack() is idempotent (kody).
+    fibpWorker_->reserveStack();
   }
   if (!fibpBegun_) {
     // Single-writer: a legacy prefetch/sync session in flight owns its spine

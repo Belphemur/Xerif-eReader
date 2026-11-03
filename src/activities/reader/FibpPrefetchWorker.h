@@ -277,6 +277,10 @@ class FibpPrefetchWorker {
 #else
   // Inert stub (single-core / PSRAM-less / stb-rollback builds).
   bool begin(const BeginContext&) { return false; }
+  // No session buffer to reserve (kody): the rollback build has no
+  // task/stack at all, so the reader's reserve call stays compilable and a
+  // no-op that reports "not reserved".
+  bool reserveStack() { return false; }
   void notifyChapterProgress(uint16_t, uint16_t, uint16_t, bool) {}
   void notifyGeneration(uint32_t, const LayoutParams&) {}
   void requestResumeClaim(uint16_t) {}

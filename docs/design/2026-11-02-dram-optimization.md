@@ -643,4 +643,8 @@ is now non-blocking: a spawn whose predecessor is still linked defers by one
 trigger instead of a 50 ms render-path stall. The TCB residency
 `static_assert` now compiles for real: it reads
 `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` (the sdkconfig name, 4096) instead of
-a symbol no build defined.
+a symbol no build defined. Second review pass: the inert stub gained a
+`reserveStack()` no-op so rollback builds that set TTF without PSRAM+FT
+still compile, and mid-session worker re-creation (family swap, takeover)
+re-reserves at the `updateFibpWorker()` creation site — `loadBook()`'s
+reserve died with the original object.
