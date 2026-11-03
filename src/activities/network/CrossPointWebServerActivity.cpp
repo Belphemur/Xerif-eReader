@@ -7,6 +7,7 @@
 #include <GfxRenderer.h>
 #include <HalGPIO.h>
 #include <I18n.h>
+#include <Logging.h>
 #include <Memory.h>
 #include <WiFi.h>
 
@@ -416,6 +417,7 @@ void CrossPointWebServerActivity::startWebServer() {
   }
 
   state = WebServerActivityState::SERVER_RUNNING;
+  logLoopTaskHwm("web_server");
   LOG_DBG("WEBACT", "Web server started successfully");
   lastWifiBars = isApMode ? 0 : barsForRssi(WiFi.RSSI(), 0);
 

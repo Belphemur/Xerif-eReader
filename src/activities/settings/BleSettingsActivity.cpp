@@ -3,6 +3,7 @@
 #include <BlePageTurner.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <Logging.h>
 
 #include <cstring>
 #include <iterator>
@@ -33,6 +34,7 @@ void BleSettingsActivity::onEnter() {
   radioVisit = activityManager.visit();
   // A saved opt-in brings the radio up here, so scanning and pairing work at once.
   if (SETTINGS.ble.enabled) bleturner::switchOn();
+  logLoopTaskHwm("ble_pairing");
   refresh();
   requestUpdate();
 }
@@ -55,6 +57,9 @@ void BleSettingsActivity::loop() {
   if (SETTINGS.ble.enabled && bleturner::service()) SETTINGS.saveToFile();
   if (learnAction != bleturner::Action::None) stepLearning();
   if (signature() == shownSignature) return;  // an e-ink repaint only when something changed
+  // Change edge: captures the loop task after pairing/link service processing,
+  // which onEnter() cannot observe.
+  logLoopTaskHwm("ble_pair_service");
   refresh();
   requestUpdate();
 }
@@ -243,6 +248,10 @@ void BleSettingsActivity::activateIndex(const int index) {
         const std::string name = peer.name;
         bleturner::scan(0);
         bleturner::pair(addr.c_str(), name.c_str());
+        // Pairing initiation runs deep inside this handler; the onEnter sample
+        // never sees it. The completion path is sampled at the change edge in
+        // loop() below (link/save happen there through the service worker).
+        logLoopTaskHwm("ble_pair_start");
         showView(View::Menu);
         return;
       }

@@ -75,6 +75,7 @@ void FontPreviewActivity::relayout() {
   // char) must not be displayed as if it were the current page: drop it and
   // let the render keep the frame the preview opened over until close reflows.
   if (!out.reachedAnchor) preview_.reset();
+  logLoopTaskHwm("font_preview");
 }
 
 void FontPreviewActivity::applySize(const uint32_t value) {

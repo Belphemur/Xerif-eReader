@@ -59,7 +59,7 @@ class FontCacheManager {
   // A render pass touches at most a handful of font ids. Codepoints are packed
   // with a compact font slot and resolved style, then grouped for prewarming.
   static constexpr uint8_t MAX_SCAN_FONTS = 4;
-  static constexpr uint16_t MAX_SCAN_CODEPOINTS = 512;
+  static constexpr uint16_t MAX_SCAN_CODEPOINTS = 128;
   static constexpr uint8_t SCAN_STYLE_SHIFT = 21;
   static constexpr uint8_t SCAN_FONT_SHIFT = SCAN_STYLE_SHIFT + 2;
   static constexpr uint32_t SCAN_CODEPOINT_MASK = (1U << SCAN_STYLE_SHIFT) - 1;

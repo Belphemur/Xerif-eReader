@@ -15,6 +15,14 @@
 
 #include "ChapterIndexEngine.h"
 
+// Reap-wait bound (dram-x3 Finding 1): the idle task unlinks a self-deleted
+// task on its next pass; on this device that is well under 1 tick. 50 ms is
+// orders of magnitude above the steady state yet bounded if the scheduler is
+// wedged — the respawn then fails with today's ERR and a later trigger
+// retries.
+static constexpr uint32_t kReapWaitMaxMs = 50;
+static constexpr uint32_t kReapWaitStepMs = 5;
+
 namespace freeink {
 namespace book {
 
@@ -353,15 +361,104 @@ bool FibpPrefetchWorker::ensureTask() {
     }
   }
   running_.store(true, std::memory_order_release);
-  if (xTaskCreatePinnedToCore(taskTrampoline, "fibpprefetch", kStackBytes, this, kPriority, &task_, kCore) != pdPASS) {
-    LOG_ERR("PREF", "Task respawn failed");
-    running_.store(false, std::memory_order_release);
+  const SpawnResult spawned = spawnTask();
+  if (spawned == SpawnResult::Started) {
+    taskCreated_ = true;
+    return true;
+  }
+  running_.store(false, std::memory_order_release);
+  if (spawned == SpawnResult::Failed) {
     vSemaphoreDelete(exitedSem_);  // restore the invariant: no sem ⇒ no task
     exitedSem_ = nullptr;
     task_ = nullptr;
+  }
+  // ReapBlocked: spawnTask put the exit token back on the semaphore, so the
+  // next trigger joins instantly and re-runs the non-blocking reap probe.
+  return false;
+}
+
+bool FibpPrefetchWorker::reserveStack() {
+  // Idempotent: the one-shot allocation runs once per object lifetime. The
+  // reader calls this at reader entry, before the EPUB open loads its ZIP
+  // index cache — that cache (entry-count dependent, ~56 KB at 465 entries)
+  // can leave no contiguous 32 KB DRAM block for the first spawn (2nd soak,
+  // build 0e652a97). Failures are NOT retried by design: the worker stays
+  // inert for the session, exactly like today's failed first spawn.
+  stackReserveAttempted_ = true;
+  if (taskStack_ != nullptr) return true;
+  taskStack_ = static_cast<uint8_t*>(
+      heap_caps_aligned_alloc(portBYTE_ALIGNMENT, kStackBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  if (taskStack_ == nullptr) {
+    LOG_ERR("PREF", "Stack reserve failed: %u", static_cast<unsigned>(kStackBytes));
     return false;
   }
   return true;
+}
+
+// Bounded wait for the idle task's unlink of a self-deleted static task,
+// using the same name probe as the spawner's non-blocking check: usable only
+// off the render path (cancel/teardown), where a few ms of wait are fine.
+static bool reapSettled(uint32_t maxMs) {
+  const uint32_t start = millis();
+  while (xTaskGetHandle("fibpprefetch") != nullptr) {
+    if (millis() - start >= maxMs) return false;
+    vTaskDelay(pdMS_TO_TICKS(kReapWaitStepMs));
+  }
+  return true;
+}
+
+FibpPrefetchWorker::SpawnResult FibpPrefetchWorker::spawnTask() {
+  // One-shot static buffers: the stack is a single INTERNAL DRAM block (a
+  // task stack can never live in PSRAM — the Xtensa windowed ABI faults once
+  // the PSRAM cache flips; heap_caps_aligned_alloc satisfies the kernel's
+  // 16-byte stack alignment assert) and the TCB is a member of this DRAM-
+  // resident object. The buffers persist across self-exit respawns: the
+  // required block is never returned to the heap, so respawning cannot fail
+  // on fragmentation (the churn that permanently disabled prefetch on
+  // image-heavy books). Stack depth is in BYTES on ESP-IDF (vanilla FreeRTOS
+  // counts words). On any failure the returned SpawnResult tells ensureTask
+  // whether the exit token needs restoring; the buffers survive and the next
+  // trigger retries with the same allocation. The reader reserves the stack
+  // at entry (reserveStack); this path's own allocation is only a fallback
+  // for callers that never reserved — once reserveStack() ran, a spawn-time
+  // allocation would just re-fight the fragmentation the reserve avoids.
+  if (taskStack_ == nullptr) {
+    if (stackReserveAttempted_) {
+      // Reader-entry reserve failed this session: prefetch stays disabled,
+      // no spawn-time retry (the reserve failure was already logged).
+      return SpawnResult::Failed;
+    }
+    taskStack_ = static_cast<uint8_t*>(
+        heap_caps_aligned_alloc(portBYTE_ALIGNMENT, kStackBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (taskStack_ == nullptr) {
+      LOG_ERR("PREF", "Stack alloc failed: %u", static_cast<unsigned>(kStackBytes));
+      return SpawnResult::Failed;
+    }
+  }
+  // NON-BLOCKING reap probe: a self-deleted static task stays linked on
+  // xTasksWaitingTermination until the idle task unlinks it, and reusing the
+  // buffers before that would corrupt the new task. Waiting here (the render
+  // path) is not allowed, so the probe answers instantly and a still-present
+  // name defers the spawn by one trigger instead of stalling 50 ms
+  // (CodeRabbit). The name search covers the termination list too, and
+  // "fibpprefetch" is unique in the system. The bounded reap wait (≤50 ms,
+  // correctness-mandatory after a live join — the stack/TCB may only be
+  // freed/unlinked once the idle reap landed) lives in cancel() alone.
+  if (xTaskGetHandle("fibpprefetch") != nullptr) {
+    LOG_DBG("PREF", "Previous task not yet reaped — spawn deferred a trigger");
+    // Restore the consumed exit token so the retry path joins this
+    // semaphore again instead of dead-waiting on a fresh, empty one.
+    xSemaphoreGive(exitedSem_);
+    return SpawnResult::ReapBlocked;
+  }
+  if (xTaskCreateStaticPinnedToCore(taskTrampoline, "fibpprefetch", kStackBytes, this, kPriority,
+                                    reinterpret_cast<StackType_t*>(taskStack_), &taskTcb_, kCore) == nullptr) {
+    // Same failure visibility as the old dynamic spawn; the buffers persist
+    // for the next respawn attempt.
+    LOG_ERR("PREF", "Task respawn failed");
+    return SpawnResult::Failed;
+  }
+  return SpawnResult::Started;
 }
 
 void FibpPrefetchWorker::notifyGeneration(const uint32_t generation, const LayoutParams& pods) {
@@ -408,6 +505,24 @@ bool FibpPrefetchWorker::cancel() {
       return false;
     }
   }
+  // The join token lands BEFORE vTaskDelete(nullptr): the terminating task
+  // still runs its final instructions on its stack, and a self-deleted
+  // static task stays linked on xTasksWaitingTermination until the idle task
+  // unlinks it — the TCB lives inside THIS object (kody finding). Returning
+  // now would free taskStack_ and let the caller destroy the object, then
+  // the unlink writes into freed memory. Wait bounded for the reap; on
+  // timeout keep the whole object alive: leak beats use-after-free (same
+  // contract as the join-timeout path above — the caller releases
+  // ownership without destroying).
+  // The reap wait only applies when THIS object created a task: a spawn
+  // deferred by the name probe (ReapBlocked) saw another worker's lingering
+  // "fibpprefetch" — waiting on that name here would block on (and possibly
+  // leak this object for) a task this object does not own (CodeRabbit). A
+  // never-started worker has no task of its own to reap.
+  if (taskCreated_ && exitedSem_ != nullptr && taskStack_ != nullptr && !reapSettled(kReapWaitMaxMs)) {
+    LOG_ERR("PREF", "Worker task not reaped at cancel — leaking worker + stack");
+    return false;
+  }
   if (exitedSem_ != nullptr) {
     vSemaphoreDelete(exitedSem_);
     exitedSem_ = nullptr;
@@ -417,6 +532,20 @@ bool FibpPrefetchWorker::cancel() {
     paramsMux_ = nullptr;
   }
   task_ = nullptr;
+  // Release the session-persistent stack back to the DRAM heap (dram-x3
+  // Finding 1). Safe even if the self-deleted task is still on the kernel's
+  // termination list: the idle reap of a static task only unlinks the TCB
+  // node, never reads or frees the stack. The join-timeout path above returns
+  // before this point — a wedged task keeps its state (leak beats UAF) and
+  // the stack leaks with the rest of the object.
+  if (taskStack_ != nullptr) {
+    heap_caps_free(taskStack_);
+    taskStack_ = nullptr;
+  }
+  // A re-begin on this same object (cancel + begin without destroy) must be
+  // able to reserve again: the session boundary resets the attempted flag.
+  stackReserveAttempted_ = false;
+  taskCreated_ = false;
   if (runtime_ != nullptr) runtime_->close();
   runtime_.reset();
   teardownFaces();

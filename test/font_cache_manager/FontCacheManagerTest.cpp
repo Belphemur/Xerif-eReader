@@ -1,8 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <cstdlib>
 #include <map>
 #include <new>
+#include <string>
 
 #include "FontCacheManager.h"
 #include "FontDecompressor.h"
@@ -140,4 +142,36 @@ TEST(FontCacheManagerTest, IncrementalPrewarmRequestsAccumulation) {
   manager.prewarmCache(7, "title", 1);
   ASSERT_EQ(1, font.prewarmCallCount);
   EXPECT_TRUE(font.prewarmCalls[0].accumulate);
+}
+
+TEST(FontCacheManagerTest, ScanOverflowDropsExcessCodepointsWithoutLooping) {
+  SdCardFont font;
+  const std::map<int, EpdFontFamily> noBuiltinFonts;
+  const std::map<int, SdCardFont*> sdFonts{{7, &font}};
+  FontCacheManager manager(noBuiltinFonts, sdFonts);
+
+  // 129 unique codepoints (> MAX_SCAN_CODEPOINTS = 128) as valid 2-byte UTF-8
+  // starting at U+0080. Plain single bytes 0x80..0xA0 are invalid standalone
+  // UTF-8 and all decode to the replacement glyph, so the codepoints must be
+  // encoded explicitly.
+  std::string text;
+  text.reserve(129 * 2);
+  for (int i = 129; i-- > 0;) {
+    const uint32_t cp = 0x80 + i;
+    text.append(1, static_cast<char>(0xC0 | (cp >> 6)));
+    text.append(1, static_cast<char>(0x80 | (cp & 0x3F)));
+  }
+
+  auto scope = manager.createPrewarmScope();
+  manager.recordText(text.c_str(), 7, EpdFontFamily::REGULAR);
+  scope.endScanAndPrewarm();
+
+  // Degradation: the 129th codepoint is silently dropped; the first 128 still
+  // batch into a single prewarm call for the one font/style group. Recording
+  // in DESCENDING order keeps U+0081..U+0208 and sorts them ascending, so the
+  // stub's truncated text still exposes the boundary: a cap of 127 would keep
+  // U+0082 first and a cap of 129 would keep U+0080 first — both fail.
+  ASSERT_EQ(1, font.prewarmCallCount);
+  EXPECT_EQ(0x01, font.prewarmCalls[0].styleMask);
+  EXPECT_EQ(static_cast<unsigned char>(0x81), static_cast<unsigned char>(font.prewarmCalls[0].text[1]));
 }

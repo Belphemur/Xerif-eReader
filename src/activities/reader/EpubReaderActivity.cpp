@@ -827,6 +827,28 @@ void EpubReaderActivity::setBookCompleted(bool completed) {
 #endif
 
 bool EpubReaderActivity::loadBook() {
+#if defined(CROSSPOINT_TTF_READER)
+  // dram-pref soak follow-up (build 0e652a97): reserve the FIBP worker's
+  // one-shot 32 KB DRAM stack HERE, before the EPUB open loads the ZIP index
+  // cache — that DRAM unordered_map is entry-count dependent (~115 B/entry,
+  // ~56 KB at 465 entries) and can leave no contiguous block for the worker's
+  // first spawn, which only fires later at the 10%-remaining trigger
+  // (EpubReaderActivity.cpp:4976 updateFibpWorker). The reader-entry heap
+  // still holds the big fresh-boot block, so the reserve always lands here.
+  // The worker keeps its buffers until stopFibpWorker() at reader teardown.
+  // Bitmap-engine sessions (per-book rollback) never spawn the worker —
+  // updateFibpWorker() early-returns when ttf_ is null — so a reserve held
+  // there would only idle 32 KB for the session (CodeRabbit).
+  if (fibpWorker_ == nullptr && SETTINGS.readerFontEngine == CrossPointSettings::READER_ENGINE_TTF) {
+    fibpWorker_.reset(freeink::book::makeFibpWorkerInternal());  // internal-DRAM-capped (kody-rr9): the TCB member must
+                                                                 // never fall back to PSRAM
+    if (fibpWorker_ == nullptr) {
+      LOG_ERR("ERS", "FIBP worker object alloc failed — prefetch disabled");
+    }
+  }
+  if (fibpWorker_ != nullptr) fibpWorker_->reserveStack();
+#endif
+
   auto loadedEpub = makeUniqueNoThrow<Epub>(bookPath, "/.crosspoint");
   if (!loadedEpub) {
     LOG_ERR("ERS", "Failed to allocate EPUB object");
@@ -859,6 +881,7 @@ bool EpubReaderActivity::loadBook() {
 #endif
   }
   logMemAt("book_open");
+  logLoopTaskHwm("book_open");
   if (!loaded) {
     // Surfaced by handleLoadFailure() as a dialog; loadedEpub dies with this
     // scope, so carry the reason out in a member.
@@ -1004,6 +1027,9 @@ bool EpubReaderActivity::loadBook() {
   if (!CLIPPINGS.loadForBook(epub->getPath(), epub->getTitle(), epub->getAuthor(), "epub")) {
     LOG_ERR("CLIP", "Failed to load clippings for %s", epub->getPath().c_str());
   }
+  // Second book_open sample: reopen + progress/bookmark/clipping init above can
+  // still lower the high-water mark after the one at the top of the function.
+  logLoopTaskHwm("book_open");
   return true;
 }
 
@@ -3869,10 +3895,21 @@ void EpubReaderActivity::renderBookTtf() {
       fibpWorker_->requestResumeClaim(static_cast<uint16_t>(currentSpineIndex));
       // Start the task with the claim: only a live worker consumes it, and
       // updateFibpWorker's notifyChapterProgress may not run again until the
-      // next user-driven render (an idle reader produces none).
-      (void)fibpWorker_->ensureTask();
+      // next user-driven render (an idle reader produces none). A failed or
+      // deferred spawn arms the per-pass retry below; a started one closes it.
+      fibpResumeSpawnPending_ = !fibpWorker_->ensureTask();
       LOG_INF("ERS", "Resume build handed to worker: spine %d (%u pages cached)", currentSpineIndex,
               static_cast<unsigned>(ttfPageCount));
+    } else if (fibpResumeSpawnPending_ && !fibpResumeSeenBuilding_ && !fibpWorker_->active()) {
+      // Deferred-spawn retry (CodeRabbit): the claim-set pass's ensureTask()
+      // may return ReapBlocked once (the non-blocking reap probe), and small
+      // partials get no later threshold trigger before the inline grace falls
+      // back. Retry only while the claim's last spawn attempt did NOT start a
+      // task: once a task has run, respawning per pass would make each exit
+      // re-open the book runtime from SD until the grace timeout (kody). The
+      // pending flag is armed at claim-set and cleared as soon as a task
+      // starts (or the claim is released below).
+      fibpResumeSpawnPending_ = !fibpWorker_->ensureTask();
     }
   } else if (fibpResumeClaimedSpine_ != -1 && fibpResumeClaimedSpine_ != currentSpineIndex) {
     fibpResumeClaimedSpine_ = -1;  // left the chapter
@@ -4021,6 +4058,7 @@ void EpubReaderActivity::renderBookTtf() {
            millis() - fibpResumeRequestMs_ > kFibpResumeClaimGraceMs)) {
         fibpResumeClaimedSpine_ = -1;
         fibpResumeSeenBuilding_ = false;
+        fibpResumeSpawnPending_ = false;
         if (committed) {
           LOG_INF("ERS", "Worker resume build committed: %u pages", static_cast<unsigned>(ttfPageCount));
         }
@@ -4064,6 +4102,7 @@ void EpubReaderActivity::renderBookTtf() {
     LOG_INF("ERS", "Resume claim: worker stopped in %lu ms", millis() - joinStartMs);
     fibpResumeClaimedSpine_ = -1;
     fibpResumeSeenBuilding_ = false;
+    fibpResumeSpawnPending_ = false;
     ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), generation);
     ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
   }
@@ -4933,6 +4972,7 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
       stopFibpWorker();
       fibpResumeClaimedSpine_ = -1;
       fibpResumeSeenBuilding_ = false;
+      fibpResumeSpawnPending_ = false;
     }
     freeink::book::LayoutParams params;
     ttf_->makeLayoutParams(renderer, params, automaticPageTurnActive);
@@ -4970,8 +5010,13 @@ void EpubReaderActivity::updateFibpWorker(const uint32_t generation, const freei
     stopFibpWorker();
   }
   if (fibpWorker_ == nullptr) {
-    fibpWorker_ = makeUniqueNoThrow<freeink::book::FibpPrefetchWorker>();
+    fibpWorker_.reset(freeink::book::makeFibpWorkerInternal());  // internal-DRAM-capped (kody-rr9): the TCB member must
+                                                                 // never fall back to PSRAM
     if (fibpWorker_ == nullptr) return;
+    // Re-creation (family swap, takeover) must re-reserve: loadBook()'s
+    // call only armed the ORIGINAL object, and cancel() freed that object's
+    // stack. reserveStack() is idempotent (kody).
+    fibpWorker_->reserveStack();
   }
   if (!fibpBegun_) {
     // Single-writer: a legacy prefetch/sync session in flight owns its spine
@@ -5042,6 +5087,7 @@ void EpubReaderActivity::stopFibpWorker() {
   fibpDeferParkLatched_ = false;
   fibpResumeClaimedSpine_ = -1;
   fibpResumeSeenBuilding_ = false;
+  fibpResumeSpawnPending_ = false;
 }
 
 void EpubReaderActivity::ttfPrefetchTick() {

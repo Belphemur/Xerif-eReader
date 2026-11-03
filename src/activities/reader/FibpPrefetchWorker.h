@@ -23,10 +23,12 @@
 
 #if defined(CROSSPOINT_TTF_READER)
 
+#include <esp_heap_caps.h>
 #include <layout/ChapterLayout.h>
 
 #include <atomic>
 #include <cstdint>
+#include <new>
 #include <vector>
 
 #include "FibpPrefetchPolicy.h"
@@ -41,6 +43,7 @@
 #include <BookFontLoader.h>
 #include <FreeRTOS.h>
 #include <Memory.h>
+#include <esp_heap_caps.h>
 #include <semphr.h>
 #include <task.h>
 
@@ -92,6 +95,16 @@ class FibpPrefetchWorker {
   // generation (scalar params are swapped under paramsMux_).
   // Respawns the task when it had already finished ("fully indexed").
   void notifyGeneration(uint32_t generation, const LayoutParams& pods);
+  // Main thread. Marks the one-shot task stack as reserved (see the
+  // taskStack_ members) WITHOUT spawning. Called by the reader at reader
+  // entry, before the EPUB open loads the ZIP index cache — that cache can
+  // leave no contiguous 32 KB DRAM block for the first spawn (2nd soak,
+  // build 0e652a97). Idempotent; returns false once the reserve failed, and
+  // the reserve is NOT retried later (prefetch stays disabled for the
+  // session, same failure shape as a failed first spawn). The StaticTask_t
+  // TCB needs no allocation: it is the DRAM-resident member taskTcb_,
+  // pinned by the static_assert below.
+  bool reserveStack();
   // Main thread. Spawns the worker task when it is not running (initial
   // spawn and self-exit respawns — the capped window makes the task exit
   // after each window drains, so chapter entries must respawn it). Returns
@@ -151,6 +164,19 @@ class FibpPrefetchWorker {
   // for their notified-spine change detection so plan and comparison share
   // one read.
   uint16_t replan(uint32_t generation);
+  // static-spawn helper (dram-x3 Finding 1): spawns the worker task on the
+  // reserved stack. Before spawning it re-checks the reap state NON-
+  // BLOCKINGLY: a self-deleted previous static task stays linked on
+  // xTasksWaitingTermination until the idle task unlinks it, and reusing the
+  // buffers too early would corrupt the new task (the exitedSem_ join alone
+  // does not exclude that). When the name still shows up, ReapBlocked leaves
+  // the exit token back on exitedSem_ so the next trigger retries the same
+  // probe instead of blocking the render path (CodeRabbit: a timed-out
+  // worker must not cost 50 ms per render — the bounded reap wait lives only
+  // in cancel(), off the render path). Spawn failure keeps today's
+  // delete-sem invariant.
+  enum class SpawnResult : uint8_t { Started, Failed, ReapBlocked };
+  SpawnResult spawnTask();
   static bool yieldHook(void* ctx, uint16_t pagesBuilt);
 
   static constexpr UBaseType_t kPriority = 1;
@@ -173,6 +199,38 @@ class FibpPrefetchWorker {
   SemaphoreHandle_t exitedSem_ = nullptr;                           // worker gives before self-delete
   SemaphoreHandle_t paramsMux_ = nullptr;                           // guards params_ scalar swaps
   TaskHandle_t task_ = nullptr;
+
+  // Session-persistent static task storage (dram-x3 Finding 1): the worker
+  // self-exits per one-spine plan, and respawning a dynamically-created task
+  // frees its 32 KB stack right where fractional DRAM blocks (image pages)
+  // pinch the hole — after a few cycles MaxAlloc settles below the spawn
+  // requirement and prefetch dies for the session. Allocating the stack once
+  // and reusing it with a static TCB removes the create/destroy churn: a
+  // respawn can never fail on fragmentation because its required block is
+  // never returned to the heap. 32.8 KB DRAM is then held for the whole
+  // session — acceptable while reading, where no other subsystem requests
+  // >32 KB DRAM (inflate/TTF-scratch/image decode go to PSRAM).
+  //
+  // Stack and TCB must stay DRAM-internal (a task stack in PSRAM would fault
+  // the windowed ABI once the cache flips); heap_caps_aligned_alloc with
+  // FreeRTOS' portBYTE_ALIGNMENT satisfies the kernel's stack-alignment
+  // assert. Reuse is legal only after the previous task is fully deleted:
+  // ensureTask() reuses them behind the exitedSem_ join plus a bounded wait
+  // for the idle task's unlink of the self-deleted task.
+  uint8_t* taskStack_ = nullptr;  // one-shot kStackBytes DRAM block, freed in cancel()
+  StaticTask_t taskTcb_ = {};     // static TCB, part of this (DRAM-resident) object
+  // Set by reserveStack() and cleared again in cancel() (the session
+  // boundary). While set, spawnTask() never allocates: a failed reader-entry
+  // reserve keeps prefetch disabled for the session (no spawn-time retry),
+  // and a successful one makes the spawn-path allocation dead code.
+  bool stackReserveAttempted_ = false;
+  // Set when ensureTask() actually created a task (SpawnResult::Started) and
+  // cleared in cancel(). A worker whose spawns were all deferred (ReapBlocked
+  // on a name still owned by another object's task) never created one: its
+  // cancel() must not wait on the "fibpprefetch" name, which belongs to that
+  // other task and could time out and leak this object's 32 KB stack for
+  // nothing (CodeRabbit).
+  bool taskCreated_ = false;
 
   char epubPath_[BeginContext::kEpubPathCap] = {};
   char cacheDir_[BeginContext::kCacheDirCap] = {};
@@ -228,6 +286,10 @@ class FibpPrefetchWorker {
 #else
   // Inert stub (single-core / PSRAM-less / stb-rollback builds).
   bool begin(const BeginContext&) { return false; }
+  // No session buffer to reserve (kody): the rollback build has no
+  // task/stack at all, so the reader's reserve call stays compilable and a
+  // no-op that reports "not reserved".
+  bool reserveStack() { return false; }
   void notifyChapterProgress(uint16_t, uint16_t, uint16_t, bool) {}
   void notifyGeneration(uint32_t, const LayoutParams&) {}
   void requestResumeClaim(uint16_t) {}
@@ -237,6 +299,50 @@ class FibpPrefetchWorker {
   uint16_t buildingProgressPages() const { return 0; }
 #endif  // FIBP_WORKER_ENABLED
 };
+
+#if FIBP_WORKER_ENABLED
+#if defined(__has_include)
+#if __has_include(<sdkconfig.h>)
+#include <sdkconfig.h>
+#endif
+#endif
+#if !defined(CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL)
+#error \
+    "CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL missing from sdkconfig.h — FibpPrefetchWorker's TCB residency guard cannot compile; the object could silently be placed in PSRAM (invalid for a task TCB)"
+#endif
+// Secondary guard only (kody-rr9): staying <= the threshold makes the
+// PSRAM-preferred default path correct in the common case, but the real
+// residency guarantee is makeFibpWorkerInternal()'s MALLOC_CAP_INTERNAL
+// allocation — the default new can still fall back to PSRAM under a
+// fragmented heap.
+static_assert(sizeof(FibpPrefetchWorker) <= CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL,
+              "FibpPrefetchWorker grew past the PSRAM-prefer threshold; taskTcb_ would no longer be DRAM-resident");
+#endif
+
+// kody-rr9: the task TCB is a member of the worker object, and a TCB in
+// PSRAM is invalid — but the default allocator only PREFERS internal DRAM
+// below CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL and falls back to PSRAM under a
+// fragmented heap (Memory.h). Every allocation of the worker therefore goes
+// through the hard-capped factory below; the size static_assert stays as a
+// secondary guard only (≤ threshold means the usual PSRAM-preferred path
+// would almost always be correct — not that it must be).
+inline FibpPrefetchWorker* makeFibpWorkerInternal() {
+  void* raw = heap_caps_aligned_alloc(alignof(FibpPrefetchWorker), sizeof(FibpPrefetchWorker),
+                                      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (raw == nullptr) return nullptr;
+  return new (raw) FibpPrefetchWorker();
+}
+
+// Pairs with makeFibpWorkerInternal(): explicit destructor + heap free (the
+// memory did not come from operator new).
+struct FibpWorkerRawDelete {
+  void operator()(FibpPrefetchWorker* p) const {
+    if (p == nullptr) return;
+    p->~FibpPrefetchWorker();
+    heap_caps_free(p);
+  }
+};
+using FibpWorkerPtr = std::unique_ptr<FibpPrefetchWorker, FibpWorkerRawDelete>;
 
 }  // namespace book
 }  // namespace freeink

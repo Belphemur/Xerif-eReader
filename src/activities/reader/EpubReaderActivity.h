@@ -253,9 +253,11 @@ class EpubReaderActivity final : public ReaderActivity {
   // read the same values on both paths.
   std::unique_ptr<freeink::book::TtfBookRuntime> ttf_;
   // Index-ahead prefetch worker (R1): transient, per book. Created lazily on
-  // the first TTF render (generation known), cancelled in onExit(). Inert on
-  // non-PSRAM/stb builds (stub).
-  std::unique_ptr<freeink::book::FibpPrefetchWorker> fibpWorker_;
+  // the first TTF render (generation known), cancelled in onExit() via
+  // stopFibpWorker(). Inert on non-PSRAM/stb builds (stub). The custom
+  // deleter pairs with the internal-DRAM-capped allocation the TCB needs
+  // (FibpPrefetchWorker.h, kody-rr9).
+  freeink::book::FibpWorkerPtr fibpWorker_;
   bool fibpBegun_ = false;
   char fibpFamily_[48] = {};  // family the worker's faces were built for
   uint32_t fibpNotifiedGen_ = 0;
@@ -267,6 +269,12 @@ class EpubReaderActivity final : public ReaderActivity {
   // worker (requestResumeClaim) while the reader paints from the partial.
   int16_t fibpResumeClaimedSpine_ = -1;
   bool fibpResumeSeenBuilding_ = false;  // worker observed holding the claim
+  // The claim's last ensureTask() did not start a task (deferred/failed) —
+  // further respawns are allowed until one starts. Once a task HAS started,
+  // no respawn: a started worker either commits (claim released on commit)
+  // or consumes/exits without committing, and re-spawning it per render pass
+  // would run a full SD book open each pass until the grace timeout (kody).
+  bool fibpResumeSpawnPending_ = false;
   unsigned long fibpResumeRequestMs_ = 0;
   int ttfSpine = -1;          // spine the runtime's reader/session belong to
   int ttfPage = 0;            // chapter-local page index
