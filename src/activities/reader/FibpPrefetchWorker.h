@@ -23,12 +23,12 @@
 
 #if defined(CROSSPOINT_TTF_READER)
 
+#include <esp_heap_caps.h>
 #include <layout/ChapterLayout.h>
 
-#include <esp_heap_caps.h>
-#include <new>
 #include <atomic>
 #include <cstdint>
+#include <new>
 #include <vector>
 
 #include "FibpPrefetchPolicy.h"
