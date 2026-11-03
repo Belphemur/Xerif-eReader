@@ -438,8 +438,9 @@ FibpPrefetchWorker::SpawnResult FibpPrefetchWorker::spawnTask() {
   // path) is not allowed, so the probe answers instantly and a still-present
   // name defers the spawn by one trigger instead of stalling 50 ms
   // (CodeRabbit). The name search covers the termination list too, and
-  // "fibpprefetch" is unique in the system. The bounded reap wait lives in
-  // cancel() only (off the render path).
+  // "fibpprefetch" is unique in the system. The bounded reap wait (≤50 ms,
+  // correctness-mandatory after a live join — the stack/TCB may only be
+  // freed/unlinked once the idle reap landed) lives in cancel() alone.
   if (xTaskGetHandle("fibpprefetch") != nullptr) {
     LOG_DBG("PREF", "Previous task not yet reaped — spawn deferred a trigger");
     // Restore the consumed exit token so the retry path joins this
