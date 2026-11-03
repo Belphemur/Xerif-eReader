@@ -632,3 +632,15 @@ pending, deliberately not touched in this PR.
 
 Fix shipped in the same PR #279 as the DRAM-optimization work (direct human
 instruction, 2026-11-03).
+
+Review-round hardening (same PR, 2026-11-03): `cancel()` now waits (bounded,
+50 ms) for the idle task's unlink of the self-deleted worker before freeing
+the stack and letting the object die — the join token lands BEFORE
+`vTaskDelete`, and the TCB the kernel unlinks is a member of this object, so
+an immediate free/destroy was a narrow use-after-free on both; a timed-out
+reap keeps the whole object alive (leak beats UAF). The spawner's reap probe
+is now non-blocking: a spawn whose predecessor is still linked defers by one
+trigger instead of a 50 ms render-path stall. The TCB residency
+`static_assert` now compiles for real: it reads
+`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` (the sdkconfig name, 4096) instead of
+a symbol no build defined.

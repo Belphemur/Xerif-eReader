@@ -370,7 +370,7 @@ bool FibpPrefetchWorker::ensureTask() {
     task_ = nullptr;
   }
   // ReapBlocked: spawnTask put the exit token back on the semaphore, so the
-  // next trigger joins instantly and re-waits for the idle reap.
+  // next trigger joins instantly and re-runs the non-blocking reap probe.
   return false;
 }
 
@@ -392,28 +392,16 @@ bool FibpPrefetchWorker::reserveStack() {
   return true;
 }
 
-FibpPrefetchWorker::SpawnResult FibpPrefetchWorker::waitForReap() {
-  // A self-deleting task is parked on xTasksWaitingTermination until the
-  // idle task unlinks it; recreating a task on the same static buffers while
-  // that stale node is still linked would corrupt the new task. The name
-  // search covers the termination-list too, and "fibpprefetch" is unique in
-  // the system, so a null return ⟺ the previous static task was unlinked by
-  // the idle task. No live worker carries the name under the running_ guard,
-  // and the probe answers instantly when nothing waits (first spawn,
-  // already-reaped respawn) — always run it so the cancel()+re-begin path on
-  // this same object is covered too.
+// Bounded wait for the idle task's unlink of a self-deleted static task,
+// using the same name probe as the spawner's non-blocking check: usable only
+// off the render path (cancel/teardown), where a few ms of wait are fine.
+static bool reapSettled(uint32_t maxMs) {
   const uint32_t start = millis();
-  for (;;) {
-    if (xTaskGetHandle("fibpprefetch") == nullptr) return SpawnResult::Started;
-    if (millis() - start >= kReapWaitMaxMs) {
-      LOG_ERR("PREF", "Previous task not reaped in %ums", static_cast<unsigned>(kReapWaitMaxMs));
-      // Restore the consumed exit token so the retry path joins this
-      // semaphore again instead of dead-waiting on a fresh, empty one.
-      xSemaphoreGive(exitedSem_);
-      return SpawnResult::ReapBlocked;
-    }
+  while (xTaskGetHandle("fibpprefetch") != nullptr) {
+    if (millis() - start >= maxMs) return false;
     vTaskDelay(pdMS_TO_TICKS(kReapWaitStepMs));
   }
+  return true;
 }
 
 FibpPrefetchWorker::SpawnResult FibpPrefetchWorker::spawnTask() {
@@ -444,8 +432,21 @@ FibpPrefetchWorker::SpawnResult FibpPrefetchWorker::spawnTask() {
       return SpawnResult::Failed;
     }
   }
-  const SpawnResult reaped = waitForReap();
-  if (reaped != SpawnResult::Started) return reaped;
+  // NON-BLOCKING reap probe: a self-deleted static task stays linked on
+  // xTasksWaitingTermination until the idle task unlinks it, and reusing the
+  // buffers before that would corrupt the new task. Waiting here (the render
+  // path) is not allowed, so the probe answers instantly and a still-present
+  // name defers the spawn by one trigger instead of stalling 50 ms
+  // (CodeRabbit). The name search covers the termination list too, and
+  // "fibpprefetch" is unique in the system. The bounded reap wait lives in
+  // cancel() only (off the render path).
+  if (xTaskGetHandle("fibpprefetch") != nullptr) {
+    LOG_DBG("PREF", "Previous task not yet reaped — spawn deferred a trigger");
+    // Restore the consumed exit token so the retry path joins this
+    // semaphore again instead of dead-waiting on a fresh, empty one.
+    xSemaphoreGive(exitedSem_);
+    return SpawnResult::ReapBlocked;
+  }
   if (xTaskCreateStaticPinnedToCore(taskTrampoline, "fibpprefetch", kStackBytes, this, kPriority,
                                     reinterpret_cast<StackType_t*>(taskStack_), &taskTcb_, kCore) == nullptr) {
     // Same failure visibility as the old dynamic spawn; the buffers persist
@@ -499,6 +500,19 @@ bool FibpPrefetchWorker::cancel() {
       LOG_ERR("PREF", "Join timeout — worker state intentionally leaked");
       return false;
     }
+  }
+  // The join token lands BEFORE vTaskDelete(nullptr): the terminating task
+  // still runs its final instructions on its stack, and a self-deleted
+  // static task stays linked on xTasksWaitingTermination until the idle task
+  // unlinks it — the TCB lives inside THIS object (kody finding). Returning
+  // now would free taskStack_ and let the caller destroy the object, then
+  // the unlink writes into freed memory. Wait bounded for the reap; on
+  // timeout keep the whole object alive: leak beats use-after-free (same
+  // contract as the join-timeout path above — the caller releases
+  // ownership without destroying).
+  if (exitedSem_ != nullptr && taskStack_ != nullptr && !reapSettled(kReapWaitMaxMs)) {
+    LOG_ERR("PREF", "Worker task not reaped at cancel — leaking worker + stack");
+    return false;
   }
   if (exitedSem_ != nullptr) {
     vSemaphoreDelete(exitedSem_);

@@ -162,15 +162,19 @@ class FibpPrefetchWorker {
   // for their notified-spine change detection so plan and comparison share
   // one read.
   uint16_t replan(uint32_t generation);
-  // static-spawn helper (dram-x3 Finding 1): allocates taskStack_ once and
-  // spawns the worker task on it; waits for the idle task to unlink a
-  // self-deleted previous static task before reusing the buffers. ReapBlocked
-  // leaves the exit token back on exitedSem_ so the next trigger retries the
-  // same wait instead of timing out on a dead join (spawn failure keeps
-  // today's delete-sem invariant).
+  // static-spawn helper (dram-x3 Finding 1): spawns the worker task on the
+  // reserved stack. Before spawning it re-checks the reap state NON-
+  // BLOCKINGLY: a self-deleted previous static task stays linked on
+  // xTasksWaitingTermination until the idle task unlinks it, and reusing the
+  // buffers too early would corrupt the new task (the exitedSem_ join alone
+  // does not exclude that). When the name still shows up, ReapBlocked leaves
+  // the exit token back on exitedSem_ so the next trigger retries the same
+  // probe instead of blocking the render path (CodeRabbit: a timed-out
+  // worker must not cost 50 ms per render — the bounded reap wait lives only
+  // in cancel(), off the render path). Spawn failure keeps today's
+  // delete-sem invariant.
   enum class SpawnResult : uint8_t { Started, Failed, ReapBlocked };
   SpawnResult spawnTask();
-  SpawnResult waitForReap();
   static bool yieldHook(void* ctx, uint16_t pagesBuilt);
 
   static constexpr UBaseType_t kPriority = 1;
@@ -283,12 +287,20 @@ class FibpPrefetchWorker {
 #endif  // FIBP_WORKER_ENABLED
 };
 
-#if FIBP_WORKER_ENABLED && defined(SPIRAM_MALLOC_ALWAYSINTERNAL)
+#if FIBP_WORKER_ENABLED
+#if defined(__has_include)
+#if __has_include(<sdkconfig.h>)
+#include <sdkconfig.h>
+#endif
+#endif
+#if !defined(CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL)
+#error "CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL missing from sdkconfig.h — FibpPrefetchWorker's TCB residency guard cannot compile; the object could silently be placed in PSRAM (invalid for a task TCB)"
+#endif
 // The static TCB resides in this heap-allocated object; the allocator only
 // keeps a block in internal DRAM while it is below the PSRAM-prefer
-// threshold. A task TCB in PSRAM is invalid — pin the residency with a
-// compile-time size check.
-static_assert(sizeof(FibpPrefetchWorker) <= SPIRAM_MALLOC_ALWAYSINTERNAL,
+// threshold (CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL, 4096). A task TCB in
+// PSRAM is invalid — pin the residency with a compile-time size check.
+static_assert(sizeof(FibpPrefetchWorker) <= CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL,
               "FibpPrefetchWorker grew past the PSRAM-prefer threshold; taskTcb_ would no longer be DRAM-resident");
 #endif
 
