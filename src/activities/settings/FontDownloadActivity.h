@@ -13,6 +13,7 @@
 #include "FontInstaller.h"
 #include "SdCardFont.h"
 #include "activities/UiListActivity.h"
+#include "util/MemoryClaimGateDevice.h"
 
 // JSON schema version of the fonts.json manifest. The canonical version for
 // the build tooling lives in lib/EpdFont/scripts/cpfont_version.py. This
@@ -59,6 +60,18 @@ class FontDownloadActivity final : public UiListActivity {
     ERROR,
   };
 
+  // The LOADING_MANIFEST stage within the manifest pass (docs/design/
+  // 2026-11-03-memory-claims.md §3.2): the claim's plan-act passes run BEFORE
+  // the fetch, and both run on activity passes that return to the loop
+  // (manifestPass(), driven from handleCustomInput), never inside the
+  // onWifiSelectionComplete callback, which would busy-wait within one pass
+  // with Back locked out.
+  enum class ManifestStage : uint8_t {
+    Claim,  // one suspension lever per pass; Proceed hands over to Fetch
+    Fetch,  // levers applied: the existing fetch/parse path runs this pass
+  };
+  ManifestStage manifestStage_ = ManifestStage::Claim;
+
   // Byte offset into stringArena_; 0 is the empty string.
   using StrRef = uint32_t;
 
@@ -84,6 +97,11 @@ class FontDownloadActivity final : public UiListActivity {
 
   State state_ = WIFI_SELECTION;
   FontInstaller fontInstaller_;
+  // The memory claim spans the whole activity (§3.3 — never the manifest
+  // stage), ended once on every exit path by RAII. claim.end records state
+  // only; the radio restore is deferred to the runtime tick's scene-conditioned
+  // re-arm (MemoryClaimGateDevice.h).
+  memclaim::DeviceClaim claim_;
 
   // Manifest data
   std::string baseUrl_;
@@ -141,6 +159,7 @@ class FontDownloadActivity final : public UiListActivity {
   void activateSelected();
 
   void onWifiSelectionComplete(bool success);
+  void manifestPass();
   bool fetchAndParseManifest();
   // cppcheck-suppress arithOperationsOnVoidPointer // unique_ptr<char[]>::get() is char*, not void*
   const char* str(StrRef ref) const { return stringArena_ ? stringArena_.get() + ref : ""; }

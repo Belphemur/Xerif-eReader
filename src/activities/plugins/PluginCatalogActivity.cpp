@@ -35,6 +35,7 @@
 #include "network/ProtectedPaths.h"
 #include "util/BookCacheUtils.h"
 #include "util/FirmwareIdentity.h"
+#include "util/MemoryClaimGateDevice.h"
 #include "util/PluginEvents.h"
 #include "util/PluginHttp.h"
 #include "util/PluginLocations.h"
@@ -1079,6 +1080,17 @@ void PluginCatalogActivity::downloadItem(const int itemIndex) {
     std::vector<Item>().swap(items);
   }
   requestUpdateAndWait();
+  // The cheap memory claim (docs/design/2026-11-03-memory-claims.md §4):
+  // releases the rebuildable font caches and keeps the BLE-radio invariant
+  // (the radio is down at these screens — §2) under the plain tlsheap floor,
+  // before the bundle's TLS burst. The claim is not the arbiter here: each
+  // file transfer still runs CatalogActivity::downloadFile's floor pre-check
+  // and HttpDownloader::heapAvailableForTransfer(), so this only widens (and
+  // logs) what the transfer will find.
+  {
+    memclaim::DeviceClaim claim(renderer, "PCAT");
+    claim.runCheap();
+  }
   const auto result = manifest.isBundle() && !item.files.empty() ? downloadBundle(item) : downloadBook(item);
   session.reset();
   item = {};
