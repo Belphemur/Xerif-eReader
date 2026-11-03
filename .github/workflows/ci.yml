@@ -106,6 +106,20 @@ jobs:
           # (mechanism documented in bin/cppcheck-tool-sync).
           ./bin/cppcheck-tool-sync
 
+      - name: Cache cppcheck analysis results
+        # Incremental-analysis cache (see --cppcheck-build-dir in
+        # platformio.ini [base].check_flags). cppcheck keys entries on file
+        # CONTENT hashes, so results survive fresh checkouts and unchanged
+        # translation units are not re-analysed. Key includes the checked
+        # sources and the tool-sync pin so a source or cppcheck bump starts
+        # from a clean cache instead of a partial one.
+        uses: actions/cache@v6
+        with:
+          path: .cppcheck-build
+          key: cppcheck-build-v1-${{ runner.os }}-${{ hashFiles('platformio.ini', 'bin/cppcheck-tool-sync', 'src/**', 'lib/**') }}
+          restore-keys: |
+            cppcheck-build-v1-${{ runner.os }}-
+
       - name: Report cppcheck version
         # Informational only: prove in the CI log that the resolved tool is
         # the PCRE-free 2.22 build, not a stale cached 2.20 binary.
@@ -118,7 +132,9 @@ jobs:
           fi
 
       - name: Run cppcheck
-        run: pio check -e cppcheck --fail-on-defect low --fail-on-defect medium --fail-on-defect high
+        # cppcheck requires --cppcheck-build-dir's directory to exist; create
+        # it (possibly restored empty/partial by the cache step) before the run.
+        run: mkdir -p .cppcheck-build && pio check -e cppcheck --fail-on-defect low --fail-on-defect medium --fail-on-defect high
 
   build:
     name: Build ${{ matrix.env }}

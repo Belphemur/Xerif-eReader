@@ -36,3 +36,4 @@ flake.*
 
 # CTest runtime artifacts
 test/Testing/Temporary/
+.cppcheck-build/
