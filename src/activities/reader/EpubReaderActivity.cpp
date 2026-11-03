@@ -836,7 +836,10 @@ bool EpubReaderActivity::loadBook() {
   // (EpubReaderActivity.cpp:4976 updateFibpWorker). The reader-entry heap
   // still holds the big fresh-boot block, so the reserve always lands here.
   // The worker keeps its buffers until stopFibpWorker() at reader teardown.
-  if (fibpWorker_ == nullptr) {
+  // Bitmap-engine sessions (per-book rollback) never spawn the worker —
+  // updateFibpWorker() early-returns when ttf_ is null — so a reserve held
+  // there would only idle 32 KB for the session (CodeRabbit).
+  if (fibpWorker_ == nullptr && SETTINGS.readerFontEngine == CrossPointSettings::READER_ENGINE_TTF) {
     fibpWorker_.reset(freeink::book::makeFibpWorkerInternal());  // internal-DRAM-capped (kody-rr9): the TCB member must
                                                                  // never fall back to PSRAM
     if (fibpWorker_ == nullptr) {
@@ -3896,6 +3899,15 @@ void EpubReaderActivity::renderBookTtf() {
       (void)fibpWorker_->ensureTask();
       LOG_INF("ERS", "Resume build handed to worker: spine %d (%u pages cached)", currentSpineIndex,
               static_cast<unsigned>(ttfPageCount));
+    } else if (!fibpResumeSeenBuilding_ && !fibpWorker_->active()) {
+      // Deferred-spawn retry (CodeRabbit): the claim-set pass's ensureTask()
+      // may return ReapBlocked once (the non-blocking reap probe), and small
+      // partials get no later threshold trigger before the inline grace falls
+      // back. While the claim is pending, was never seen building, and no
+      // worker runs, retry the (near-free, non-blocking) spawn each pass; the
+      // claim clearance below (grace timeout / commit / seen-building) bounds
+      // the retry either way.
+      (void)fibpWorker_->ensureTask();
     }
   } else if (fibpResumeClaimedSpine_ != -1 && fibpResumeClaimedSpine_ != currentSpineIndex) {
     fibpResumeClaimedSpine_ = -1;  // left the chapter

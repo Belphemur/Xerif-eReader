@@ -28,11 +28,13 @@ has PSRAM.
 
 The X3 has ~169 KB of static SRAM before `malloc()` is called.  After the
 ~52 KB framebuffer and ~49 KB loop-task stack are allocated at boot, only
-~160 KB remains for the heap, FreeRTOS tasks, and runtime pools.  The BLE
+~110 KB remains for the heap, FreeRTOS tasks, and runtime pools.  The BLE
 gate (`kStartFreeBytes = 76,276` after #275) already consumes most of that.
 
 **Highest-impact candidates**
-1. **Move InflateReader ring to PSRAM on X4 Pro** — 32,768 B, one line change.
+1. **Move InflateReader ring to PSRAM on X4 Pro** — explicit pin only; no net
+   DRAM change (plain `malloc` already prefers PSRAM for the 32 KB request),
+   one-line change.
 2. **Enable `FREEINK_FB_PSRAM` for X4 Pro** — 48,000 B framebuffer to PSRAM.
 3. **Right-size loop-task stack on X3** — potentially 10–20 KB, but requires
 device HWM measurement (high risk).
@@ -179,9 +181,14 @@ same DRAM on X3-class boards.
 | `ZipFileCache` (content cache) | `sizeof(ZipFileCache)` | `heap_caps_malloc(MALLOC_CAP_SPIRAM)` on x4pro, `malloc()` on X3 | `lib/Epub/Epub.cpp:539` |
 | `BuildContext` (chapter layout) | `sizeof(BuildContext)` | `heap_caps_malloc(MALLOC_CAP_SPIRAM)` on x4pro, `malloc()` on X3 | `lib/Epub/Epub/blocks/Section.cpp:410` |
 
-**Note:** the InflateReader ring is the one consumer that is **not** routed
-to PSRAM on x4pro.  Both InflateStream and the EPUB pipeline already use
+**Note:** the InflateReader ring is the one consumer that is **not**
+explicitly routed to PSRAM via `heap_caps_malloc(..., MALLOC_CAP_SPIRAM)`.  Both
+InflateStream and the EPUB pipeline already use
 `heap_caps_malloc(MALLOC_CAP_SPIRAM)` when `BOARD_HAS_PSRAM` is defined.
+Because malloc integration is enabled on x4pro
+(`CONFIG_SPIRAM_USE_MALLOC=1`, internal-only threshold 4 KB), the plain
+`malloc()` for this 32 KB request already prefers PSRAM — the explicit
+candidate-1 pin makes the placement deliberate, it does not move it.
 InflateReader uses plain `malloc()` unconditionally.
 
 ### 2.3 Font caches and arenas (runtime, not static)
@@ -250,7 +257,7 @@ constraint.
 
 | # | candidate | file:line | X3 saving | x4pro saving | SD cost | risk | reversibility |
 |---|---|---|---|---|---|---|---|
-| 1 | **Route InflateReader ring to PSRAM** | `lib/InflateReader/InflateReader.cpp:20` | 0 (no PSRAM) | **32,768 B** | 0 | Low: fallback to DRAM on PSRAM OOM keeps safety | Revert 1 line |
+| 1 | **Route InflateReader ring to PSRAM** | `lib/InflateReader/InflateReader.cpp:20` | 0 (no PSRAM, no change) | **0 net DRAM** — explicit pin; plain `malloc` already prefers PSRAM at 32 KB | 0 | Low: fallback to DRAM on PSRAM OOM keeps safety | Revert 1 line |
 | 2 | **Enable `FREEINK_FB_PSRAM` for x4pro** | `platformio.ini:521` (add `-DFREEINK_FB_PSRAM=1`) or `BoardConfig.h:398` | 0 | **48,000 B** | 0 | Med: PSRAM cache-miss latency during panel refresh; needs device soak | Revert build flag |
 | 3 | **Shrink TtfBookRuntime `kScratchBytes`** | `src/activities/reader/TtfBookRuntime.h:48` | N/A (TTF not compiled) | **~64 KB** (256→192 KB) | 0 | Med: engine peaks ~152 KB; 192 KB gives 26 % headroom but needs host test coverage | Revert constant |
 | 4 | **Right-size main loop stack on X3** | `src/main.cpp:881` | **~10–20 KB** (needs device HWM) | 0 (S3 has DRAM margin) | 0 | **High**: stack overflow = instant panic; must measure HWM on every path first | Revert constant |
@@ -266,11 +273,13 @@ constraint.
 `INFLATE_DICT_SIZE = RING_BYTES = 32768`
 (`lib/InflateReader/InflateReader.cpp:20`,
 `lib/InflateReader/InflateReader.h:24`).
-On x4pro this ring lives in DRAM even though every other inflate path
-(`InflateStream`, `ZipFileCache`, `BuildContext`) is already PSRAM-first.
+On x4pro the plain `malloc()` already prefers PSRAM for this 32 KB request
+(malloc integration enabled, `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096`).
 Replacing `malloc` with `heap_caps_malloc(..., MALLOC_CAP_SPIRAM)` and
-falling back to `malloc` on failure is the exact same pattern used in
-`FreeInkDisplay::allocFrameBufferStorage()`.
+falling back to `malloc` on failure therefore makes the placement explicit
+and saves no DRAM — the same pattern used in
+`FreeInkDisplay::allocFrameBufferStorage()`, kept for the X3 rollback builds
+where the fallback path is still needed.
 
 **Candidate 2 — Framebuffer to PSRAM**
 `freeink-sdk/libs/display/FreeInkDisplay/src/FreeInkDisplay.cpp:443-454`
@@ -332,9 +341,10 @@ keeps hot chapters in PSRAM and writes evicted pages to SD only when the
 cache is full or when battery ≤ 5 %.  This saves SD wear (fewer erase cycles)
 at the cost of PSRAM occupancy.  On **X3** there is no PSRAM; the equivalent
 would be to hold the cache in DRAM, but that consumes 200–500 KB of the
-already-tight 380 KB pool, which is **not viable**.  X3 answer: keep on SD,
-but candidate 6 (sleep-frame RLE) can free up enough DRAM breathing room to
-reduce the pressure that made this idea attractive.
+already-tight 380 KB pool, which is **not viable**.  X3 answer: keep on SD.
+Note candidate 6 (sleep-frame RLE) does not reduce DRAM use — it only
+reduces the bytes written to SD, so it does not relieve the DRAM pressure
+that blocks an in-memory cache.
 
 **Candidate 8 — Remove AudioManager from C3 envs**
 `AudioManager=symlink://freeink-sdk/libs/hardware/AudioManager` is listed in
@@ -355,7 +365,8 @@ is truly unused.
 
 1. **InflateReader ring → PSRAM** (candidate 1)
    - One-line change in `InflateReader.cpp:20`.
-   - x4pro gets 32 KB DRAM back; X3 unchanged.
+   - Explicit PSRAM pin on x4pro (no net DRAM change — malloc already
+     prefers PSRAM at this size); X3 unchanged.
    - No re-pin needed because this is a runtime path, not a gate constant.
 
 2. **Enable FREEINK_FB_PSRAM for x4pro** (candidate 2)
@@ -482,7 +493,8 @@ The 1,536 B saving on both envs is from `MAX_SCAN_CODEPOINTS` 512→128
 (Task 2). The remaining candidates are runtime-only and do not appear in
 `.bss`/`.data`:
 
-- InflateReader ring → PSRAM (Task 4): 32,768 B runtime DRAM saved on x4pro.
+- InflateReader ring → PSRAM (Task 4): explicit pin, no net DRAM change on
+  x4pro (plain `malloc` already prefers PSRAM for the 32 KB request).
 - Framebuffer → PSRAM (Task 5): 48,000 B runtime DRAM saved on x4pro.
 - TtfBookRuntime scratch 256→192 KB (Task 6): 64 KB PSRAM saved on x4pro.
 
@@ -655,4 +667,12 @@ guard only, because the default allocator's internal preference falls back
 to PSRAM on a fragmented heap (Memory.h), and a PSRAM-resident TCB is
 invalid. The bounded `cancel()` reap wait (≤50 ms, correctness-mandatory
 after a live worker) is accepted once-per-teardown, not copied to the render
-path.
+path. Fourth pass (CodeRabbit): the InflateReader-ring "%u32,768 B" saving
+claims were corrected — plain `malloc` already prefers PSRAM at 32 KB under
+malloc integration, so candidate 1 pins placement only; the "~160 KB"
+X3-entry figure corrected to ~110 KB; the sleep-frame-RLE note now says it
+reduces SD writes only, not DRAM; `loadBook()` reserves the stack only for
+TTF-engine sessions (bitmap-engine rollback would have idled 32 KB); and a
+deferred (ReapBlocked) resume spawn is retried per pass while the claim is
+pending, unseen-building, and no worker runs, so small partials do not fall
+through to the inline grace path.
