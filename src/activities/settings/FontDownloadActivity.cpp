@@ -153,7 +153,9 @@ void FontDownloadActivity::manifestPass() {
     if (phase.verdict == memclaim::Verdict::Fallback) {
       // Existing ERROR screen, STR_MEMORY_ERROR (unchanged UX; the pump has
       // logged the [MEM] claim evidence line).
-      RenderLock lock(*this);
+      // Single RenderLock scope: renderingMutex is a non-recursive FreeRTOS
+      // mutex (ActivityManager.cpp:51), so a nested take self-deadlocks the
+      // main loop on exactly this out-of-memory path.
       {
         RenderLock lock(*this);
         state_ = ERROR;
