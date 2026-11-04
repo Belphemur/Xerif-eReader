@@ -16,6 +16,7 @@
 #include "FontInstaller.h"
 #include "SdCardFont.h"
 #include "activities/UiListActivity.h"
+#include "util/MemoryClaimGateDevice.h"
 
 // JSON schema version of the TTF catalog manifest. Kept equal to the .cpfont
 // manifest's FONTS_MANIFEST_VERSION: both describe the same document shape for
@@ -55,6 +56,18 @@ class TtfFontDownloadActivity final : public UiListActivity {
     COMPLETE,
     ERROR,
   };
+
+  // The LOADING_MANIFEST stage within the manifest pass (docs/design/
+  // 2026-11-03-memory-claims.md §3.2): the manifest is a structuring change,
+  // not a free reuse — the claim's plan-act passes run BEFORE the fetch, and
+  // both run on activity passes that return to the loop (manifestPass(),
+  // driven from handleCustomInput), never inside the onWifiSelectionComplete
+  // callback, which would busy-wait within one pass with Back locked out.
+  enum class ManifestStage : uint8_t {
+    Claim,  // one suspension lever per pass; Proceed hands over to Fetch
+    Fetch,  // levers applied: the existing fetch/parse path runs this pass
+  };
+  ManifestStage manifestStage_ = ManifestStage::Claim;
 
   // Bit per style in a manifest file's "style" token.
   enum StyleFlag : uint8_t {
@@ -101,6 +114,12 @@ class TtfFontDownloadActivity final : public UiListActivity {
 
   State state_ = WIFI_SELECTION;
   FontInstaller fontInstaller_;
+  // The memory claim spans the whole activity (§3.3 — never the manifest
+  // stage), so every early return — fetch failure, per-transfer TLS refusal,
+  // SD-space refusal, Back, goHome — ends it exactly once via RAII. claim.end
+  // records state only; the radio restore is deferred to the runtime tick's
+  // scene-conditioned re-arm (MemoryClaimGateDevice.h).
+  memclaim::DeviceClaim claim_;
 
   // Manifest data
   std::string baseUrl_;
@@ -180,6 +199,7 @@ class TtfFontDownloadActivity final : public UiListActivity {
   bool hasFreeSpaceFor(uint64_t requiredBytes) const;
 
   void onWifiSelectionComplete(bool success);
+  void manifestPass();
   bool fetchAndParseManifest();
   // cppcheck-suppress arithOperationsOnVoidPointer // unique_ptr<char[]>::get() is char*, not void*
   const char* str(StrRef ref) const { return stringArena_ ? stringArena_.get() + ref : ""; }

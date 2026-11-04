@@ -12,6 +12,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/OtaUpdater.h"
+#include "util/MemoryClaimGateDevice.h"
 
 namespace {
 // Stock firmware refuses to flash when the battery can't sustain the write +
@@ -51,7 +52,17 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
   }
   requestUpdateAndWait();
 
-  const auto res = updater.checkForUpdate();
+  // The cheap memory claim (docs/design/2026-11-03-memory-claims.md §4):
+  // releases the rebuildable font caches and keeps the BLE-radio invariant
+  // (radio down at these screens) under the plain tlsheap floor. The check's
+  // own downloader guard stays the final arbiter — this claim never adds a
+  // failure path here, only the [MEM] evidence lines.
+  OtaUpdater::OtaUpdaterError res;
+  {
+    memclaim::DeviceClaim claim(renderer, "OTA");
+    claim.runCheap();
+    res = updater.checkForUpdate();
+  }
   // NO_UPDATE here means the release carries no firmware asset for this board
   // (expected until per-board assets are published) — not a failure.
   if (res == OtaUpdater::NO_UPDATE) {
@@ -225,14 +236,22 @@ void OtaUpdateActivity::runUpdateInstall() {
     state = UPDATE_IN_PROGRESS;
   }
   requestUpdateAndWait();
-  const auto res = updater.installUpdate(
-      [](void* ctx) {
-        // immediate=true notifies the render task directly. The default deferred path only
-        // sets a flag consumed at the end of ActivityManager::loop(), which never runs while
-        // installUpdate() blocks this task.
-        static_cast<OtaUpdateActivity*>(ctx)->requestUpdate(true);
-      },
-      this);
+  // The cheap memory claim for the download itself (§4): same floor and
+  // non-arbiter contract as the update check above. The claim ends at the
+  // block scope, records-only (the deferred radio restore rule, §3.3).
+  OtaUpdater::OtaUpdaterError res;
+  {
+    memclaim::DeviceClaim claim(renderer, "OTA");
+    claim.runCheap();
+    res = updater.installUpdate(
+        [](void* ctx) {
+          // immediate=true notifies the render task directly. The default deferred path only
+          // sets a flag consumed at the end of ActivityManager::loop(), which never runs while
+          // installUpdate() blocks this task.
+          static_cast<OtaUpdateActivity*>(ctx)->requestUpdate(true);
+        },
+        this);
+  }
 
   if (res != OtaUpdater::OK) {
     LOG_DBG("OTA", "Update failed: %d", res);

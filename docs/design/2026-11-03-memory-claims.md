@@ -542,3 +542,19 @@ radio-held case is a measured question (F3), not a design assertion.
 | per-screen behavior | with any lever actually pullable (radio genuinely up on a device log, caches resident), the first claim frame's `[MEM]` log shows the pre/post lever deltas against the measured §7/F3 numbers; when the radio is down at claim entry the `[MEM]` line records `status().running=false` (F3's confirmation leg) |
 | regression guards | `pio run -e default` + `-e x4pro` green; BLE regression pins from #275/#279 untouched (`RadioVerdictTest`, `RadioVerdictS3Test`, `RuntimeTest`); `git diff --exit-code` after format clean |
 | device | owner runs one font install with BLE on and one with BLE off, capturing the `[MEM] claim` lines so F3's measurements (free/maxBlock at the TLS stages, the identified failing allocation, `status().running` at claim entry) exist before any X4 Pro fix claim is asserted; classic-class installs still error honestly until F2 lands |
+
+## 10. Amendment — largest-block floor composes by MAX, not by sum (2026-11-03)
+
+Review of the implementation PR corrected the §3 floor composition for the
+LARGEST-BLOCK criterion. Free heap is fungible, so the free floor remains the
+`tlsheap` floor PLUS the manifest buffer's DRAM budget (`kClaimFreeFloor`).
+The largest-block floor is the MAX of the two (`kClaimMaxBlockFloor =
+max(tlsheap::kMinLargestBlock, kManifestDramBudgetBytes)`), not their sum: the
+manifest buffer is one contiguous allocation, but it never has to share a
+block with the TLS transfer buffer — `heapAvailableForTransfer()` runs
+POST-allocation, once the manifest is already resident, so a heap holding one
+manifest-sized block plus a separate TLS-sized block serves the stage fine.
+The summed floor rejected exactly those layouts (and only them) before any
+lever could be pulled; the post-allocation check stays the final arbiter of
+what is really left. Host test `ManifestLargestBlockFloorIsMaxNotSum` pins the
+split-block layout.

@@ -30,8 +30,37 @@
 
 namespace fui = freeink::ui;
 
+// Manifest-fetch cap: the manifest JSON is bounded (tens of KB of font
+// metadata) so a 64 KB cap is generous while protecting against hostile
+// responses. At file scope so the claim floors and fetchAndParseManifest
+// share it.
+constexpr size_t kMaxManifestBytes = 65536;
+// The memory-claim floors (docs/design/2026-11-03-memory-claims.md §3):
+// free-heap is fungible, so the free floor is the tlsheap floor PLUS the
+// manifest buffer's own DRAM demand — poolMalloc draws DRAM on this no-PSRAM
+// class, and the gate cannot declare Proceed with budget the 64 KB buffer will
+// then consume. The largest-block floor composes by MAX instead: the manifest
+// buffer is one contiguous 64 KB allocation but it never has to share a block
+// with the TLS transfer buffer (that check runs post-allocation, once the
+// manifest is already resident), so demanding one 85 KB block would reject
+// heaps that a 64 KB block plus a separate TLS-sized block serve fine. On
+// PSRAM boards the buffer lands in PSRAM and both floors stay the plain
+// tlsheap floors. The POST-allocation HttpDownloader::heapAvailableForTransfer()
+// check stays unchanged and remains the final arbiter against what is really
+// left.
+#if defined(BOARD_HAS_PSRAM)
+constexpr uint32_t kManifestDramBudgetBytes = 0;
+#else
+constexpr uint32_t kManifestDramBudgetBytes = static_cast<uint32_t>(kMaxManifestBytes);
+#endif
+constexpr uint32_t kClaimFreeFloor = tlsheap::kMinFreeHeap + kManifestDramBudgetBytes;
+constexpr uint32_t kClaimMaxBlockFloor =
+    kManifestDramBudgetBytes > tlsheap::kMinLargestBlock ? kManifestDramBudgetBytes : tlsheap::kMinLargestBlock;
+
 FontDownloadActivity::FontDownloadActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-    : UiListActivity("FontDownload", renderer, mappedInput), fontInstaller_(sdFontSystem.registry()) {}
+    : UiListActivity("FontDownload", renderer, mappedInput),
+      fontInstaller_(sdFontSystem.registry()),
+      claim_(renderer, "FONT") {}
 
 void FontDownloadActivity::activateIndex(const int index) {
   switch (state_) {
@@ -98,12 +127,59 @@ void FontDownloadActivity::onWifiSelectionComplete(const bool success) {
     return;
   }
 
+  // The claim begins at LOADING_MANIFEST entry (§3.2): it records the radio's
+  // state and the pre-claim heap, and performs NO blocking call. The fetch
+  // and every suspension step run on activity passes that return to the loop
+  // (manifestPass(), via handleCustomInput), never inside this callback.
+  // The manifest-level RETRY on the error screen re-enters through here with
+  // success=true, which restarts the claim (begin() resets its counters).
+  claim_.begin(kClaimFreeFloor, kClaimMaxBlockFloor);
+
   {
     RenderLock lock(*this);
     state_ = LOADING_MANIFEST;
+    manifestStage_ = ManifestStage::Claim;
   }
   requestUpdateAndWait();
+}
 
+// One plan-act pass of the claim recheck loop, in the same pump cadence as the
+// transfer-progress callbacks (TtfFontDownloadActivity's manifestPass is the
+// sibling). Back is polled on every pass and cancels the claim (levers stay as
+// pulled; the restore is deferred per §3.3).
+void FontDownloadActivity::manifestPass() {
+  if (manifestStage_ == ManifestStage::Claim) {
+    const memclaim::Phase phase = claim_.pumpOnePass();
+    if (phase.verdict == memclaim::Verdict::Fallback) {
+      // Existing ERROR screen, STR_MEMORY_ERROR (unchanged UX; the pump has
+      // logged the [MEM] claim evidence line).
+      RenderLock lock(*this);
+      {
+        RenderLock lock(*this);
+        state_ = ERROR;
+        errorMessage_ = tr(STR_MEMORY_ERROR);
+        // Nothing was downloaded, so the error screen offers no retry.
+        downloadingFamilyIndex_ = -1;
+      }
+      // The pass leaves LOADING_MANIFEST: the loop returns after
+      // handleCustomInput(), so without this the panel keeps the loading frame
+      // until an unrelated input or the clock tick repaints.
+      requestUpdate();
+      return;
+    }
+    if (phase.verdict == memclaim::Verdict::Proceed) {
+      manifestStage_ = ManifestStage::Fetch;
+    }
+    // Defrag: the next activity pass pulls the next lever (or re-issues the
+    // radio stop). No repaint: the frame painted at state entry stays up —
+    // the common path (radio already down, caches already released) costs two
+    // measurements and no paint (§6 "announced vs silent").
+    return;
+  }
+
+  // Fetch stage: the claim's levers are already applied; the POST-allocation
+  // heapAvailableForTransfer() check inside fetchAndParseManifest() remains
+  // the final arbiter (§3).
   if (!fetchAndParseManifest()) {
     // Drop whatever was parsed before the failure: it would otherwise sit in
     // the heap behind the error screen, and leave the retry path pointing at a
@@ -112,12 +188,13 @@ void FontDownloadActivity::onWifiSelectionComplete(const bool success) {
     {
       RenderLock lock(*this);
       state_ = ERROR;
+      // Nothing was downloaded, so the error screen offers no retry.
+      downloadingFamilyIndex_ = -1;
     }
+    requestUpdate();
     return;
   }
-
   if (!hasGroupScreen()) buildFilteredIndices(0);
-
   {
     RenderLock lock(*this);
     rowsDirty_ = true;  // families_ just loaded
@@ -129,6 +206,8 @@ void FontDownloadActivity::onWifiSelectionComplete(const bool success) {
       state_ = FAMILY_LIST;
     }
   }
+  // Leaving LOADING_MANIFEST always needs the new frame (see the claim stage).
+  requestUpdate();
 }
 
 // --- Manifest fetching ---
@@ -165,14 +244,15 @@ bool FontDownloadActivity::internString(const char* text, StrRef& outRef) {
 bool FontDownloadActivity::fetchAndParseManifest() {
   // Fetch the manifest into a PSRAM buffer (or DRAM on C3) and parse from
   // memory, avoiding the download-to-SD-then-read-back round-trip that
-  // wastes I/O and risks leaving temp files on failure. The manifest JSON is
-  // bounded (tens of KB of font metadata) so a 64 KB cap is generous while
-  // protecting against hostile responses.
-  constexpr size_t MAX_MANIFEST_BYTES = 65536;
+  // wastes I/O and risks leaving temp files on failure. kMaxManifestBytes is
+  // generous for tens of KB of metadata while bounding hostile responses.
 
-  if (auto* fcm = renderer.getFontCacheManager()) {
-    fcm->releaseSdFontCaches();
-  }
+  // The unconditional pre-allocation release + registry rescan, exactly as
+  // today (§3): never a lever-conditional step, so a Proceed can never skip
+  // this cleanup. The synchronous no-op release still counts as pulled for
+  // the claim's stepsTried (§3.2), in the same pass.
+  memclaim::releaseFontCaches(renderer);
+  claim_.noteFontCachesPulled();
   // Rescan installed families before any TLS or JSON buffers exist. The rescan
   // frees and reallocates every registry entry, which fragments the heap if it
   // runs while the manifest DOM and the catalog arena are live.
@@ -186,9 +266,9 @@ bool FontDownloadActivity::fetchAndParseManifest() {
   // Accumulate into a growable PoolBytes buffer so the fetch does not depend
   // on guessing the exact manifest size — poolMalloc draws from PSRAM on
   // PSRAM boards (free) and DRAM on C3 (still within the 40 KB TLS floor).
-  auto manifestBuf = poolMakeBytes(MAX_MANIFEST_BYTES);
+  auto manifestBuf = poolMakeBytes(kMaxManifestBytes);
   if (!manifestBuf) {
-    LOG_ERR("FONT", "OOM: %zu byte manifest buffer", MAX_MANIFEST_BYTES);
+    LOG_ERR("FONT", "OOM: %zu byte manifest buffer", kMaxManifestBytes);
     errorMessage_ = tr(STR_MEMORY_ERROR);
     return false;
   }
@@ -207,8 +287,8 @@ bool FontDownloadActivity::fetchAndParseManifest() {
   const auto dataOk = HttpDownloader::fetchUrl(
       FONT_MANIFEST_URL,
       [&manifestBuf, &manifestLen](const uint8_t* data, size_t len) {
-        if (manifestLen + len > MAX_MANIFEST_BYTES) {
-          LOG_ERR("FONT", "Manifest exceeds %zu bytes; aborting", MAX_MANIFEST_BYTES);
+        if (manifestLen + len > kMaxManifestBytes) {
+          LOG_ERR("FONT", "Manifest exceeds %zu bytes; aborting", kMaxManifestBytes);
           return false;
         }
         std::memcpy(manifestBuf.get() + manifestLen, data, len);
@@ -563,10 +643,12 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
   // Rebuildable SD-font caches (glyph/kern arenas, CJK fallback tables) can
   // hold tens of KB the TLS session needs; release them up front rather than
   // starving the transfer. They repopulate on demand after the download.
-  if (auto* fcm = renderer.getFontCacheManager()) {
-    fcm->releaseSdFontCaches();
-    LOG_DBG("FONT", "Free heap after SD font cache release: %d bytes", ESP.getFreeHeap());
-  }
+  // Shared helper + claim note (§4): the per-family transfers run with the
+  // claim already open, so this re-pull is a no-op for the claim's recorder
+  // (idempotent step bit) but keeps the counter truthful.
+  memclaim::releaseFontCaches(renderer);
+  claim_.noteFontCachesPulled();
+  LOG_DBG("FONT", "Free heap after SD font cache release: %d bytes", ESP.getFreeHeap());
 
   // Check before touching the family directory so a failed update leaves the
   // installed family unchanged.
@@ -879,6 +961,21 @@ bool FontDownloadActivity::handleCustomInput() {
     return false;
   }
 
+  if (state_ == LOADING_MANIFEST) {
+    // Back is polled every pass here, never locked out (§5): the claim pumps
+    // one suspension lever per pass and the loop returns control in between.
+    int x = 0;
+    int y = 0;
+    if (mappedInput.wasPressed(MappedInputManager::Button::Back) || mappedInput.wasScreenTapped(x, y)) {
+      // Levers stay as pulled; the claim ends with the activity (RAII member)
+      // and the radio restore is deferred to the runtime re-arm (§3.3).
+      onBackButton();
+      return true;
+    }
+    manifestPass();
+    return true;
+  }
+
   if (state_ == COMPLETE) {
     int x = 0;
     int y = 0;
@@ -893,6 +990,12 @@ bool FontDownloadActivity::handleCustomInput() {
     }
   } else if (state_ == ERROR) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      if (families_.empty()) {
+        // Nothing was ever loaded (manifest-stage failure): the empty family
+        // list would say less than the error screen — leave instead.
+        finish();
+        return true;
+      }
       {
         RenderLock lock(*this);
         state_ = FAMILY_LIST;
