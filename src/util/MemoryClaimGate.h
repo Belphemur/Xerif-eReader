@@ -83,10 +83,12 @@ constexpr uint32_t radioStopElapsedMs(const uint32_t nowMs, const uint32_t first
 }
 
 // True once the radio stop has consumed its deadline without settling, so the
-// device pump may record the lever as pulled. firstStopMs == 0 means no stop
-// pass has been issued yet: never expired.
-constexpr bool radioStopDeadlineExpired(const uint32_t nowMs, const uint32_t firstStopMs, const uint32_t deadlineMs) {
-  return firstStopMs != 0 && radioStopElapsedMs(nowMs, firstStopMs) >= deadlineMs;
+// device pump may record the lever as pulled. `stopStarted` carries the pump's
+// own start flag — the timestamp carries NO sentinel meaning, so a stop pass
+// issued at millis() == 0 still expires at the deadline.
+constexpr bool radioStopDeadlineExpired(const uint32_t nowMs, const bool stopStarted, const uint32_t firstStopMs,
+                                        const uint32_t deadlineMs) {
+  return stopStarted && radioStopElapsedMs(nowMs, firstStopMs) >= deadlineMs;
 }
 
 }  // namespace memclaim

@@ -35,20 +35,27 @@ namespace fui = freeink::ui;
 // responses. At file scope so the claim floors and fetchAndParseManifest
 // share it.
 constexpr size_t kMaxManifestBytes = 65536;
-// The memory-claim floors (docs/design/2026-11-03-memory-claims.md §3): the
-// tlsheap floor PLUS the manifest buffer's own DRAM demand, because poolMalloc
-// draws DRAM on this no-PSRAM class — the gate cannot declare Proceed with
-// budget the 64 KB buffer will then consume. On PSRAM boards the buffer lands
-// in PSRAM and stays the plain tlsheap floor. The POST-allocation
-// HttpDownloader::heapAvailableForTransfer() check stays unchanged and remains
-// the final arbiter against what is really left.
+// The memory-claim floors (docs/design/2026-11-03-memory-claims.md §3):
+// free-heap is fungible, so the free floor is the tlsheap floor PLUS the
+// manifest buffer's own DRAM demand — poolMalloc draws DRAM on this no-PSRAM
+// class, and the gate cannot declare Proceed with budget the 64 KB buffer will
+// then consume. The largest-block floor composes by MAX instead: the manifest
+// buffer is one contiguous 64 KB allocation but it never has to share a block
+// with the TLS transfer buffer (that check runs post-allocation, once the
+// manifest is already resident), so demanding one 85 KB block would reject
+// heaps that a 64 KB block plus a separate TLS-sized block serve fine. On
+// PSRAM boards the buffer lands in PSRAM and both floors stay the plain
+// tlsheap floors. The POST-allocation HttpDownloader::heapAvailableForTransfer()
+// check stays unchanged and remains the final arbiter against what is really
+// left.
 #if defined(BOARD_HAS_PSRAM)
 constexpr uint32_t kManifestDramBudgetBytes = 0;
 #else
 constexpr uint32_t kManifestDramBudgetBytes = static_cast<uint32_t>(kMaxManifestBytes);
 #endif
 constexpr uint32_t kClaimFreeFloor = tlsheap::kMinFreeHeap + kManifestDramBudgetBytes;
-constexpr uint32_t kClaimMaxBlockFloor = tlsheap::kMinLargestBlock + kManifestDramBudgetBytes;
+constexpr uint32_t kClaimMaxBlockFloor =
+    kManifestDramBudgetBytes > tlsheap::kMinLargestBlock ? kManifestDramBudgetBytes : tlsheap::kMinLargestBlock;
 
 FontDownloadActivity::FontDownloadActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
     : UiListActivity("FontDownload", renderer, mappedInput),
@@ -147,10 +154,17 @@ void FontDownloadActivity::manifestPass() {
       // Existing ERROR screen, STR_MEMORY_ERROR (unchanged UX; the pump has
       // logged the [MEM] claim evidence line).
       RenderLock lock(*this);
-      state_ = ERROR;
-      errorMessage_ = tr(STR_MEMORY_ERROR);
-      // Nothing was downloaded, so the error screen offers no retry.
-      downloadingFamilyIndex_ = -1;
+      {
+        RenderLock lock(*this);
+        state_ = ERROR;
+        errorMessage_ = tr(STR_MEMORY_ERROR);
+        // Nothing was downloaded, so the error screen offers no retry.
+        downloadingFamilyIndex_ = -1;
+      }
+      // The pass leaves LOADING_MANIFEST: the loop returns after
+      // handleCustomInput(), so without this the panel keeps the loading frame
+      // until an unrelated input or the clock tick repaints.
+      requestUpdate();
       return;
     }
     if (phase.verdict == memclaim::Verdict::Proceed) {
@@ -171,22 +185,29 @@ void FontDownloadActivity::manifestPass() {
     // the heap behind the error screen, and leave the retry path pointing at a
     // half-built family table.
     clearManifest();
-    RenderLock lock(*this);
-    state_ = ERROR;
-    // Nothing was downloaded, so the error screen offers no retry.
-    downloadingFamilyIndex_ = -1;
+    {
+      RenderLock lock(*this);
+      state_ = ERROR;
+      // Nothing was downloaded, so the error screen offers no retry.
+      downloadingFamilyIndex_ = -1;
+    }
+    requestUpdate();
     return;
   }
   if (!hasGroupScreen()) buildFilteredIndices(0);
-  RenderLock lock(*this);
-  rowsDirty_ = true;  // families_ just loaded
-  if (hasGroupScreen()) {
-    groupNav_.reset();
-    state_ = GROUP_LIST;
-  } else {
-    nav.reset();
-    state_ = FAMILY_LIST;
+  {
+    RenderLock lock(*this);
+    rowsDirty_ = true;  // families_ just loaded
+    if (hasGroupScreen()) {
+      groupNav_.reset();
+      state_ = GROUP_LIST;
+    } else {
+      nav.reset();
+      state_ = FAMILY_LIST;
+    }
   }
+  // Leaving LOADING_MANIFEST always needs the new frame (see the claim stage).
+  requestUpdate();
 }
 
 // --- Manifest fetching ---
@@ -969,6 +990,12 @@ bool FontDownloadActivity::handleCustomInput() {
     }
   } else if (state_ == ERROR) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      if (families_.empty()) {
+        // Nothing was ever loaded (manifest-stage failure): the empty family
+        // list would say less than the error screen — leave instead.
+        finish();
+        return true;
+      }
       {
         RenderLock lock(*this);
         state_ = FAMILY_LIST;

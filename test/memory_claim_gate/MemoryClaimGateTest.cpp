@@ -8,8 +8,11 @@
 // bookkeeping the device pump must implement. Floors composed from the tlsheap
 // constants are exactly what the sites pass:
 //   - TTF/screens on PSRAM boards: the plain tlsheap floor;
-//   - no-PSRAM (.cpfont) manifest stage: tlsheap floor + the manifest buffer's
-//     DRAM budget (kManifestDramBudgetBytes in FontDownloadActivity.cpp).
+//   - no-PSRAM (.cpfont) manifest stage: the FREE floor is tlsheap + the
+//     manifest buffer's DRAM budget (free heap is fungible); the LARGEST-BLOCK
+//     floor is the MAX of the two, not the sum — the manifest buffer is one
+//     contiguous allocation that never has to share a block with the TLS
+//     transfer buffer (kManifestDramBudgetBytes in FontDownloadActivity.cpp).
 namespace mc = memclaim;
 namespace tl = tlsheap;
 
@@ -19,7 +22,10 @@ namespace {
 // does not depend on the device TU.
 constexpr uint32_t kManifestBudgetBytes = 65536;
 constexpr uint32_t kFreeFloorBudgeted = tl::kMinFreeHeap + kManifestBudgetBytes;
-constexpr uint32_t kMaxBlockFloorBudgeted = tl::kMinLargestBlock + kManifestBudgetBytes;
+// Same composition as the device sites: the largest contiguous requirement is
+// whichever single allocation is bigger (§3: separate blocks, not one).
+constexpr uint32_t kMaxBlockFloorBudgeted =
+    kManifestBudgetBytes > tl::kMinLargestBlock ? kManifestBudgetBytes : tl::kMinLargestBlock;
 // The release budget the device pump mirrors from kBuildReleaseTimeoutMs
 // (Runtime.cpp, 3,000 ms).
 constexpr uint32_t kBleStopDeadlineMs = 3000;
@@ -55,7 +61,8 @@ struct SimulatedPump {
         radioStopStarted = true;
         radioFirstStopMs = nowMs;
       }
-      const bool settled = suspendSettles || mc::radioStopDeadlineExpired(nowMs, radioFirstStopMs, kBleStopDeadlineMs);
+      const bool settled =
+          suspendSettles || mc::radioStopDeadlineExpired(nowMs, radioStopStarted, radioFirstStopMs, kBleStopDeadlineMs);
       if (settled) stepsTried = mc::triedAfter(stepsTried, mc::Step::Radio);
       p = mc::plan(free, maxBlock, freeFloor, maxBlockFloor, stepsTried);
     }
@@ -113,10 +120,10 @@ TEST(MemoryClaimGate, ProceedExactlyAtTlsheapFloors) {
       mc::Verdict::Defrag);
 }
 
-// §3: the manifest budget applies to BOTH tlsheap criteria (the buffer
-// consumes free heap AND the largest block): a heap at the plain tlsheap floor
-// with the budget's worth of headroom missing must not Proceed.
-TEST(MemoryClaimGate, ManifestBudgetRaisesBothFloors) {
+// §3: the manifest budget raises the FREE floor by the budget (the buffer
+// consumes fungible free heap): a heap at the plain tlsheap floor with the
+// budget's worth of headroom missing must not Proceed.
+TEST(MemoryClaimGate, ManifestBudgetRaisesFreeFloor) {
   // Exactly the plain tlsheap floor: enough for TLS, not for TLS + a 64 KB
   // no-PSRAM manifest buffer (would then leave the post-allocation
   // heapAvailableForTransfer check short in the device flow).
@@ -124,6 +131,26 @@ TEST(MemoryClaimGate, ManifestBudgetRaisesBothFloors) {
     EXPECT_EQ(mc::plan(tl::kMinFreeHeap, tl::kMinLargestBlock, kFreeFloorBudgeted, kMaxBlockFloorBudgeted, 0).verdict,
               mc::Verdict::Defrag);
   }
+}
+
+// §3: the LARGEST-BLOCK floor composes by MAX, not by sum — the manifest
+// buffer and the TLS transfer buffer can occupy separate blocks, so a heap
+// with one manifest-sized block plus enough fungible free heap for TLS is a
+// Proceed even though no single 85 KB block exists. One byte below the
+// manifest-sized block still cannot host the buffer.
+TEST(MemoryClaimGate, ManifestLargestBlockFloorIsMaxNotSum) {
+  // The split-block layout the old summed floor wrongly rejected: 64 KB
+  // contiguous for the manifest, the TLS budget spread over the rest.
+  EXPECT_EQ(mc::plan(kFreeFloorBudgeted, kManifestBudgetBytes, kFreeFloorBudgeted, kMaxBlockFloorBudgeted, 0).verdict,
+            mc::Verdict::Proceed);
+  // One byte short of the manifest's own contiguous requirement: Defrag.
+  EXPECT_EQ(
+      mc::plan(kFreeFloorBudgeted, kManifestBudgetBytes - 1, kFreeFloorBudgeted, kMaxBlockFloorBudgeted, 0).verdict,
+      mc::Verdict::Defrag);
+  // Ample free heap but no manifest-sized block: still Defrag — the buffer
+  // allocation itself would fail.
+  EXPECT_EQ(mc::plan(kFreeFloorBudgeted, tl::kMinLargestBlock, kFreeFloorBudgeted, kMaxBlockFloorBudgeted, 0).verdict,
+            mc::Verdict::Defrag);
 }
 
 // §9: a lever recorded in stepsTried is NEVER re-suggested (FontCaches after a
@@ -226,19 +253,25 @@ TEST(MemoryClaimGate, RadioLeverLatchExpiresAtDeadlineWithoutSettle) {
   EXPECT_EQ(p.verdict, mc::Verdict::Fallback);
 }
 
-// Wrap safety for the deadline arithmetic (millis() wraps ~49.7 days).
+// Wrap safety for the deadline arithmetic (millis() wraps ~49.7 days). The
+// `started` flag, not a zero-timestamp sentinel, gates expiry — a stop pass
+// issued at millis() == 0 still expires at the deadline.
 TEST(MemoryClaimGate, RadioStopDeadlineIsWrapSafe) {
   constexpr uint32_t kWrapStart = 4294967280u;  // 0xFFFFFFF0
-  EXPECT_TRUE(mc::radioStopDeadlineExpired(kWrapStart + 32, kWrapStart, 32));
-  EXPECT_FALSE(mc::radioStopDeadlineExpired(kWrapStart + 31, kWrapStart, 32));
+  EXPECT_TRUE(mc::radioStopDeadlineExpired(kWrapStart + 32, true, kWrapStart, 32));
+  EXPECT_FALSE(mc::radioStopDeadlineExpired(kWrapStart + 31, true, kWrapStart, 32));
   // After the wrap (now=31 is 16 past zero, i.e. 47 ms elapsed since the start):
   // already past the 32 ms budget — expiry happened at now==16.
-  EXPECT_TRUE(mc::radioStopDeadlineExpired(31, kWrapStart, 32));
-  EXPECT_TRUE(mc::radioStopDeadlineExpired(32, kWrapStart, 32));  // also past
+  EXPECT_TRUE(mc::radioStopDeadlineExpired(31, true, kWrapStart, 32));
+  EXPECT_TRUE(mc::radioStopDeadlineExpired(32, true, kWrapStart, 32));  // also past
   // Inside the budget but across the wrap point: never expired.
-  EXPECT_FALSE(mc::radioStopDeadlineExpired(15, kWrapStart, 32));
-  // No stop pass issued yet (firstStopMs == 0): never expired.
-  EXPECT_FALSE(mc::radioStopDeadlineExpired(4000, 0, 3000));
+  EXPECT_FALSE(mc::radioStopDeadlineExpired(15, true, kWrapStart, 32));
+  // No stop pass issued yet (started == false): never expired.
+  EXPECT_FALSE(mc::radioStopDeadlineExpired(4000, false, 0, 3000));
+  // A stop started at millis() == 0 still expires at the deadline (the old
+  // zero-timestamp sentinel would have suppressed expiry forever).
+  EXPECT_TRUE(mc::radioStopDeadlineExpired(3000, true, 0, 3000));
+  EXPECT_FALSE(mc::radioStopDeadlineExpired(2999, true, 0, 3000));
 }
 
 // The radio-lever helpers degenerate cleanly: no elapsed time, no expiry.

@@ -180,7 +180,8 @@ class DeviceClaim {
       radioFirstStopMs_ = millis();
     }
     if (settled) LOG_INF(tag_, "[MEM] claim lever=Radio stopped radio=%d", bleturner::status().running ? 1 : 0);
-    return settled || memclaim::radioStopDeadlineExpired(millis(), radioFirstStopMs_, kBleStopDeadlineMs);
+    return settled ||
+           memclaim::radioStopDeadlineExpired(millis(), radioStopStarted_, radioFirstStopMs_, kBleStopDeadlineMs);
   }
 
   void logFallback() {
