@@ -774,16 +774,6 @@ bool Dictionary::readDefinition(const DictLocation& location, std::string& out, 
       return fail(result);
     }
   }
-  // Keep room for the viewer's plain-text fallback (htmlToPlainText builds a
-  // second string while the input stays retained). Measure the allocation
-  // pool, not DRAM, like the pre-read guard: on PSRAM boards the fallback
-  // string is served from PSRAM, so a fragmented internal heap must not
-  // reject max-size entries (#132).
-  const size_t fallbackDemand = out.size() + DEFINITION_HEAP_HEADROOM_BYTES;
-  if (htmlDefinitions && poolMaxAllocFor(fallbackDemand) < fallbackDemand) {
-    LOG_ERR("DICT", "Low heap for %lu byte definition fallback", static_cast<unsigned long>(out.size()));
-    return fail(LookupResult::LowMemory);
-  }
   return true;
 }
 
