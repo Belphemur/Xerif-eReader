@@ -211,6 +211,7 @@ class MappedInputManager {
   const GfxRenderer& renderer;
 
   Button mapScreenDirection(Button button) const;
+  bool areSidePageButtonsSwapped() const;
   Labels mapFrontLabels(const char* back, const char* confirm, const char* left, const char* right) const;
   // Resolves `button` to a physical button (0..6) and evaluates `probe`
   // there; composite logical buttons (Nav*, Screen*) recurse. Returns false

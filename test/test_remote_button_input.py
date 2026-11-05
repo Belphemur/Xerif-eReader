@@ -102,6 +102,9 @@ bool MappedInputManager::mapButton(Button b, bool (HalGPIO::*fn)(uint8_t) const)
 }
 bool MappedInputManager::wasBackGesture() const { return false; }
 bool MappedInputManager::isNavDirectionSwapped() const { return false; }
+// Fork: the spliced edge-count folds route side-page mapping through this
+// helper (upstream "Orient Side Buttons"); stub to no-swap like isNav above.
+bool MappedInputManager::areSidePageButtonsSwapped() const { return false; }
 MappedInputManager::Button MappedInputManager::mapScreenDirection(MappedInputManager::Button b) const { return b; }
 MappedInputManager::SwipeDir MappedInputManager::wasSwipe(int*, int*) const { return SwipeDir::None; }
 """ + "\n".join(methods) + r"""
