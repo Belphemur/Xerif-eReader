@@ -138,6 +138,20 @@ UsbDriveState HalStorage::usbDriveState() const {
   HalStorage::StorageLock lock;               \
   return SDCard.method(__VA_ARGS__);
 
+uint64_t HalStorage::sdTotalBytes() { HAL_STORAGE_WRAPPED_CALL(sdTotalBytes); }
+// The fork's SDCardManager::sdUsedBytes() returns uint64_t directly (0 when not
+// mounted or the cluster count cannot be determined) instead of taking an
+// out-param, so the wrapper maps the SDK value onto the fork API: ready() gates
+// "unavailable" and a mounted-but-empty card reports a valid zero.
+bool HalStorage::sdUsedBytes(uint64_t& usedBytes) {
+  HalStorage::StorageLock lock;
+  if (!SDCard.ready()) {
+    return false;
+  }
+  usedBytes = SDCard.sdUsedBytes();
+  return true;
+}
+
 std::vector<String> HalStorage::listFiles(const char* path, int maxFiles) {
   HAL_STORAGE_WRAPPED_CALL(listFiles, path, maxFiles);
 }

@@ -5,12 +5,15 @@
 #include <HalClock.h>
 #include <HalFrontlight.h>
 #include <HalMemory.h>
+#include <HalStorage.h>
 #include <HalTiltSensor.h>
+#include <I18n.h>
 #include <esp_mac.h>
 
 #include <cstdio>
 
 #include "MappedInputManager.h"
+#include "activities/RenderLock.h"
 #include "components/UITheme.h"
 
 namespace fui = freeink::ui;
@@ -21,6 +24,9 @@ enum MenuItem {
   ITEM_FIRMWARE,
   ITEM_CHIP,
   ITEM_FLASH,
+  ITEM_SD_SIZE,
+  ITEM_SD_USED,
+  ITEM_SD_FREE,
   ITEM_DISPLAY,
   ITEM_RESOLUTION,
   ITEM_TOUCH,
@@ -42,6 +48,9 @@ const char* const menuNames[AboutActivity::ITEM_COUNT] = {
     "Firmware",
     "Chip",
     "Flash",
+    "SD Size",
+    "SD Used",
+    "SD Free",
     "Display Controller",
     "Resolution",
     "Touch",
@@ -54,6 +63,20 @@ const char* const menuNames[AboutActivity::ITEM_COUNT] = {
     "Largest Free Block",
     "PSRAM",
 };
+
+// "14.5 GB" / "35 MB": GiB with one decimal, MiB below 1 GiB.
+std::string formatBytes(const uint64_t bytes) {
+  char buf[24];
+  constexpr uint64_t MIB = 1024ull * 1024ull;
+  constexpr uint64_t GIB = 1024ull * MIB;
+  if (bytes >= GIB) {
+    const uint64_t tenths = (bytes * 10 + GIB / 2) / GIB;
+    snprintf(buf, sizeof(buf), "%u.%u GB", static_cast<unsigned>(tenths / 10), static_cast<unsigned>(tenths % 10));
+  } else {
+    snprintf(buf, sizeof(buf), "%u MB", static_cast<unsigned>((bytes + MIB / 2) / MIB));
+  }
+  return buf;
+}
 
 // Chip part numbers, not user prose — deliberately untranslated.
 const char* displayControllerName(const BoardConfig::DisplayController c) {
@@ -139,6 +162,24 @@ void AboutActivity::onEnter() {
   esp_read_mac(mac, ESP_MAC_WIFI_STA);
   snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
   rowValues_[ITEM_MAC] = buf;
+
+  // The used-space scan walks the whole FAT (seconds on a large card): answer the press with "Loading" first.
+  // onEnter runs without the render lock; take it for the popup.
+  {
+    RenderLock lock;
+    GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
+  }
+  // The firmware does not boot without a card, so About always has one.
+  const uint64_t sdTotal = Storage.sdTotalBytes();
+  rowValues_[ITEM_SD_SIZE] = formatBytes(sdTotal);
+  uint64_t sdUsed = 0;
+  if (Storage.sdUsedBytes(sdUsed)) {
+    rowValues_[ITEM_SD_USED] = formatBytes(sdUsed);
+    rowValues_[ITEM_SD_FREE] = formatBytes(sdUsed <= sdTotal ? sdTotal - sdUsed : 0);
+  } else {
+    rowValues_[ITEM_SD_USED] = rowValues_[ITEM_SD_FREE] = "Error.";
+  }
+
   // Heap snapshot at screen entry, in kB. Free/Min/Largest are exactly the two
   // quantities every heap gate in the firmware decides on (web server, TLS
   // clock sync, BLE radio, font variants); Min is the worst watermark since
