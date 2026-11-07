@@ -101,6 +101,11 @@ class Epub {
                             int targetHeight, bool crop, bool originalThresholds) const;
 #endif
   bool getItemSize(const std::string& itemHref, size_t* size) const;
+  // Best-effort relief for the render-path heap gate: drop the PSRAM ZIP
+  // entry cache. On PSRAM boards this frees PSRAM (the entry map is
+  // pool-allocated); on non-PSRAM boards there is no cache and this is a
+  // no-op. Never blocks — safe to call from the render path.
+  void unloadZipFileCache();
   BookMetadataCache::SpineEntry getSpineItem(int spineIndex) const;
   BookMetadataCache::TocEntry getTocItem(int tocIndex) const;
   int getSpineItemsCount() const;
@@ -122,7 +127,7 @@ class Epub {
   // entries in PSRAM, avoiding repeated central-directory scans on every
   // getItemSize() / readItemContentsToStream() call.
   class ZipFileCache {
-    std::unordered_map<std::string, ZipFile::FileStatSlim> cache_;
+    ZipFile::FileStatSlimCache cache_;
     bool loaded_ = false;
 
    public:
@@ -150,7 +155,13 @@ class Epub {
     // Iterate the cache (PSRAM-backed on BOARD_HAS_PSRAM boards). Used by
     // discoverCssFilesFromZip to avoid opening a fresh ZipFile just to enumerate
     // paths. Returns a span-like pair (begin, end) of (path, FileStatSlim) entries.
-    const std::unordered_map<std::string, ZipFile::FileStatSlim>& cacheRef() const { return cache_; }
+    const ZipFile::FileStatSlimCache& cacheRef() const { return cache_; }
+    // Drop every cached entry and mark the cache unloaded. After unload() the
+    // cache behaves like a failed load: isLoaded() is false, get() misses, and
+    // callers fall back to per-call central-directory scans. Nothing reloads
+    // it until the next Epub open — this is the render-gate's one-shot relief
+    // valve, so it must stay cheap and unconditional.
+    void unload();
 #ifdef BOARD_HAS_PSRAM
     // PSRAM deleter for the cache object itself: calls dtor + heap_caps_free
     // to match the placement cap used by the heap_caps_malloc in load().
@@ -174,10 +185,11 @@ class Epub {
 #endif
   // PSRAM placement: ZipFileCache is a leaf type (no nested unique_ptr), so
   // the static_assert issue that blocked D.1 / D.4 does not apply. On X4 Pro
-  // this places the map (typically 64-150 KB for a 200-entry novel) in PSRAM
-  // via a custom function-pointer deleter that calls heap_caps_free (matches
-  // the placement cap). On non-PSRAM boards the deleter collapses to plain
-  // free() (heap_caps_free handles cross-heap too, but the explicit branch
-  // keeps cppcheck happy).
+  // this places the cache object in PSRAM via a custom function-pointer
+  // deleter that calls heap_caps_free (matches the placement cap), and the
+  // entry map inside it is pool-allocated (nodes + key strings in PSRAM —
+  // see ZipFile::FileStatSlimCache), so a populated cache costs no DRAM. On
+  // non-PSRAM boards the deleter collapses to plain free() (heap_caps_free
+  // handles cross-heap too, but the explicit branch keeps cppcheck happy).
 #endif
 };
