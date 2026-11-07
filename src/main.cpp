@@ -1315,7 +1315,19 @@ extern "C" bool verifyRollbackLater() { return true; }
 // esp_app_desc_t.version is an opaque constant from the prebuilt Arduino core
 // (see OtaSlots.h). The resume log below references the array so the linker
 // cannot collect it — the string must stay in the image the scan reads back.
-const char kDevOtaResumeHookMarker[] = ota_slots::kResumeHookMarker;
+// A constexpr array cannot be spread into a C array initializer, so the
+// literal is repeated here and pinned to the header constant at compile time.
+constexpr const char kDevOtaResumeHookMarker[] __attribute__((used)) = "XERIF-DEVOTA-RESUME-HOOK-V1";
+
+constexpr bool devOtaMarkerMatchesHeader() {
+  const char* embedded = kDevOtaResumeHookMarker;
+  const char* header = ota_slots::kResumeHookMarker;
+  for (size_t i = 0; i < sizeof(ota_slots::kResumeHookMarker); ++i) {
+    if (embedded[i] != header[i]) return false;
+  }
+  return true;
+}
+static_assert(devOtaMarkerMatchesHeader(), "embedded resume marker must match ota_slots::kResumeHookMarker");
 
 // Runs once at the top of the first loop() pass (see bootFinalized there).
 // Silent boots have already painted their first frame synchronously in
