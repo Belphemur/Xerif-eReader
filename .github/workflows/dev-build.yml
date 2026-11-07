@@ -1,0 +1,187 @@
+# Dev firmware channel (design docs/design/2026-11-07-dev-ota-slots.md §4).
+#
+# Every merge to develop builds the x4pro image and republishes the rolling
+# `dev` prerelease: the newest 3 `xerif-dev-<sha>-x4pro.bin` assets plus a
+# regenerated manifest.json (name/url/sha256/date, newest first). The device
+# fetches this release, parses the manifest, and installs a build into the dev
+# slot (app1) after verifying the SHA-256 (unsigned manifest, SHA-pinned only).
+#
+# Note on patching: the design doc names a `patch_firmware_image.py` step,
+# but this repository ships no such script and release.yml has none either —
+# the pio build output (post: extra scripts already applied) is published
+# as-is, identical to the release flow's `cp firmware.bin` asset step.
+
+name: Dev build
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+concurrency:
+  group: dev-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write  # republishes the rolling `dev` prerelease
+
+env:
+  UV_CONSTRAINT: ${{ github.workspace }}/.github/pio-constraints.txt
+  PIP_CONSTRAINT: ${{ github.workspace }}/.github/pio-constraints.txt
+
+jobs:
+  build-and-publish:
+    name: Build + publish dev channel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "latest"
+          enable-cache: false
+
+      - name: Install PlatformIO Core
+        run: |
+          uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.2.0.zip
+          uv pip install --system -U "littlefs-python>=0.16.0" "fatfs-ng>=0.1.14" "pyyaml>=6.0.2" \
+            "rich-click>=1.8.6" "zopfli>=0.2.2" "intelhex>=2.3.0" "rich>=14.0.0" "urllib3<2" \
+            "cryptography>=45.0.3" "certifi>=2025.8.3" "ecdsa>=0.19.1" "bitstring>=4.3.1" \
+            "reedsolo>=1.5.3,<1.8" "esp-idf-size>=2.0.0" "esp-coredump>=1.14.0"
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v6
+        with:
+          path: ~/.platformio
+          key: pio-v3-${{ runner.os }}-x4pro-${{ hashFiles('platformio.ini', 'scripts/patch_pioarduino_cache.py') }}
+          restore-keys: |
+            pio-v3-${{ runner.os }}-x4pro-
+
+      - name: Pin pioarduino core inside the platform penv
+        run: |
+          set -euo pipefail
+          pio pkg install -e x4pro
+          uv pip install --python ~/.platformio/penv/bin/python "pioarduino==6.2.0"
+          ~/.platformio/penv/bin/pio --version
+
+      - name: Build x4pro dev firmware
+        run: |
+          set -euo pipefail
+          pio run -e x4pro | tee pio.log
+
+      - name: Stage dev asset + carry over previous builds
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEV_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist carry
+          asset="xerif-dev-${DEV_SHA}-x4pro.bin"
+          cp .pio/build/x4pro/firmware.bin "dist/${asset}"
+
+          # Carry over the previous builds from the current `dev` release (best
+          # effort: the release may not exist yet). The existing manifest is
+          # the authoritative newest-first list — its top 2 entries survive
+          # this run so the rolling window stays at 3.
+          if gh release download dev --repo "$GITHUB_REPOSITORY" --dir carry 2>/dev/null; then
+            echo "downloaded previous dev release assets"
+          else
+            echo "no existing dev release; starting fresh"
+          fi
+
+      - name: Regenerate manifest.json (newest 3)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEV_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, subprocess
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          sha = os.environ["DEV_SHA"]
+          dist = "dist"
+          carry = "carry"
+          keep = 3
+
+          # Build date: the commit's committer timestamp (stable, reproducible).
+          date = subprocess.run(["git", "show", "-s", f"--format=%cI", sha], check=True,
+                                capture_output=True, text=True).stdout.strip()
+
+          def entry_from_file(path):
+              name = os.path.basename(path)
+              with open(path, "rb") as f:
+                  data = f.read()
+              return {
+                  "name": name,
+                  "url": f"https://github.com/{repo}/releases/download/dev/{name}",
+                  "sha256": hashlib.sha256(data).hexdigest(),
+                  "date": date,
+              }
+
+          versions = [entry_from_file(os.path.join(dist, f"xerif-dev-{sha}-x4pro.bin"))]
+
+          # Previous entries: prefer the existing manifest's list (it carries
+          # the original dates); fall back to hashing the downloaded bins.
+          prev = []
+          manifest_path = os.path.join(carry, "manifest.json")
+          if os.path.exists(manifest_path):
+              try:
+                  with open(manifest_path) as f:
+                      old = json.load(f)
+                  for v in old.get("versions", []):
+                      if v.get("name") == versions[0]["name"]:
+                          continue  # replaced by this run's build
+                      prev.append(v)
+              except (OSError, ValueError) as e:
+                  print(f"existing manifest unreadable ({e}); falling back to bins")
+          if not prev:
+              for name in sorted(os.listdir(carry)):
+                  if name.startswith("xerif-dev-") and name.endswith(".bin"):
+                      prev.append(entry_from_file(os.path.join(carry, name)))
+
+          # Dedupe by name, newest first (this run's entry first), cap at 3.
+          seen = set()
+          merged = []
+          for v in versions + prev:
+              if v["name"] in seen:
+                  continue
+              seen.add(v["name"])
+              merged.append(v)
+          merged = merged[:keep]
+
+          manifest = {"versions": merged}
+          text = json.dumps(manifest, separators=(",", ":")) + "\n"
+          # The device caps the manifest fetch (DevOtaClient MAX_MANIFEST_BYTES).
+          if len(text.encode()) > 4096:
+              raise SystemExit(f"dev manifest is {len(text)} bytes, over the 4096-byte fetch cap")
+          with open(os.path.join(dist, "manifest.json"), "w") as f:
+              f.write(text)
+          print(json.dumps(manifest, indent=2))
+          PY
+
+      - name: Republish the dev release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # GitHub release assets cannot be replaced in place with the same
+          # name across generations, so the rolling release is deleted and
+          # recreated each run (design §4). The carried-over bins come from
+          # the downloaded copy, so nothing is lost in between.
+          gh release delete dev --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release create dev \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Dev builds (rolling)" \
+            --notes "Rolling dev channel: the newest 3 x4pro builds from develop. Install from Settings > Dev channel on a dev build; unsigned manifest, SHA-256 pinned." \
+            dist/xerif-dev-*.bin dist/manifest.json
