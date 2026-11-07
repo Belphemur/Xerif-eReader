@@ -4,6 +4,22 @@
 #include <mutex>
 #include <string>
 
+#ifdef IMAGE_DECODE_GATE_HOST
+// Host test build: the test provides the clock/wait (firmware uses Arduino's
+// millis()/delay()). Declared here so the gate's .cpp sees them without an
+// Arduino include on host.
+namespace ImageDecodeGateHost {
+uint32_t nowMsFn();
+void sleepMs(uint32_t ms);
+}
+#define IMAGE_GATE_NOW() ::ImageDecodeGateHost::nowMsFn()
+#define IMAGE_GATE_SLEEP(ms) ::ImageDecodeGateHost::sleepMs(ms)
+#else
+#include <Arduino.h>
+#define IMAGE_GATE_NOW() millis()
+#define IMAGE_GATE_SLEEP(ms) delay(ms)
+#endif
+
 // Single-writer gate for .pxc cache production between the background image
 // predecode worker (core 0) and the foreground render path (loop task, core
 // 1). Protocol: docs/design/2026-11-06-image-predecode.md §3.4.

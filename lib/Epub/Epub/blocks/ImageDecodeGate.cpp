@@ -1,6 +1,5 @@
 #include "ImageDecodeGate.h"
 
-#include <Arduino.h>
 #include <Logging.h>
 
 namespace {
@@ -46,7 +45,7 @@ uint64_t ImageDecodeGate::pathHash(const std::string& path) {
 }
 
 bool ImageDecodeGate::acquireForeground(const uint64_t hash) {
-  const uint32_t deadline = millis() + kForegroundWaitMs;
+  const uint32_t deadline = IMAGE_GATE_NOW() + kForegroundWaitMs;
   for (;;) {
     {
       std::lock_guard<std::mutex> lock(registryMux);
@@ -68,10 +67,10 @@ bool ImageDecodeGate::acquireForeground(const uint64_t hash) {
         return true;
       }
     }
-    if (static_cast<int32_t>(millis() - deadline) >= 0) return false;
+    if (static_cast<int32_t>(IMAGE_GATE_NOW() - deadline) >= 0) return false;
     // Worker tasks sit below the loop task's priority, so a short sleep here
     // costs nothing but the wait itself.
-    delay(kForegroundPollMs);
+    IMAGE_GATE_SLEEP(kForegroundPollMs);
   }
 }
 
