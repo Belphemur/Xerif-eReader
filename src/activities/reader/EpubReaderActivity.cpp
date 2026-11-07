@@ -3435,6 +3435,72 @@ void EpubReaderActivity::renderBook() {
   }
 }
 
+// Feed the image predecode worker from a section's page-complete sightings
+// (design §3.1). The hook runs on the loop task inside build ticks; it
+// captures the render position (page-local position + the same oriented
+// margins renderContents uses) and skips what the worker must not decode.
+void EpubReaderActivity::installImageSightingHook(Section& target, const uint16_t spineIndex,
+                                                  const bool isCurrentSpine) {
+#if defined(BOARD_HAS_PSRAM)
+  if (imagePredecode_ == nullptr) return;
+  target.imageSightingHook = [this, spineIndex, isCurrentSpine](const Section::ImageSighting& sight) {
+    if (imagePredecode_ == nullptr) return;
+    // Pages behind the reading position only matter when the user pages back,
+    // which decodes on demand exactly as today (prefetch jobs are all ahead).
+    if (isCurrentSpine && section != nullptr && static_cast<int>(sight.pageIndex) < section->currentPage) return;
+
+    ImagePredecodeWorker::Job job{};
+    if (strlen(sight.imagePath) >= ImagePredecodeWorker::Job::kImagePathCap ||
+        strlen(sight.srcPath) >= ImagePredecodeWorker::Job::kSrcPathCap) {
+      LOG_DBG("ERS", "Predecode sighting path too long — skipped");
+      return;
+    }
+    strncpy(job.imagePath, sight.imagePath, ImagePredecodeWorker::Job::kImagePathCap - 1);
+    strncpy(job.srcPath, sight.srcPath, ImagePredecodeWorker::Job::kSrcPathCap - 1);
+
+    // Position + oriented margins captured at sighting time (design §3.3(b)):
+    // the Bayer dither indexes absolute screen coordinates, so .pxc bytes
+    // depend on where the image lands. These are the same margins renderBook
+    // hands to renderContents().
+    int top = 0, right = 0, bottom = 0, left = 0;
+    renderer.getOrientedViewableTRBL(&top, &right, &bottom, &left);
+    const int x = sight.xPos + left + SETTINGS.screenMargin;
+    const int y = sight.yPos + top + SETTINGS.screenMargin;
+    // Same bounds check ImageBlock::render applies: an out-of-bounds image is
+    // never decoded by the foreground, so predecoding it would be waste.
+    if (x < 0 || y < 0 || x + sight.width > renderer.getScreenWidth() ||
+        y + sight.height > renderer.getScreenHeight()) {
+      return;
+    }
+
+    job.spine = spineIndex;
+    job.width = sight.width;
+    job.height = sight.height;
+    job.x = static_cast<int16_t>(x);
+    job.y = static_cast<int16_t>(y);
+    job.generation = imagePredecodeGen_;
+    imagePredecode_->enqueue(job);
+  };
+#else
+  (void)target;
+  (void)spineIndex;
+  (void)isCurrentSpine;
+#endif
+}
+
+void EpubReaderActivity::stopImagePredecode() {
+  if (imagePredecode_ == nullptr) return;
+  if (imagePredecode_->cancel()) {
+    imagePredecode_.reset();
+  } else {
+    // Wedged join: the worker object owns state a live task still touches —
+    // release ownership WITHOUT destroying (leak beats use-after-free, the
+    // stopFibpWorker contract).
+    LOG_ERR("ERS", "Image predecode worker did not stop — releasing without destroy");
+    (void)imagePredecode_.release();
+  }
+}
+
 // ── Native-TTF render path (design §3.5, CROSSPOINT_TTF_READER builds) ───────
 
 #if defined(CROSSPOINT_TTF_READER)
@@ -5133,72 +5199,6 @@ void EpubReaderActivity::updateFibpWorker(const uint32_t generation, const freei
         !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex)) && !(ttf_->cacheReady() && ttf_->cachePartial());
     fibpWorker_->notifyChapterProgress(static_cast<uint16_t>(currentSpineIndex), page,
                                        static_cast<uint16_t>(ttfPageCount), lengthFinal);
-  }
-}
-
-// Feed the image predecode worker from a section's page-complete sightings
-// (design §3.1). The hook runs on the loop task inside build ticks; it
-// captures the render position (page-local position + the same oriented
-// margins renderContents uses) and skips what the worker must not decode.
-void EpubReaderActivity::installImageSightingHook(Section& target, const uint16_t spineIndex,
-                                                  const bool isCurrentSpine) {
-#if defined(BOARD_HAS_PSRAM)
-  if (imagePredecode_ == nullptr) return;
-  target.imageSightingHook = [this, spineIndex, isCurrentSpine](const Section::ImageSighting& sight) {
-    if (imagePredecode_ == nullptr) return;
-    // Pages behind the reading position only matter when the user pages back,
-    // which decodes on demand exactly as today (prefetch jobs are all ahead).
-    if (isCurrentSpine && section != nullptr && static_cast<int>(sight.pageIndex) < section->currentPage) return;
-
-    ImagePredecodeWorker::Job job{};
-    if (strlen(sight.imagePath) >= ImagePredecodeWorker::Job::kImagePathCap ||
-        strlen(sight.srcPath) >= ImagePredecodeWorker::Job::kSrcPathCap) {
-      LOG_DBG("ERS", "Predecode sighting path too long — skipped");
-      return;
-    }
-    strncpy(job.imagePath, sight.imagePath, ImagePredecodeWorker::Job::kImagePathCap - 1);
-    strncpy(job.srcPath, sight.srcPath, ImagePredecodeWorker::Job::kSrcPathCap - 1);
-
-    // Position + oriented margins captured at sighting time (design §3.3(b)):
-    // the Bayer dither indexes absolute screen coordinates, so .pxc bytes
-    // depend on where the image lands. These are the same margins renderBook
-    // hands to renderContents().
-    int top = 0, right = 0, bottom = 0, left = 0;
-    renderer.getOrientedViewableTRBL(&top, &right, &bottom, &left);
-    const int x = sight.xPos + left + SETTINGS.screenMargin;
-    const int y = sight.yPos + top + SETTINGS.screenMargin;
-    // Same bounds check ImageBlock::render applies: an out-of-bounds image is
-    // never decoded by the foreground, so predecoding it would be waste.
-    if (x < 0 || y < 0 || x + sight.width > renderer.getScreenWidth() ||
-        y + sight.height > renderer.getScreenHeight()) {
-      return;
-    }
-
-    job.spine = spineIndex;
-    job.width = sight.width;
-    job.height = sight.height;
-    job.x = static_cast<int16_t>(x);
-    job.y = static_cast<int16_t>(y);
-    job.generation = imagePredecodeGen_;
-    imagePredecode_->enqueue(job);
-  };
-#else
-  (void)target;
-  (void)spineIndex;
-  (void)isCurrentSpine;
-#endif
-}
-
-void EpubReaderActivity::stopImagePredecode() {
-  if (imagePredecode_ == nullptr) return;
-  if (imagePredecode_->cancel()) {
-    imagePredecode_.reset();
-  } else {
-    // Wedged join: the worker object owns state a live task still touches —
-    // release ownership WITHOUT destroying (leak beats use-after-free, the
-    // stopFibpWorker contract).
-    LOG_ERR("ERS", "Image predecode worker did not stop — releasing without destroy");
-    (void)imagePredecode_.release();
   }
 }
 
