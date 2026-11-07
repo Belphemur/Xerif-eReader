@@ -79,6 +79,13 @@ void TtfUiFallback::update(GfxRenderer& renderer) {
     release(renderer);
   }
 
+  // Negative cache: this fingerprint already failed the fallback-script probe.
+  // Without it the probe re-ran (and logged) on EVERY redraw — hundreds of
+  // TTFUI DBG lines per reader session and a wasted chain walk each time.
+  if (noCoverageFingerprint_ == fingerprint) {
+    return;
+  }
+
   // Heap gate: FreeType faces + glyph rings need PSRAM headroom.
   const HalMemory::HeapStats psram = HalMemory::getPsramHeap();
   if (psram.totalBytes == 0 || psram.largestBlockBytes < kMinPsramLargestBlock) {
@@ -92,14 +99,17 @@ void TtfUiFallback::update(GfxRenderer& renderer) {
   FontChain* chain = fontLoader.getReaderFont();
   if (chain == nullptr || !familyCoversFallbackScripts(*chain)) {
     LOG_DBG("TTFUI", "Family '%s' has no fallback-script coverage", SETTINGS.ttfFontFamilyName);
+    noCoverageFingerprint_ = fingerprint;  // cache the failed probe for this content
     return;
   }
 
+  bool idCollision = false;
   for (size_t i = 0; i < kUiSizeCount; ++i) {
     const UiFontSize& ui = kUiFontSizes[i];
     const int ttfId = computeTtfUiFontId(SETTINGS.ttfFontFamilyName, ui.pointSize);
     if (renderer.getFontMap().count(ttfId) != 0) {
       LOG_ERR("TTFUI", "Font id %d collision — skipping UI size %u", ttfId, static_cast<unsigned>(ui.pointSize));
+      idCollision = true;  // emptiness depends on renderer state — not cacheable
       continue;
     }
     const void* bytes[4] = {};
@@ -130,6 +140,14 @@ void TtfUiFallback::update(GfxRenderer& renderer) {
             ttfId);
   }
   registeredFingerprint_ = fingerprint;
+  if (registeredCount_ > 0) {
+    noCoverageFingerprint_ = 0;  // the family now registered — clear any stale negative cache
+  } else if (!idCollision) {
+    // Deterministic empty pass: every size attempted begin() and failed on
+    // these bytes. Cache it like the script-probe failure, or this pass
+    // re-runs (chain probe + three face builds) on every redraw.
+    noCoverageFingerprint_ = fingerprint;
+  }
   for (uint8_t s = 0; s < 4; ++s) borrowedSnapshot_[s] = fontLoader.slotFaceBytes(s);
   LOG_INF("TTFUI", "%u TTF UI fallback size(s) registered", static_cast<unsigned>(registeredCount_));
 }
