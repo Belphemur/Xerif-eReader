@@ -755,19 +755,17 @@ void DictionaryDefinitionActivity::loop() {
   // Page turns follow the reader's touch setting (off / swipe / tap zones).
   // Navigation must keep polling input while the render task refreshes the
   // display, so the page index is read and written through the atomic view.
+  // Definitions have no reader menu, so center taps remain page turns.
   auto currentPage = std::atomic_ref(content.currentPage);
-  const ReaderUtils::TouchPageTurn turn = ReaderUtils::detectTouchPageTurn(renderer, mappedInput);
-  if (turn.prev) {
-    if (currentPage > 0) {
+  const auto touch = ReaderUtils::detectTouchPageTurn(renderer, mappedInput, false, /*reserveReaderMenuTap=*/false);
+  if (touch.prev || touch.next) {
+    const bool canTurn = touch.prev ? currentPage > 0 : currentPage + 1 < content.totalPages;
+    if (canTurn) {
       haptic_feedback::touchAction();
-      currentPage--;
-      content.selection.valid = false;
-      requestUpdate();
-    }
-  } else if (turn.next) {
-    if (currentPage + 1 < content.totalPages) {
-      haptic_feedback::touchAction();
-      currentPage++;
+      if (touch.prev)
+        currentPage--;
+      else
+        currentPage++;
       content.selection.valid = false;
       requestUpdate();
     }

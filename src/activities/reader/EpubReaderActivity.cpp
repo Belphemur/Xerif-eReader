@@ -924,6 +924,7 @@ bool EpubReaderActivity::loadBook() {
     return false;
   }
   epub = std::move(loadedEpub);
+  vocabularyMetadata.reset();
 
   ImageBlock::clearRenderFailures();
   ImageBlock::setExtractor(epub.get(), [](void* ctx, const char* src, const char* dest) {
@@ -1293,6 +1294,33 @@ void EpubReaderActivity::backgroundBuildTick() {
   }
 }
 
+void EpubReaderActivity::ensureVocabularyMetadata() {
+  if (!SETTINGS.vocabularyHistoryEnabled || vocabularyMetadata || !epub) return;
+  auto metadata = makeUniqueNoThrow<Epub::SyncMetadata>();
+  if (metadata && epub->loadSyncMetadata(*metadata)) {
+    vocabularyMetadata = std::move(metadata);
+  }
+}
+
+#if defined(CROSSPOINT_TTF_READER)
+VocabularyContext EpubReaderActivity::ttfVocabularyContext(uint16_t ttfPage) {
+  VocabularyContext vocabulary;
+  if (!epub) return vocabulary;
+  vocabulary.title = epub->getTitle();
+  vocabulary.author = epub->getAuthor();
+  const int tocIndex = epub->getTocIndexForSpineIndex(currentSpineIndex);
+  if (tocIndex >= 0) vocabulary.chapter = epub->getTocItem(tocIndex).title;
+  ensureVocabularyMetadata();
+  if (vocabularyMetadata) {
+    vocabulary.series = vocabularyMetadata->series;
+    vocabulary.seriesIndex = vocabularyMetadata->seriesIndex;
+  }
+  vocabulary.page = static_cast<uint16_t>(ttfPage + 1);
+  vocabulary.spine = static_cast<uint16_t>(currentSpineIndex);
+  return vocabulary;
+}
+#endif
+
 void EpubReaderActivity::openDictionaryWordSelect(int touchX, int touchY, TouchLongPressMode mode) {
   if (mode == TouchLongPressMode::Dictionary && SETTINGS.dictionaryName[0] == '\0') {
     pendingLookupSelection = {};
@@ -1339,8 +1367,9 @@ void EpubReaderActivity::openDictionaryWordSelect(int touchX, int touchY, TouchL
     ttf_->scratch().release(scratchMark);
 
     const DictionaryWordSelectActivity::PageRenderFn renderFn{this, &EpubReaderActivity::renderTtfSelectorPage};
-    auto selector = makeUniqueNoThrow<DictionaryWordSelectActivity>(renderer, mappedInput, std::move(data), renderFn,
-                                                                    touchX, touchY, mode);
+    auto selector = makeUniqueNoThrow<DictionaryWordSelectActivity>(
+        renderer, mappedInput, std::move(data), renderFn, touchX, touchY, mode, std::string{},
+        ttfVocabularyContext(static_cast<uint16_t>(ttfPage)));
     if (!selector) {
       LOG_ERR("ERS", "OOM: dictionary word selector");
       showTtfDictionaryError();
@@ -1473,9 +1502,28 @@ void EpubReaderActivity::startClipSelection(const int initialX, const int initia
       }
       int top, right, bottom, left;
       renderer.getOrientedViewableTRBL(&top, &right, &bottom, &left);
+      std::string chapter = chapterTitle;
+      if (section && currentSpineIndex == spineIndex) {
+        // TOC anchors are indexed by rendered page, not by the selected word's offset.
+        // Multiple chapter anchors on one page cannot be distinguished here.
+        const int selectedTocIndex = section->getTocIndexForPage(startPage);
+        if (selectedTocIndex >= 0) chapter = epub->getTocItem(selectedTocIndex).title;
+      }
+      VocabularyContext vocabulary;
+      vocabulary.title = std::move(bookTitle);
+      vocabulary.author = std::move(author);
+      vocabulary.chapter = std::move(chapter);
+      vocabulary.page = startPage + 1;
+      vocabulary.spine = spineIndex;
+      vocabulary.startOffset = clipping.startOffset;
+      ensureVocabularyMetadata();
+      if (vocabularyMetadata) {
+        vocabulary.series = vocabularyMetadata->series;
+        vocabulary.seriesIndex = vocabularyMetadata->seriesIndex;
+      }
       auto lookup = makeUniqueNoThrow<DictionaryWordSelectActivity>(
           renderer, mappedInput, std::move(page), left + SETTINGS.screenMargin, top + SETTINGS.screenMargin, -1, -1,
-          TouchLongPressMode::Dictionary, clipping.text);
+          TouchLongPressMode::Dictionary, clipping.text, std::move(vocabulary));
       if (!lookup) {
         LOG_ERR("CLIP", "OOM: dictionary lookup activity");
         requestUpdate();

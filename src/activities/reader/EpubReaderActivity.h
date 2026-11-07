@@ -22,6 +22,7 @@
 #include "ReaderToolbarUi.h"
 #include "TouchLongPressMode.h"
 #include "components/OptionPopup.h"
+#include "vocabulary/VocabularyStore.h"
 #if defined(CROSSPOINT_TTF_READER)
 #include "FibpPrefetchWorker.h"
 #include "ImagePredecodeWorker.h"
@@ -43,6 +44,7 @@ struct TouchPageTurn;
 
 class EpubReaderActivity final : public ReaderActivity {
   std::shared_ptr<Epub> epub;
+  std::unique_ptr<Epub::SyncMetadata> vocabularyMetadata;
   std::unique_ptr<Section> section = nullptr;
   int currentSpineIndex = 0;
   int nextPageNumber = 0;
@@ -564,6 +566,15 @@ class EpubReaderActivity final : public ReaderActivity {
   // SETTINGS.touchLongPressAction global.
   void openDictionaryWordSelect(int touchX = -1, int touchY = -1,
                                 TouchLongPressMode mode = TouchLongPressMode::Dictionary);
+  // Lazily loads the book's sync metadata (series info) once per book, only
+  // when vocabulary history is enabled. Shared by both word-select paths.
+  void ensureVocabularyMetadata();
+#if defined(CROSSPOINT_TTF_READER)
+  // Book context for vocabulary history on the TTF path. The start character
+  // offset is left unknown (UINT32_MAX): TtfWordSelect boxes carry per-page
+  // token offsets, not a chapter-absolute selection anchor.
+  VocabularyContext ttfVocabularyContext(uint16_t ttfPage);
+#endif
   // Selection to restore when returning from a dictionary lookup.
   ClipSelectionActivity::Selection pendingLookupSelection;
   ClipSelectionActivity::Selection lookupReturnSelection;

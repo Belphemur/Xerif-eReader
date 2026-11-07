@@ -515,6 +515,10 @@ void DictionaryWordSelectActivity::performLookup(const std::string& raw, const s
       // Direct lookup returns to the reader; this page is no longer needed.
       if (!lookupText.empty()) page.reset();
     }
+    if (SETTINGS.vocabularyHistoryEnabled &&
+        !VocabularyStore::append(vocabulary, lookupText, headword, definition, dict.definitionsAreHtml())) {
+      LOG_ERR("VOCAB", "Could not save successful dictionary lookup");
+    }
     auto activity = makeUniqueNoThrow<DictionaryDefinitionActivity>(renderer, mappedInput, std::move(headword),
                                                                     std::move(definition), SETTINGS.dictionaryName,
                                                                     dict.definitionsAreHtml());

@@ -13,6 +13,7 @@
 #if defined(CROSSPOINT_TTF_READER)
 #include "TtfWordSelect.h"
 #endif
+#include "vocabulary/VocabularyStore.h"
 
 // Word selection over the current reader page: Left/Right step through words
 // in reading order, Up/Down jump rows, Confirm looks the word up and opens
@@ -23,7 +24,7 @@ class DictionaryWordSelectActivity final : public Activity {
   explicit DictionaryWordSelectActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                         std::unique_ptr<Page> page, int marginLeft, int marginTop, int initialX = -1,
                                         int initialY = -1, TouchLongPressMode mode = TouchLongPressMode::Dictionary,
-                                        std::string lookupText = {})
+                                        std::string lookupText = {}, VocabularyContext vocabulary = {})
       : Activity("DictionaryWordSelect", renderer, mappedInput),
         page(std::move(page)),
         marginLeft(marginLeft),
@@ -31,7 +32,8 @@ class DictionaryWordSelectActivity final : public Activity {
         initialX(initialX),
         initialY(initialY),
         mode(mode),
-        lookupText(std::move(lookupText)) {}
+        lookupText(std::move(lookupText)),
+        vocabulary(std::move(vocabulary)) {}
 
 #if defined(CROSSPOINT_TTF_READER)
   // TTF path: word boxes come prebuilt from engine run geometry
@@ -46,7 +48,7 @@ class DictionaryWordSelectActivity final : public Activity {
                                         freeink::book::TtfWordSelectData&& ttfData, PageRenderFn renderPage,
                                         int initialX = -1, int initialY = -1,
                                         TouchLongPressMode mode = TouchLongPressMode::Dictionary,
-                                        std::string lookupText = {})
+                                        std::string lookupText = {}, VocabularyContext vocabulary = {})
       : Activity("DictionaryWordSelect", renderer, mappedInput),
         marginLeft(0),
         marginTop(0),
@@ -56,7 +58,8 @@ class DictionaryWordSelectActivity final : public Activity {
         ttfMode(true),
         ttfData(std::move(ttfData)),
         ttfRender(renderPage),
-        lookupText(std::move(lookupText)) {}
+        lookupText(std::move(lookupText)),
+        vocabulary(std::move(vocabulary)) {}
 #endif
 
   void onEnter() override;
@@ -132,6 +135,7 @@ class DictionaryWordSelectActivity final : public Activity {
   // skips the selection UI, resolves this text against the dictionary, and
   // finishes back to the reader.
   std::string lookupText;
+  VocabularyContext vocabulary;
   bool lookupPending = false;
   int fontId = 0;
   int lineHeight = 0;
