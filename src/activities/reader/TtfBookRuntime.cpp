@@ -83,6 +83,7 @@ bool TtfBookRuntime::open(const char* epubPath, const char* cacheDir) {
   close();
   bookSource_ = SdCardBookSource(epubPath);
   cacheStorage_ = SdCardCacheStorage(cacheDir);
+  if (cacheDir != nullptr) snprintf(cacheDirBuf_, sizeof(cacheDirBuf_), "%s", cacheDir);
   if (!bookSource_.isValid()) {
     LOG_ERR("TTFB", "Cannot open book source: %s", epubPath);
     return false;
@@ -133,6 +134,7 @@ void TtfBookRuntime::close() {
   abortSession();
   closeChapterCache();
   dropPrefetch();
+  decodeEpub_ = nullptr;  // reader tears down its Epub with the same lifecycle
   catalog_ = BookCatalog{};
   bookSource_ = SdCardBookSource{};
   cacheStorage_ = SdCardCacheStorage{};
@@ -200,6 +202,13 @@ bool TtfBookRuntime::readPage(const uint16_t spineIndex, const uint16_t pageInde
   }
   if (cacheReady_ && cacheSpine_ == spineIndex && pageIndex < cacheReader_.pageCount()) {
     return cacheReader_.readPage(pageIndex, scratch_, out) == BookStatus::Ok;
+  }
+  // Image-sighting pass (§5.2) reads the next spine through whatever reader
+  // holds it: the local prefetch reader serves its own spine while a commit
+  // or a build has not yet replaced it.
+  if (prefetchSpine_ >= 0 && static_cast<uint16_t>(prefetchSpine_) == spineIndex &&
+      pageIndex < prefetchReader_.pageCount()) {
+    return prefetchReader_.readPage(pageIndex, scratch_, out) == BookStatus::Ok;
   }
   return false;
 }

@@ -24,6 +24,7 @@
 #include "components/OptionPopup.h"
 #if defined(CROSSPOINT_TTF_READER)
 #include "FibpPrefetchWorker.h"
+#include "ImagePredecodeWorker.h"
 #include "QuickPageCapture.h"
 #include "TtfBookRuntime.h"
 #include "TtfResolvePolicy.h"
@@ -259,6 +260,17 @@ class EpubReaderActivity final : public ReaderActivity {
   // (FibpPrefetchWorker.h, kody-rr9).
   freeink::book::FibpWorkerPtr fibpWorker_;
   bool fibpBegun_ = false;
+  // TTF-path image predecode (design 2026-11-07-ttf-image-engine.md): one
+  // worker per reader session, armed only on TTF/PSRAM boards; jobs are
+  // sighted from the .fibp page-cache image records. Anchored to the same
+  // teardown sites as the FIBP worker (stopImagePredecode mirrors
+  // stopFibpWorker). Inert on non-PSRAM builds (stub).
+  ImagePredecodeWorkerPtr imagePredecode_;
+  bool imagePredecodeBegun_ = false;
+  // Sighting bookkeeping: one pass per (spine, generation); the worker's
+  // enqueue dedupe makes re-sight cheap.
+  uint16_t ttfImagesSightedSpine_ = 0xFFFF;
+  uint32_t ttfImagesSightedGen_ = 0;
   char fibpFamily_[48] = {};  // family the worker's faces were built for
   uint32_t fibpNotifiedGen_ = 0;
   bool fibpDeferred_ = false;           // a build is delegated to the worker
@@ -345,6 +357,11 @@ class EpubReaderActivity final : public ReaderActivity {
   // worker builds the entered chapter, the sync path defers to its commit.
   void updateFibpWorker(uint32_t generation, const freeink::book::LayoutParams& params);
   void stopFibpWorker();
+  // Image-predecode wiring (lifetime mirrors stopFibpWorker's sites).
+  void stopImagePredecode();
+  // Sight image records from a spine's .fibp page cache into the worker
+  // (§5.2): pages [firstPage, endPageExclusive) in reading order.
+  void sightTtfSpineImages(uint16_t spineIndex, uint16_t firstPage, uint16_t endPageExclusive);
   void ttfInvalidateCaches();
   void ttfShowIndexingPopup();
   void ttfSaveProgress();

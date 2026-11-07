@@ -33,6 +33,7 @@
 #include "adapters/SdCardCacheStorage.h"
 
 class GfxRenderer;
+class Epub;
 
 namespace freeink {
 namespace book {
@@ -123,6 +124,13 @@ class TtfBookRuntime : public ChapterIndexTarget {
   // point into it).
   Arena& scratch() { return scratch_; }
 
+  // Image-engine hooks (design 2026-11-07-ttf-image-engine.md §5.4): the
+  // reader hands the owning Epub in (GIF/BMP decode extractions) and the
+  // paint path reads the directory the .pxc tone caches live in.
+  void setDecodeEpub(Epub* epub) { decodeEpub_ = epub; }
+  Epub* decodeEpub() const { return decodeEpub_; }
+  const char* cacheDir() const { return cacheDirBuf_; }
+
   // Next-spine prefetch: only the cache reader index, lazily opened behind
   // the same heap gates as the legacy Section prefetch.
   bool openPrefetch(uint16_t spineIndex, uint32_t generation);
@@ -190,6 +198,8 @@ class TtfBookRuntime : public ChapterIndexTarget {
   char cacheName_[64] = {};
   char prefetchCacheName_[64] = {};
   char spineHref_[192] = {};
+  char cacheDirBuf_[160] = {};  // set by open() — the .pxc tone-cache directory
+  Epub* decodeEpub_ = nullptr;  // image decode extractions (reader-owned)
 };
 
 }  // namespace book
