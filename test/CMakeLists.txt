@@ -83,6 +83,7 @@ function(add_font_backend_tests TARGET)
 endfunction()
 
 add_subdirectory(ota_json_parser)
+add_subdirectory(ota_slots)
 add_subdirectory(differential_rounding)
 add_subdirectory(hyphenation_eval)
 add_subdirectory(utf8_compose)

@@ -93,6 +93,28 @@ bool parseOtaManifest(const char* data, size_t len, ManifestBoardEntry* entries,
   return true;
 }
 
+bool parseOtaDevManifest(const char* data, size_t len, OtaDevVersionEntry* entries, int maxEntries, int* outCount) {
+  if (outCount) *outCount = 0;
+  if (!data || len == 0 || !entries || maxEntries <= 0 || !outCount) return false;
+
+  JsonDocument doc;
+  if (deserializeJson(doc, data, len) != DeserializationError::Ok) return false;
+
+  int n = 0;
+  for (JsonObjectConst version : doc["versions"].as<JsonArrayConst>()) {
+    if (n >= maxEntries) break;
+    OtaDevVersionEntry& e = entries[n];
+    e = OtaDevVersionEntry{};
+    copyStr(version["name"] | "", e.name, sizeof(e.name));
+    copyStr(version["url"] | "", e.url, sizeof(e.url));
+    copyStr(version["date"] | "", e.date, sizeof(e.date));
+    e.hasSha = decodeSha256Hex(version["sha256"] | "", e.sha256);
+    ++n;
+  }
+  *outCount = n;
+  return true;
+}
+
 bool otaIsVersionNewer(const char* currentVersion, const char* latestTag) {
   if (!currentVersion || !latestTag) return false;
 

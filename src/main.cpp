@@ -24,6 +24,7 @@
 #include <XteinkDetect.h>
 #include <builtinFonts/all.h>
 #include <esp_heap_caps.h>
+#include <esp_ota_ops.h>
 #include <esp_sleep.h>
 #include <esp_system.h>
 #include <esp_wifi.h>
@@ -55,9 +56,12 @@
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
 #include "activities/boot_sleep/SleepActivity.h"
+#include "activities/settings/DevOtaActivity.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/DevOtaClient.h"
+#include "network/OtaSlots.h"
 #include "platform/UsbSerialJtagHandoff.h"
 #include "util/ButtonNavigator.h"
 #include "util/PluginEvents.h"
@@ -173,6 +177,11 @@ enum class BootResume : uint8_t {
 // device back up against the user's sleep gesture. Never cleared:
 // startDeepSleep() does not return, so a set latch only ends at the wakeup reset.
 static bool deepSleepInProgress = false;
+// Boot-route classification captured in setup() and consumed by bootFinalize()
+// (top of the first loop pass): a pending dev-install resume must not displace
+// the recovery-firmware picker or the crash-report screen.
+static bool bootRecoveryFirmwareMode = false;
+static bool bootRebootedFromPanic = false;
 
 // Latched true before enterPowerOff() tears down the current activity: WiFi
 // activities call silentRestart() in onExit() to clear heap fragmentation,
@@ -922,7 +931,7 @@ void setup() {
   logMemAt("boot");
   // checkPanic() clears the watchdog capture marker after a successful SD
   // dump, so retain the boot classification for the later activity route.
-  const bool rebootedFromPanic = HalSystem::isRebootFromPanic();
+  bootRebootedFromPanic = HalSystem::isRebootFromPanic();
 
   // Read-and-clear so a panic later in setup() doesn't loop into silent reboot.
   // Bound the target range too — RTC_NOINIT memory is uninitialized on cold boot.
@@ -989,8 +998,8 @@ void setup() {
   const auto recoveryButton = (BoardConfig::isX4Pro() || BoardConfig::isX4Classic()) ? MappedInputManager::Button::Down
                                                                                      : MappedInputManager::Button::Up;
   // The Picco has no second app slot to flash into (partitions_picco.csv).
-  const bool recoveryFirmwareMode = wakeupReason == HalGPIO::WakeupReason::PowerButton && !BoardConfig::isPaperMono() &&
-                                    !BoardConfig::isPicco() && mappedInputManager.isPressed(recoveryButton);
+  bootRecoveryFirmwareMode = wakeupReason == HalGPIO::WakeupReason::PowerButton && !BoardConfig::isPaperMono() &&
+                             !BoardConfig::isPicco() && mappedInputManager.isPressed(recoveryButton);
 
   halTiltSensor.begin();
   halClock.begin();
@@ -1032,7 +1041,7 @@ void setup() {
   const bool isSleepWake = wakeupReason == HalGPIO::WakeupReason::PowerButton;
   const bool isPersistedSleepWake = isSleepWake && !APP_STATE.showBootScreen;
 
-  if (recoveryFirmwareMode) {
+  if (bootRecoveryFirmwareMode) {
     LOG_INF("MAIN", "Recovery firmware mode (%s + POWER held at boot)",
             (BoardConfig::isX4Pro() || BoardConfig::isX4Classic()) ? "DOWN" : "UP");
   }
@@ -1218,11 +1227,11 @@ void setup() {
   // Output polarity is resolved per render by ActivityManager (night mode
   // inverts only the reading surfaces), so nothing to restore here.
 
-  if (recoveryFirmwareMode) {
+  if (bootRecoveryFirmwareMode) {
     // Skip normal home/reader routing: jump straight into the SD firmware picker.
     activityManager.replaceActivity(
         std::make_unique<SdFirmwareUpdateActivity>(renderer, mappedInputManager, /*recoveryMode=*/true));
-  } else if (rebootedFromPanic) {
+  } else if (bootRebootedFromPanic) {
     // If we rebooted from a panic, go to crash report screen to show the panic info
     activityManager.goToCrashReport();
   } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_READER &&
@@ -1294,6 +1303,72 @@ void setup() {
   allowSleepAt = millis() + 2000;
 }
 
+// Design §6: keep OTA-image verification pending past initArduino() so the
+// confirm can happen after a full boot instead. The non-weak definition
+// overrides the Arduino core's weak default (which confirms immediately).
+// The hook lives in a C translation unit (esp32-hal-misc.c), so the override
+// must use C linkage or the weak symbol would simply win.
+extern "C" bool verifyRollbackLater() { return true; }
+
+// Flash-scannable marker (design §5): the dev install path scans the target
+// slot for this string before the dance reboots into it, since
+// esp_app_desc_t.version is an opaque constant from the prebuilt Arduino core
+// (see OtaSlots.h). The resume log below references the array so the linker
+// cannot collect it — the string must stay in the image the scan reads back.
+// A constexpr array cannot be spread into a C array initializer, so the
+// literal is repeated here and pinned to the header constant at compile time.
+constexpr const char kDevOtaResumeHookMarker[] __attribute__((used)) = "XERIF-DEVOTA-RESUME-HOOK-V1";
+
+constexpr bool devOtaMarkerMatchesHeader() {
+  const char* embedded = kDevOtaResumeHookMarker;
+  const char* header = ota_slots::kResumeHookMarker;
+  for (size_t i = 0; i < sizeof(ota_slots::kResumeHookMarker); ++i) {
+    if (embedded[i] != header[i]) return false;
+  }
+  return true;
+}
+static_assert(devOtaMarkerMatchesHeader(), "embedded resume marker must match ota_slots::kResumeHookMarker");
+
+// Runs once at the top of the first loop() pass (see bootFinalized there).
+// Silent boots have already painted their first frame synchronously in
+// setup(); splash boots paint during this first pass. Confirming here
+// reflects "the firmware came all the way up"; a crash before this point
+// (including a setup() panic) rolls back to the other slot.
+static void bootFinalize() {
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  esp_ota_img_states_t otaState;
+  if (esp_ota_get_state_partition(running, &otaState) == ESP_OK && otaState == ESP_OTA_IMG_PENDING_VERIFY) {
+    LOG_INF("MAIN", "OTA slot booted; marking valid");
+    esp_ota_mark_app_valid_cancel_rollback();
+  }
+
+  // Pending dev install (design §5). Only ever armed by a dev build's dance;
+  // release builds see an empty flag and skip at the first branch.
+  char pendingVersion[64];
+  if (dev_ota::pendingInstallGet(pendingVersion, sizeof(pendingVersion))) {
+    const esp_partition_t* slot = ota_slots::runningSlot();
+    if (ota_slots::sameSlot(slot, ota_slots::devSlot())) {
+      // Stale flag: the dance only completes from the stable slot. Clear it so
+      // a dev boot never re-enters the installer uninvited.
+      LOG_INF("MAIN", "stale pending dev install; clearing");
+      dev_ota::pendingInstallClear();
+    } else if (slot != nullptr) {
+      if (bootRecoveryFirmwareMode || bootRebootedFromPanic) {
+        // Recovery picker and crash-report routes outrank the resume; the
+        // flag stays armed so the next clean boot can still finish the
+        // install, and a crash during a retry shows the report instead of
+        // re-entering the installer on every boot.
+        LOG_INF("MAIN", "pending dev install deferred (recovery=%d panic=%d)", bootRecoveryFirmwareMode ? 1 : 0,
+                bootRebootedFromPanic ? 1 : 0);
+      } else {
+        LOG_INF("MAIN", "resuming pending dev install (%s, hook %.27s)", pendingVersion, kDevOtaResumeHookMarker);
+        activityManager.replaceActivity(std::make_unique<DevOtaActivity>(renderer, mappedInputManager,
+                                                                         /*autoResume=*/true));
+      }
+    }
+  }
+}
+
 // True when the board can wake the parked GT911 through something other than
 // the touch panel itself: any configured physical button GPIO or ADC ladder
 // (edges + held-contact paths stay live while the controller sleeps). The
@@ -1309,6 +1384,17 @@ static bool hasTouchIndependentWakeSource() {
 }
 
 void loop() {
+  // One-shot boot finalization (design §5/§6), before the first loop pass can
+  // take any early return: (1) confirm the running OTA slot now that setup()
+  // finished — the Arduino core's initArduino() would have confirmed earlier
+  // (before fonts loaded or anything painted), so verification is deferred
+  // here instead; (2) resume a pending dev install recorded by the dance.
+  static bool bootFinalized = false;
+  if (!bootFinalized) {
+    bootFinalized = true;
+    bootFinalize();
+  }
+
   static unsigned long maxLoopDuration = 0;
   const unsigned long loopStartTime = millis();
   static unsigned long lastMemPrint = 0;

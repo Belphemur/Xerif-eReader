@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cstring>
+#include <string_view>
 
 #include "OtaJson.h"
 
@@ -558,4 +559,80 @@ TEST(OtaVersionCompare, MalformedTagsFailClosed) {
   EXPECT_FALSE(otaIsVersionNewer("1.9.0-x4pro", "not-a-version"));
   EXPECT_FALSE(otaIsVersionNewer("", "v1.9.0"));
   EXPECT_FALSE(otaIsVersionNewer("1.9.0-x4pro", ""));
+}
+
+// --- dev channel manifest (design §4) ---------------------------------------
+
+namespace {
+constexpr char kDevManifest[] = R"({
+  "versions": [
+    {"name": "xerif-dev-0123456789abcdef0123456789abcdef01234567-x4pro.bin",
+     "url": "https://github.com/Belphemur/Xerif-eReader/releases/download/dev/xerif-dev-0123456789abcdef0123456789abcdef01234567-x4pro.bin",
+     "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "date": "2026-11-07T12:00:00Z"},
+    {"name": "xerif-dev-ffffffffffffffffffffffffffffffffffffffff-x4pro.bin",
+     "url": "https://github.com/Belphemur/Xerif-eReader/releases/download/dev/xerif-dev-ffffffffffffffffffffffffffffffffffffffff-x4pro.bin",
+     "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+     "date": "2026-11-06T12:00:00Z"}
+  ]
+})";
+}  // namespace
+
+TEST(OtaDevManifestParse, ParsesEntriesNewestFirst) {
+  OtaDevVersionEntry entries[3];
+  int count = -1;
+
+  ASSERT_TRUE(parseOtaDevManifest(kDevManifest, strlen(kDevManifest), entries, 3, &count));
+  ASSERT_EQ(count, 2);
+  EXPECT_STREQ(entries[0].name, "xerif-dev-0123456789abcdef0123456789abcdef01234567-x4pro.bin");
+  EXPECT_EQ(entries[0].url, std::string_view("https://github.com/Belphemur/Xerif-eReader/releases/download/dev/"
+                                             "xerif-dev-0123456789abcdef0123456789abcdef01234567-x4pro.bin"));
+  EXPECT_STREQ(entries[0].date, "2026-11-07T12:00:00Z");
+  EXPECT_TRUE(entries[0].hasSha);
+  // First digest byte decodes from "e3" (e3b0c4... is sha256 of "").
+  EXPECT_EQ(entries[0].sha256[0], 0xE3);
+  EXPECT_EQ(entries[0].sha256[31], 0x55);
+}
+
+TEST(OtaDevManifestParse, MalformedHexDigestSetsHasShaFalse) {
+  constexpr char kBadSha[] =
+      R"({"versions": [{"name": "a.bin", "url": "https://x/a.bin", "sha256": "nothex", "date": "d"}]})";
+  OtaDevVersionEntry entries[3];
+  int count = -1;
+
+  ASSERT_TRUE(parseOtaDevManifest(kBadSha, strlen(kBadSha), entries, 3, &count));
+  ASSERT_EQ(count, 1);
+  EXPECT_FALSE(entries[0].hasSha);
+}
+
+TEST(OtaDevManifestParse, OverflowTruncatesToCapacity) {
+  OtaDevVersionEntry entries[1];
+  int count = -1;
+
+  ASSERT_TRUE(parseOtaDevManifest(kDevManifest, strlen(kDevManifest), entries, 1, &count));
+  EXPECT_EQ(count, 1);
+  EXPECT_STREQ(entries[0].name, "xerif-dev-0123456789abcdef0123456789abcdef01234567-x4pro.bin");
+}
+
+TEST(OtaDevManifestParse, MalformedJsonFailsClosed) {
+  OtaDevVersionEntry entries[3];
+  int count = -1;
+
+  EXPECT_FALSE(parseOtaDevManifest("not json", 8, entries, 3, &count));
+  EXPECT_EQ(count, 0);
+  EXPECT_FALSE(parseOtaDevManifest(nullptr, 0, entries, 3, &count));
+  EXPECT_FALSE(parseOtaDevManifest("{}", 2, entries, 3, nullptr));
+}
+
+TEST(OtaDevManifestParse, MissingFieldsLeaveEmptyStrings) {
+  constexpr char kSparse[] = R"({"versions": [{"name": "a.bin"}]})";
+  OtaDevVersionEntry entries[3];
+  int count = -1;
+
+  ASSERT_TRUE(parseOtaDevManifest(kSparse, strlen(kSparse), entries, 3, &count));
+  ASSERT_EQ(count, 1);
+  EXPECT_STREQ(entries[0].name, "a.bin");
+  EXPECT_EQ(entries[0].url[0], '\0');
+  EXPECT_EQ(entries[0].date[0], '\0');
+  EXPECT_FALSE(entries[0].hasSha);
 }

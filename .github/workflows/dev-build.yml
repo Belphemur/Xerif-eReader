@@ -1,0 +1,261 @@
+# Dev firmware channel (design docs/design/2026-11-07-dev-ota-slots.md §4).
+#
+# Every merge to develop builds the x4pro image and republishes the rolling
+# `dev` prerelease: the newest 3 `xerif-dev-<sha>-x4pro.bin` assets plus a
+# regenerated manifest.json (name/url/sha256/date, newest first). The device
+# fetches this release, parses the manifest, and installs a build into the dev
+# slot (app1) after verifying the SHA-256 (unsigned manifest, SHA-pinned only).
+#
+# Note on patching: the design doc names a `patch_firmware_image.py` step,
+# but this repository ships no such script and release.yml has none either —
+# the pio build output (post: extra scripts already applied) is published
+# as-is, identical to the release flow's `cp firmware.bin` asset step.
+
+name: Dev build
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+concurrency:
+  # The job below is gated to develop, so only develop runs publish; a same-ref
+  # group already serializes those. cancel-in-progress stays OFF so a newer
+  # push can never kill a run that is publishing — an interrupted publication
+  # is the one state that can degrade the rolling release.
+  group: dev-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write  # republishes the rolling `dev` prerelease
+
+env:
+  UV_CONSTRAINT: ${{ github.workspace }}/.github/pio-constraints.txt
+  PIP_CONSTRAINT: ${{ github.workspace }}/.github/pio-constraints.txt
+
+jobs:
+  build-and-publish:
+    name: Build + publish dev channel
+    # Publication is develop-only: a manual dispatch on another ref must not
+    # publish its firmware as the newest dev build.
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "latest"
+          enable-cache: false
+
+      - name: Install PlatformIO Core
+        run: |
+          uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.2.0.zip
+          uv pip install --system -U "littlefs-python>=0.16.0" "fatfs-ng>=0.1.14" "pyyaml>=6.0.2" \
+            "rich-click>=1.8.6" "zopfli>=0.2.2" "intelhex>=2.3.0" "rich>=14.0.0" "urllib3<2" \
+            "cryptography>=45.0.3" "certifi>=2025.8.3" "ecdsa>=0.19.1" "bitstring>=4.3.1" \
+            "reedsolo>=1.5.3,<1.8" "esp-idf-size>=2.0.0" "esp-coredump>=1.14.0"
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v6
+        with:
+          path: ~/.platformio
+          key: pio-v3-${{ runner.os }}-x4pro-${{ hashFiles('platformio.ini', 'scripts/patch_pioarduino_cache.py') }}
+          restore-keys: |
+            pio-v3-${{ runner.os }}-x4pro-
+
+      - name: Pin pioarduino core inside the platform penv
+        run: |
+          set -euo pipefail
+          pio pkg install -e x4pro
+          uv pip install --python ~/.platformio/penv/bin/python "pioarduino==6.2.0"
+          ~/.platformio/penv/bin/pio --version
+
+      - name: Build x4pro dev firmware
+        run: |
+          set -euo pipefail
+          pio run -e x4pro | tee pio.log
+
+      - name: Stage dev asset + carry over previous builds
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEV_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist carry
+          asset="xerif-dev-${DEV_SHA}-x4pro.bin"
+          cp .pio/build/x4pro/firmware.bin "dist/${asset}"
+
+          # Carry over the previous builds from the current `dev` release. The
+          # existing manifest is the authoritative newest-first list — its top
+          # 2 entries survive this run so the rolling window stays at 3.
+          # Distinguish "first publish" from "read failure": a release that
+          # cannot be read is an abort (the publish step would otherwise drop
+          # its retained builds); only a confirmed-missing release starts fresh.
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/dev" > release.json 2> view_err.txt; then
+            gh release download dev --repo "$GITHUB_REPOSITORY" --dir carry
+            echo "downloaded previous dev release assets"
+          elif grep -qiE 'HTTP 404|not found' view_err.txt; then
+            echo "no existing dev release; starting fresh"
+            rm -f release.json
+          else
+            echo "existing dev release could not be read; aborting without publishing" >&2
+            cat view_err.txt >&2
+            exit 1
+          fi
+
+      - name: Regenerate manifest.json (newest 3)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEV_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, subprocess
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          sha = os.environ["DEV_SHA"]
+          dist = "dist"
+          carry = "carry"
+          keep = 3
+
+          # Build date: the commit's committer timestamp (stable, reproducible).
+          date = subprocess.run(["git", "show", "-s", f"--format=%cI", sha], check=True,
+                                capture_output=True, text=True).stdout.strip()
+
+          def entry_from_file(path, when=None):
+              name = os.path.basename(path)
+              with open(path, "rb") as f:
+                  data = f.read()
+              return {
+                  "name": name,
+                  "url": f"https://github.com/{repo}/releases/download/dev/{name}",
+                  "sha256": hashlib.sha256(data).hexdigest(),
+                  # Retained builds are dated by their release asset; an
+                  # unknown asset date stays empty (the device shows no date)
+                  # rather than inheriting this run's commit timestamp. Only
+                  # this run's build — which passes no date — falls back to
+                  # the commit timestamp.
+                  "date": when if when is not None else date,
+              }
+
+          versions = [entry_from_file(os.path.join(dist, f"xerif-dev-{sha}-x4pro.bin"))]
+
+          # Publish timestamps per asset (the release REST JSON saved by the
+          # staging step). Used to date and to order fallback entries — the
+          # file names carry a SHA, not a date, so name order says nothing
+          # about recency.
+          asset_dates = {}
+          if os.path.exists("release.json"):
+              try:
+                  with open("release.json") as f:
+                      release = json.load(f)
+                  for a in release.get("assets", []):
+                      asset_dates[a["name"]] = a.get("created_at") or a.get("updated_at") or ""
+              except (OSError, ValueError) as e:
+                  print(f"release metadata unreadable ({e})")
+
+          # Previous entries: prefer the existing manifest's list (it carries
+          # the original dates); fall back to hashing the downloaded bins.
+          # A retained entry is only kept when its binary is actually present:
+          # the release is never deleted, so its asset keeps serving the URL,
+          # and a missing binary would be a guaranteed 404.
+          prev = []
+          manifest_path = os.path.join(carry, "manifest.json")
+          if os.path.exists(manifest_path):
+              try:
+                  with open(manifest_path) as f:
+                      old = json.load(f)
+                  for v in old.get("versions", []):
+                      if v.get("name") == versions[0]["name"]:
+                          continue  # replaced by this run's build
+                      if not os.path.exists(os.path.join(carry, v.get("name", ""))):
+                          print(f"dropping {v.get('name')}: binary not carried")
+                          continue
+                      prev.append(v)
+              except (OSError, ValueError) as e:
+                  print(f"existing manifest unreadable ({e}); rebuilding from carried bins")
+          if not prev:
+              bins = [n for n in os.listdir(carry)
+                      if n.startswith("xerif-dev-") and n.endswith(".bin") and n != versions[0]["name"]]
+              bins.sort(key=lambda n: asset_dates.get(n, ""), reverse=True)
+              prev = [entry_from_file(os.path.join(carry, n), asset_dates.get(n, "")) for n in bins]
+
+          # Dedupe by name, newest first (this run's entry first), cap at 3.
+          seen = set()
+          merged = []
+          for v in versions + prev:
+              if v["name"] in seen:
+                  continue
+              seen.add(v["name"])
+              merged.append(v)
+          merged = merged[:keep]
+
+          manifest = {"versions": merged}
+          text = json.dumps(manifest, separators=(",", ":")) + "\n"
+          # The device caps the manifest fetch (DevOtaClient MAX_MANIFEST_BYTES).
+          if len(text.encode()) > 4096:
+              raise SystemExit(f"dev manifest is {len(text)} bytes, over the 4096-byte fetch cap")
+          manifest_path = os.path.join(dist, "manifest.json")
+          # Publish via temp + rename so a failed write can never leave a
+          # truncated manifest at the path the upload step reads.
+          tmp_path = manifest_path + ".tmp"
+          with open(tmp_path, "w") as f:
+              f.write(text)
+          os.replace(tmp_path, manifest_path)
+          print(json.dumps(manifest, indent=2))
+          PY
+
+      - name: Publish the dev release (in place, no delete window)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # In-place publication: the rolling release is never deleted, so a
+          # failed or cancelled run cannot wipe the channel — the previous
+          # manifest and bins stay live until this upload replaces them.
+          # Retained builds keep their existing assets on the surviving
+          # release (the manifest references them by URL); --clobber only
+          # replaces names this run owns (its own bin + manifest.json).
+          if ! gh release view dev --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create dev \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --prerelease \
+              --title "Dev builds (rolling)" \
+              --notes "Rolling dev channel: the newest 3 x4pro builds from develop. Install from Settings > Dev channel on a dev build; unsigned manifest, SHA-256 pinned."
+          fi
+          gh release upload dev --repo "$GITHUB_REPOSITORY" --clobber \
+            dist/xerif-dev-*.bin dist/manifest.json
+
+      - name: Prune assets outside the manifest window
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Runs AFTER the manifest upload: an interrupted run can only leave
+          # extra assets (harmless — the manifest defines the truth), never a
+          # missing one.
+          python3 - <<'PY'
+          import json, os, subprocess
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          keep = {v["name"] for v in json.load(open("dist/manifest.json"))["versions"]}
+          keep.add("manifest.json")
+          rel = json.loads(subprocess.run(
+              ["gh", "api", f"repos/{repo}/releases/tags/dev"],
+              check=True, capture_output=True, text=True).stdout)
+          for a in rel.get("assets", []):
+              if a["name"] not in keep:
+                  subprocess.run(["gh", "api", "-X", "DELETE",
+                                  f"repos/{repo}/releases/assets/{a['id']}"], check=True)
+                  print("pruned", a["name"])
+          PY

@@ -25,6 +25,8 @@
 #if defined(CROSSPOINT_TTF_READER)
 #include "TtfFontDownloadActivity.h"
 #endif
+#include "DevOtaActivity.h"
+#include "FirmwareSlotsActivity.h"
 #include "HomeButtonSettingsActivity.h"
 #include "KOReaderSettingsActivity.h"
 #include "KeyboardLayoutsActivity.h"
@@ -156,6 +158,12 @@ void SettingsActivity::rebuildSettings() {
   if (!BoardConfig::isPicco()) {
     addAction(SettingsSection::General, StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates);
     addAction(SettingsSection::General, StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate);
+    // Slot chooser ships in every build (design §3). The dev-channel entry is
+    // compiled out of release builds (design §7).
+    addAction(SettingsSection::General, StrId::STR_FIRMWARE_SLOTS, SettingAction::FirmwareSlots);
+#if CROSSPOINT_DEV_OTA
+    addAction(SettingsSection::General, StrId::STR_DEV_CHANNEL, SettingAction::DevChannel);
+#endif
   }
   addAction(SettingsSection::General, StrId::STR_ABOUT, SettingAction::About);
   rebuildRowItems();
@@ -368,6 +376,15 @@ void SettingsActivity::toggleSelectedSetting() {
       case SettingAction::SdFirmwareUpdate:
         startActivityForResult(std::make_unique<SdFirmwareUpdateActivity>(renderer, mappedInput), resultHandler);
         break;
+      case SettingAction::FirmwareSlots:
+        startActivityForResult(std::make_unique<FirmwareSlotsActivity>(renderer, mappedInput), resultHandler);
+        break;
+#if CROSSPOINT_DEV_OTA
+      case SettingAction::DevChannel:
+        startActivityForResult(std::make_unique<DevOtaActivity>(renderer, mappedInput, /*autoResume=*/false),
+                               resultHandler);
+        break;
+#endif
       case SettingAction::DownloadFonts:
         // Fork: one Settings row, two catalogs — raw .ttf on the native-TTF
         // device class, .cpfont on the classic one.
