@@ -100,7 +100,9 @@ TEST_F(ZipFileCacheTest, LoadPopulatesAndServesHitsAndMisses) {
   ASSERT_FALSE(knownPath.empty());
   const ZipFile::FileStatSlim* hit = cache.get(knownPath);
   ASSERT_NE(hit, nullptr);
-  EXPECT_NE(hit->uncompressedSize, 0u);
+  // No size assertion here: firstCachePath() returns an arbitrary entry
+  // (unordered_map order) and real EPUBs legitimately contain zero-byte
+  // entries. The contract under test is the hit lookup itself.
 
   EXPECT_EQ(cache.get("no/such/entry.bin"), nullptr);
 }
