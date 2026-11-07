@@ -1582,6 +1582,14 @@ int Epub::resolveHrefToSpineIndex(const std::string& href) const {
   return -1;
 }
 
+void Epub::unloadZipFileCache() {
+#ifdef BOARD_HAS_PSRAM
+  if (zipCache_) {
+    zipCache_->unload();
+  }
+#endif
+}
+
 #ifdef BOARD_HAS_PSRAM
 void Epub::ZipFileCache::load(const std::string& epubPath) {
   // ZipFile stores its filePath as a const std::string& member. Pass an lvalue
@@ -1628,14 +1636,6 @@ void Epub::ZipFileCache::unload() {
   if (dropped > 0) {
     LOG_DBG("ZIP", "ZIP entry cache unloaded: %zu entries", dropped);
   }
-}
-
-void Epub::unloadZipFileCache() {
-#ifdef BOARD_HAS_PSRAM
-  if (zipCache_) {
-    zipCache_->unload();
-  }
-#endif
 }
 
 #ifdef BOARD_HAS_PSRAM
