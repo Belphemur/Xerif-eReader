@@ -82,6 +82,11 @@ struct RenderConfig {
   // behavior change.
   bool (*abortPoll)(void* ctx) = nullptr;
   void* abortCtx = nullptr;
+  // Quality tone bake (TTF image engine §5.6): GIF switches from Bayer
+  // 4-level + nearest to area-averaged downscale (≥2x) + Floyd–Steinberg
+  // 4-level tone. The BITMAP engine never sets this — zero behavior change
+  // there; the flag only turns on inside the TTF image decode paths.
+  bool qualityTone = false;
 };
 
 class ImageToFramebufferDecoder {

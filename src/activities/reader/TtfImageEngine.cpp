@@ -645,6 +645,7 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
     }
     config.abortPoll = abortPoll;
     config.abortCtx = abortCtx;
+    config.qualityTone = qualityTone;  // GIF bake policy (§5.6)
 
     bool decoded = false;
     if (info.kind == ImageInfo::Kind::Gif) {
