@@ -3,6 +3,7 @@
 #include <Logging.h>
 #include <esp_ota_ops.h>
 
+#include <algorithm>
 #include <cstring>
 
 namespace ota_slots {
@@ -19,7 +20,55 @@ constexpr uint32_t APP_DESC_MAGIC = 0xABCD5432;
 const esp_partition_t* findOtaAppSlot(esp_partition_subtype_t subtype) {
   return esp_partition_find_first(ESP_PARTITION_TYPE_APP, subtype, nullptr);
 }
+
+// esp_image_header_t is 24 bytes on every supported chip (C3/S3 carry the
+// extended header); each segment adds an 8-byte header (load address +
+// data length).
+constexpr size_t kImageHeaderSize = 24;
+constexpr size_t kSegmentHeaderSize = 8;
+constexpr size_t kMaxSegments = 17;  // IDF caps images at 16 segments
+constexpr size_t kScanChunk = 2048;
+constexpr size_t kMarkerLen = sizeof(kResumeHookMarker) - 1;
 }  // namespace
+
+bool imageHasResumeMarker(const esp_partition_t* app) {
+  if (!app || app->size < kImageHeaderSize + kSegmentHeaderSize) return false;
+
+  uint8_t header[kImageHeaderSize];
+  if (esp_partition_read(app, 0, header, sizeof(header)) != ESP_OK) return false;
+  if (header[0] != 0xE9) return false;  // ESP_IMAGE_MAGIC
+  const size_t segmentCount = header[1];
+  if (segmentCount == 0 || segmentCount > kMaxSegments) return false;
+
+  // Walk the segment chain to bound the scan to the real image extent; the
+  // erased flash beyond it can never contain the marker.
+  size_t extent = kImageHeaderSize;
+  for (size_t i = 0; i < segmentCount; ++i) {
+    uint8_t segHeader[kSegmentHeaderSize];
+    if (extent > app->size - kSegmentHeaderSize) return false;
+    if (esp_partition_read(app, extent, segHeader, sizeof(segHeader)) != ESP_OK) return false;
+    uint32_t dataLen;
+    memcpy(&dataLen, segHeader + 4, sizeof(dataLen));
+    if (dataLen > app->size - extent - kSegmentHeaderSize) return false;
+    extent += kSegmentHeaderSize + dataLen;
+  }
+
+  // Chunked scan with overlapping reads: each chunk re-reads the previous
+  // chunk's tail (markerLen - 1 bytes) so a marker straddling a chunk
+  // boundary is still found. The final partial chunk never needs an overlap
+  // because the marker cannot extend past the image.
+  static_assert(kMarkerLen < kScanChunk, "scan chunk must exceed the marker length");
+  constexpr size_t kStep = kScanChunk - kMarkerLen + 1;
+  uint8_t buf[kScanChunk];
+  for (size_t start = 0; start < extent; start += kStep) {
+    size_t len = extent - start;
+    if (len > kScanChunk) len = kScanChunk;
+    if (esp_partition_read(app, start, buf, len) != ESP_OK) return false;
+    const uint8_t* marker = reinterpret_cast<const uint8_t*>(kResumeHookMarker);
+    if (std::search(buf, buf + len, marker, marker + kMarkerLen) != buf + len) return true;
+  }
+  return false;
+}
 
 const esp_partition_t* stableSlot() { return findOtaAppSlot(ESP_PARTITION_SUBTYPE_APP_OTA_0); }
 

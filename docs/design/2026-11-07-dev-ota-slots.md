@@ -85,7 +85,11 @@ byte-identical (§7 gating).
   writes an NVS `pending dev install <version>` flag, reboots into stable,
   and a boot hook completes the flow (download → write `app1` → `switchTo`
   → reboot). Fully automatic; two reboots. When running stable the install is
-  single-pass.
+  single-pass. The dance refuses to start unless the stable image carries the
+  flash-scannable `kResumeHookMarker` (embedded next to the boot hook): the
+  esp_app_desc_t version field is an opaque constant from the prebuilt Arduino
+  core (`libesp_app_format.a`, e.g. `6671d0b`), so version comparison cannot
+  identify hook-bearing images.
 
 ## 6. Rollback semantics
 
@@ -183,11 +187,11 @@ path #4 is for.
 
 ## 11. Verification plan
 
-- `pio run -e x4pro` (and default env) green with the feature compiled in;
-  release env compiles with zero dev-channel code paths.
+- `pio run -e x4pro` (and default env) green with the feature compiled in.
 - Host unit tests for the manifest parser and the slot-descriptor reader.
 - Release env compiles with the dev-channel settings entry gated out; the
-  compiled-in install machinery stays dormant (§7).
+  compiled-in install machinery stays dormant (§7) — release builds are not
+  free of dev-channel code, only of dev-channel entry points.
 - `bin/clang-format-fix` clean.
 - On-device soak (owner): chooser switch stable↔dev, dev install single-pass
   and via the dance, power-off during install, Power+Next hatch (after the

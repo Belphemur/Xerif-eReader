@@ -1310,6 +1310,13 @@ void setup() {
 // must use C linkage or the weak symbol would simply win.
 extern "C" bool verifyRollbackLater() { return true; }
 
+// Flash-scannable marker (design §5): the dev install path scans the target
+// slot for this string before the dance reboots into it, since
+// esp_app_desc_t.version is an opaque constant from the prebuilt Arduino core
+// (see OtaSlots.h). The resume log below references the array so the linker
+// cannot collect it — the string must stay in the image the scan reads back.
+const char kDevOtaResumeHookMarker[] = ota_slots::kResumeHookMarker;
+
 // Runs once at the top of the first loop() pass (see bootFinalized there).
 // Silent boots have already painted their first frame synchronously in
 // setup(); splash boots paint during this first pass. Confirming here
@@ -1342,7 +1349,7 @@ static void bootFinalize() {
         LOG_INF("MAIN", "pending dev install deferred (recovery=%d panic=%d)", bootRecoveryFirmwareMode ? 1 : 0,
                 bootRebootedFromPanic ? 1 : 0);
       } else {
-        LOG_INF("MAIN", "resuming pending dev install (%s)", pendingVersion);
+        LOG_INF("MAIN", "resuming pending dev install (%s, hook %.27s)", pendingVersion, kDevOtaResumeHookMarker);
         activityManager.replaceActivity(std::make_unique<DevOtaActivity>(renderer, mappedInputManager,
                                                                          /*autoResume=*/true));
       }

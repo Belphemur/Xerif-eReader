@@ -37,6 +37,22 @@ static_assert(sizeof(SlotInfo) == 34, "SlotInfo must stay a POD of 34 bytes");
 // field is empty — the caller renders that slot as "empty".
 bool readSlotInfo(const esp_partition_t* app, SlotInfo& out);
 
+// Flash-scannable marker identifying images that carry the bootFinalize()
+// resume hook (main.cpp). The esp_app_desc_t.version field cannot serve this:
+// with the prebuilt Arduino core it is a constant string baked into
+// libesp_app_format.a (e.g. "6671d0b") that no version comparison can parse,
+// so it cannot distinguish hook-bearing images from older ones. main.cpp
+// embeds the marker next to the hook; the dev install scans the target slot
+// for it before rebooting into that slot.
+constexpr char kResumeHookMarker[] = "XERIF-DEVOTA-RESUME-HOOK-V1";
+
+// True when `app`'s image bytes contain kResumeHookMarker — the image carries
+// the resume hook, so the running-dev dance may reboot into it. Walks the
+// image's segment chain to bound the scan to the real image extent (erased
+// flash beyond it can never match). False when the partition is null, the
+// image header is malformed, or the marker is absent.
+bool imageHasResumeMarker(const esp_partition_t* app);
+
 // The slot currently booted (by address match against the running partition),
 // or nullptr when the running image is not in an OTA slot.
 const esp_partition_t* runningSlot();

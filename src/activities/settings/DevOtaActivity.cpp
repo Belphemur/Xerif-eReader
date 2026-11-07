@@ -39,28 +39,12 @@ bool devNameLabel(const char* name, char* out, size_t cap) {
 }
 
 // The dance's completion pass runs in the stable slot, so that image must
-// contain the bootFinalize() resume hook (main.cpp). The hook first ships in
-// the release that carries the dev-OTA design — an older stable image boots
-// normally and never consumes the flag, leaving the device on a stable slot
-// with no slot chooser. Refusing the dance here is the fail-safe direction.
-constexpr char kMinResumeStableVersion[] = "2.15.0";
-
-// Leading N.N.N comparison, version >= min ("v" prefix and per-board suffixes
-// ignored, same convention as otaIsVersionNewer). False when either side does
-// not parse.
-bool versionAtLeast(const char* version, const char* minVersion) {
-  if (!version || !minVersion) return false;
-  if (*version == 'v' || *version == 'V') ++version;
-  if (*minVersion == 'v' || *minVersion == 'V') ++minVersion;
-  int v[3] = {0, 0, 0};
-  int m[3] = {0, 0, 0};
-  if (sscanf(version, "%d.%d.%d", &v[0], &v[1], &v[2]) != 3) return false;
-  if (sscanf(minVersion, "%d.%d.%d", &m[0], &m[1], &m[2]) != 3) return false;
-  for (int i = 0; i < 3; ++i) {
-    if (v[i] != m[i]) return v[i] > m[i];
-  }
-  return true;
-}
+// contain the bootFinalize() resume hook (main.cpp). Images advertise the
+// hook through the flash-scannable kResumeHookMarker, not through the
+// esp_app_desc_t version (an opaque constant from the prebuilt Arduino core).
+// An older stable image boots normally and never consumes the flag, leaving
+// the device on a stable slot with no slot chooser. Refusing the dance here
+// is the fail-safe direction.
 
 // Compact an ISO-8601 build date ("2026-11-07T14:03:45+00:00") down to
 // "11-07 14:03" so the timestamp fits beside the row label. False when the
@@ -219,12 +203,9 @@ void DevOtaActivity::beginInstall(const int index) {
   // install from there (two reboots total).
   if (ota_slots::sameSlot(ota_slots::runningSlot(), ota_slots::devSlot())) {
     // The completion pass runs in the stable slot: refuse the dance unless
-    // that image can consume the pending-install flag (see
-    // kMinResumeStableVersion).
-    ota_slots::SlotInfo stableInfo;
-    if (!ota_slots::readSlotInfo(ota_slots::stableSlot(), stableInfo) ||
-        !versionAtLeast(stableInfo.version, kMinResumeStableVersion)) {
-      LOG_ERR("DEVOTA", "stable slot ('%s') predates the resume hook; refusing the dance", stableInfo.version);
+    // that image can consume the pending-install flag (kResumeHookMarker).
+    if (!ota_slots::imageHasResumeMarker(ota_slots::stableSlot())) {
+      LOG_ERR("DEVOTA", "stable slot lacks the resume-hook marker; refusing the dance");
       {
         RenderLock lock(*this);
         failedDetail = tr(STR_DEV_STABLE_TOO_OLD);
