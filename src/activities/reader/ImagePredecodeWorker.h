@@ -17,6 +17,7 @@
 // the C3 floor keeps today's on-demand decode exactly (design §3.7).
 
 #include <cstdint>
+#include <memory>
 
 class Epub;
 

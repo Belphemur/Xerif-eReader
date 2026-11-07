@@ -355,11 +355,6 @@ class EpubReaderActivity final : public ReaderActivity {
   // worker builds the entered chapter, the sync path defers to its commit.
   void updateFibpWorker(uint32_t generation, const freeink::book::LayoutParams& params);
   void stopFibpWorker();
-#endif
-  // Image predecode wiring: arm at loadBook, feed from the section sighting
-  // hook, stop at reader teardown.
-  void installImageSightingHook(Section& target, uint16_t spineIndex, bool isCurrentSpine);
-  void stopImagePredecode();
   void ttfInvalidateCaches();
   void ttfShowIndexingPopup();
   void ttfSaveProgress();
@@ -432,6 +427,12 @@ class EpubReaderActivity final : public ReaderActivity {
   // save, chrome popups, and the prerender scheduling hook.
   void ttfCommitFrame(const freeink::book::Page& page, const freeink::book::LayoutParams& params, size_t scratchMark);
 #endif
+
+  // Image predecode wiring: arm at loadBook, feed from the section sighting
+  // hook, stop at reader teardown. Declared outside the TTF block: both
+  // engines' sessions run these paths (the worker itself is PSRAM-gated).
+  void installImageSightingHook(Section& target, uint16_t spineIndex, bool isCurrentSpine);
+  void stopImagePredecode();
 
   static constexpr int BUILD_PAGES_PER_CHUNK = 8;
   static constexpr int BACKGROUND_BUILD_PAGES_PER_TICK = 2;
