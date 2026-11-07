@@ -24,6 +24,7 @@
 #include <XteinkDetect.h>
 #include <builtinFonts/all.h>
 #include <esp_heap_caps.h>
+#include <esp_ota_ops.h>
 #include <esp_sleep.h>
 #include <esp_system.h>
 #include <esp_wifi.h>
@@ -55,9 +56,12 @@
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
 #include "activities/boot_sleep/SleepActivity.h"
+#include "activities/settings/DevOtaActivity.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/DevOtaClient.h"
+#include "network/OtaSlots.h"
 #include "platform/UsbSerialJtagHandoff.h"
 #include "util/ButtonNavigator.h"
 #include "util/PluginEvents.h"
@@ -1294,6 +1298,44 @@ void setup() {
   allowSleepAt = millis() + 2000;
 }
 
+// Design §6: keep OTA-image verification pending past initArduino() so the
+// confirm can happen after a full boot instead. The non-weak definition
+// overrides the Arduino core's weak default (which confirms immediately).
+bool verifyRollbackLater() {
+  return true;
+}
+
+// Runs once at the top of the first loop() pass (see bootFinalized there).
+// Silent boots have already painted their first frame synchronously in
+// setup(); splash boots paint during this first pass. Confirming here
+// reflects "the firmware came all the way up"; a crash before this point
+// (including a setup() panic) rolls back to the other slot.
+static void bootFinalize() {
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  esp_ota_img_states_t otaState;
+  if (esp_ota_get_state_partition(running, &otaState) == ESP_OK && otaState == ESP_OTA_IMG_PENDING_VERIFY) {
+    LOG_INF("MAIN", "OTA slot booted; marking valid");
+    esp_ota_mark_app_valid_cancel_rollback();
+  }
+
+  // Pending dev install (design §5). Only ever armed by a dev build's dance;
+  // release builds see an empty flag and skip at the first branch.
+  char pendingVersion[64];
+  if (dev_ota::pendingInstallGet(pendingVersion, sizeof(pendingVersion))) {
+    const esp_partition_t* slot = ota_slots::runningSlot();
+    if (ota_slots::sameSlot(slot, ota_slots::devSlot())) {
+      // Stale flag: the dance only completes from the stable slot. Clear it so
+      // a dev boot never re-enters the installer uninvited.
+      LOG_INF("MAIN", "stale pending dev install; clearing");
+      dev_ota::pendingInstallClear();
+    } else if (slot != nullptr) {
+      LOG_INF("MAIN", "resuming pending dev install (%s)", pendingVersion);
+      activityManager.replaceActivity(std::make_unique<DevOtaActivity>(renderer, mappedInputManager,
+                                                                       /*autoResume=*/true));
+    }
+  }
+}
+
 // True when the board can wake the parked GT911 through something other than
 // the touch panel itself: any configured physical button GPIO or ADC ladder
 // (edges + held-contact paths stay live while the controller sleeps). The
@@ -1309,6 +1351,17 @@ static bool hasTouchIndependentWakeSource() {
 }
 
 void loop() {
+  // One-shot boot finalization (design §5/§6), before the first loop pass can
+  // take any early return: (1) confirm the running OTA slot now that setup()
+  // finished — the Arduino core's initArduino() would have confirmed earlier
+  // (before fonts loaded or anything painted), so verification is deferred
+  // here instead; (2) resume a pending dev install recorded by the dance.
+  static bool bootFinalized = false;
+  if (!bootFinalized) {
+    bootFinalized = true;
+    bootFinalize();
+  }
+
   static unsigned long maxLoopDuration = 0;
   const unsigned long loopStartTime = millis();
   static unsigned long lastMemPrint = 0;

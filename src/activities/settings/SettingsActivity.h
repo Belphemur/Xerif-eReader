@@ -25,6 +25,10 @@ enum class SettingAction {
   ClearCache,
   CheckForUpdates,
   SdFirmwareUpdate,
+  FirmwareSlots,
+#if CROSSPOINT_DEV_OTA
+  DevChannel,
+#endif
   Language,
   DownloadFonts,
   TextSettings,
