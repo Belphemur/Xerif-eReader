@@ -3,10 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
-// Opaque here; the .cpp includes the real ESP-IDF header (host tests stub it).
-// esp_partition_t is a C typedef of an anonymous-tag-free struct, so the
-// forward declaration must repeat the typedef form.
-typedef struct esp_partition_t esp_partition_t;
+#include <esp_partition.h>
 
 // Flash a firmware image from an SD-card path into the next OTA app
 // partition, then switch otadata so the X3/X4 stock bootloader picks it up
