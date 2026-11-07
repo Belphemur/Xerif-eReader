@@ -109,14 +109,16 @@ void qFlushRow(const int dstY, GifContext& ctx) {
   }
   DirectPixelWriter pw;
   pw.init(*ctx.renderer);
-  const bool paintRow = outY < ctx.screenHeight;
+  // PortraitInverted swaps the axes inside DirectPixelWriter, so its internal
+  // band guard tracks the wrong axis for off-panel rows — clip both here.
+  const bool paintRow = outY >= 0 && outY < ctx.screenHeight;
   if (paintRow) pw.beginRow(outY);
   for (int dstX = 0; dstX < ctx.dstWidth; ++dstX) {
     const uint32_t avg = ctx.qCounts[dstX] != 0 ? ctx.qSums[dstX] / ctx.qCounts[dstX] : 255;
     const uint8_t tone = qToneAt(ctx, dstX, avg > 255 ? 255 : static_cast<int>(avg));
     ctx.qToneRow[dstX] = tone;
     const int outX = ctx.config->x + dstX;
-    if (paintRow && outX < ctx.screenWidth) pw.writePixel(outX, tone);
+    if (paintRow && outX >= 0 && outX < ctx.screenWidth) pw.writePixel(outX, tone);
     if (caching) cw.writePixel(outX, tone);
   }
   qNextErrorRow(ctx);
@@ -125,7 +127,7 @@ void qFlushRow(const int dstY, GifContext& ctx) {
 
 // Quality-mode core of renderCanvasRow: feed one completed source row.
 void qRenderCanvasRow(const uint8_t* grayRow, const int srcY, GifContext& ctx) {
-  const int firstDstY = (srcY * ctx.dstHeight) / ctx.srcHeight;
+  int firstDstY = (srcY * ctx.dstHeight) / ctx.srcHeight;
   const bool upscale = ctx.dstHeight >= ctx.srcHeight;
   if (upscale) {
     // Each destination row's box covers a single source row: bake it whole.
@@ -158,7 +160,12 @@ void qRenderCanvasRow(const uint8_t* grayRow, const int srcY, GifContext& ctx) {
   }
 
   // Downscale: source rows accumulate into their shared destination row;
-  // the row bakes when the source band moves past it.
+  // the row bakes when the source band moves past it. The band mapping is
+  // the inverse of the BMP box filter's destination boxes: source row srcY
+  // belongs to the destination row whose [dst*srcH/dstH, (dst+1)*srcH/dstH)
+  // box contains it — floor(((srcY+1)*dstH - 1)/srcH) — so a 5-to-2 shrink
+  // averages rows 0–1 into dst 0, not rows 0–2.
+  firstDstY = ((srcY + 1) * ctx.dstHeight - 1) / ctx.srcHeight;
   if (ctx.qAccumDstY != firstDstY) {
     if (ctx.qAccumDstY >= 0) {
       qFlushRow(ctx.qAccumDstY, ctx);
@@ -225,7 +232,7 @@ void renderCanvasRow(const uint8_t* grayRow, int srcY, GifContext& ctx) {
   for (int dstY = firstDstY; dstY < endDstY; ++dstY) {
     ctx.lastDstY = dstY;
     const int outY = ctx.config->y + dstY;
-    if (outY >= ctx.screenHeight) continue;
+    if (outY < 0 || outY >= ctx.screenHeight) continue;
 
     pw.beginRow(outY);
 
@@ -249,7 +256,7 @@ void renderCanvasRow(const uint8_t* grayRow, int srcY, GifContext& ctx) {
 
     for (int dstX = 0; dstX < ctx.dstWidth; ++dstX) {
       const int outX = outXBase + dstX;
-      if (outX < ctx.screenWidth) {
+      if (outX >= 0 && outX < ctx.screenWidth) {
         const uint8_t gray = grayRow[srcX];
         uint8_t ditheredGray;
         if (useDithering) {
@@ -495,7 +502,9 @@ bool GifToFramebufferConverter::decodeGifSource(const char* imagePath, uint8_t* 
 
   if (config.qualityTone) {
     // Quality bake state; allocation failure degrades to the legacy path
-    // rather than failing the decode.
+    // rather than failing the decode. Partially allocated buffers are
+    // released so the fallback's cache band can still allocate under
+    // pressure.
     ctx.qSums = makeUniqueNoThrow<uint32_t[]>(ctx.dstWidth);
     ctx.qCounts = makeUniqueNoThrow<uint16_t[]>(ctx.dstWidth);
     ctx.qErr = makeUniqueNoThrow<int16_t[]>(ctx.dstWidth + 2);
@@ -506,6 +515,11 @@ bool GifToFramebufferConverter::decodeGifSource(const char* imagePath, uint8_t* 
       qSeedError(ctx);
     } else {
       LOG_ERR("GIF", "OOM: quality bake state — falling back to legacy dither");
+      ctx.qSums.reset();
+      ctx.qCounts.reset();
+      ctx.qErr.reset();
+      ctx.qErrNext.reset();
+      ctx.qToneRow.reset();
     }
   }
 
@@ -531,8 +545,10 @@ bool GifToFramebufferConverter::decodeGifSource(const char* imagePath, uint8_t* 
   ctx.caching = !config.cachePath.empty();
   if (ctx.caching) {
     if (!ctx.cache.begin(config.cachePath, ctx.dstWidth, ctx.dstHeight, config.x, config.y, 1)) {
-      LOG_ERR("GIF", "Failed to start cache stream");
-      return false;
+      // Storage failure on the cache stream is not a decode failure: keep
+      // painting the frame and skip the cache (the next pass re-decodes).
+      LOG_ERR("GIF", "Cache stream start failed — painting uncached: %s", label);
+      ctx.caching = false;
     }
   }
 

@@ -274,10 +274,18 @@ class EpubReaderActivity final : public ReaderActivity {
   static constexpr uint16_t kSightPagesPerPaint = 12;
   uint16_t ttfImagesSightedSpine_ = 0xFFFF;
   uint32_t ttfImagesSightedGen_ = 0;
+  // Current-spine pages sighted when the walk last completed: a later
+  // same-generation cache extension (FIBP worker commits) re-arms the walk
+  // from here instead of re-scanning the chapter.
+  uint16_t ttfSightedPageCount_ = 0;
   uint16_t ttfSightCursorSpine_ = 0xFFFF;
   uint32_t ttfSightCursorGen_ = 0;
   uint16_t ttfSightCursorPage_ = 0;
   bool ttfSightCursorNext_ = false;
+  // Wedged image-worker join (stopImagePredecode): the worker object was
+  // released alive and still dereferences the book surfaces raw — the
+  // destructor must keep ttf_/epub alive with it (leak beats UAF).
+  bool imagePredecodeLeaked_ = false;
   char fibpFamily_[48] = {};  // family the worker's faces were built for
   uint32_t fibpNotifiedGen_ = 0;
   bool fibpDeferred_ = false;           // a build is delegated to the worker
@@ -368,7 +376,14 @@ class EpubReaderActivity final : public ReaderActivity {
   void stopImagePredecode();
   // Sight image records from a spine's .fibp page cache into the worker
   // (§5.2): pages [firstPage, endPageExclusive) in reading order.
-  void sightTtfSpineImages(uint16_t spineIndex, uint16_t firstPage, uint16_t endPageExclusive);
+  // Returns the pages actually sighted (reads that completed); a caller
+  // advancing a cursor must use the return value so a failed read is
+  // retried, not skipped.
+  uint16_t sightTtfSpineImages(uint16_t spineIndex, uint16_t firstPage, uint16_t endPageExclusive);
+  // One bounded sighting walk (§5.2); true when both spines are fully
+  // sighted for the current generation. Runs from the paint path and the
+  // idle build tick so fast-turn runs keep predecode moving.
+  bool ttfSightingPass();
   void ttfInvalidateCaches();
   void ttfShowIndexingPopup();
   void ttfSaveProgress();

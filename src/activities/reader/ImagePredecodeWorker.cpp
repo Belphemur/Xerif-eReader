@@ -68,10 +68,15 @@ bool ImagePredecodeWorker::reserve() {
   scratchBegan_ = true;
 
   // SDK decode arena: probe + row-decode scratch (TJpgDec band, RowScaler
-  // accumulators). PSRAM.
-  arenaBytes_ = HalMemory::allocatePsram(kDecodeArenaBytes).release();
+  // accumulators). PSRAM. The control object lives BEFORE the allocatable
+  // region: alloc() bumps from the buffer base, so a control object placed
+  // at the base would be overwritten by the first decode scratch allocation.
+  static constexpr size_t kArenaCtrlBytes =
+      (sizeof(freeink::book::Arena) + alignof(freeink::book::Arena) - 1) & ~(alignof(freeink::book::Arena) - 1);
+  arenaBytes_ = HalMemory::allocatePsram(kArenaCtrlBytes + kDecodeArenaBytes).release();
   if (arenaBytes_ == nullptr) {
-    LOG_ERR("IPR", "Decode arena alloc failed (%u B) — predecode disabled", static_cast<unsigned>(kDecodeArenaBytes));
+    LOG_ERR("IPR", "Decode arena alloc failed (%u B) — predecode disabled",
+            static_cast<unsigned>(kArenaCtrlBytes + kDecodeArenaBytes));
     heap_caps_free(scratchFb_);
     scratchFb_ = nullptr;
     scratchBegan_ = false;
@@ -81,7 +86,7 @@ bool ImagePredecodeWorker::reserve() {
     queueStorage_ = nullptr;
     return false;
   }
-  decodeArena_ = new (arenaBytes_) freeink::book::Arena(arenaBytes_, kDecodeArenaBytes);
+  decodeArena_ = new (arenaBytes_) freeink::book::Arena(arenaBytes_ + kArenaCtrlBytes, kDecodeArenaBytes);
 
   LOG_INF("IPR", "Reserved: queue=%ux%uB scratch=%uB psram stack=%uB arena=%uB psram", (unsigned)kQueueCapacity,
           (unsigned)sizeof(ttfimg::ImageSpec), (unsigned)scratchFbBytes_, (unsigned)kStackBytes,

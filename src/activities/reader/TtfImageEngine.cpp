@@ -48,6 +48,13 @@ struct RowBakeCtx {
   bool aborted = false;
 };
 
+// Placement bounds against the live panel: PortraitInverted swaps the axes
+// inside DirectPixelWriter (phyY = logical x), so its only internal guard
+// cannot catch an off-panel row — the callers must clip both coordinates.
+bool paintRowOnScreen(const GfxRenderer& paint, const int outY) { return outY >= 0 && outY < paint.getDisplayHeight(); }
+
+bool paintColOnScreen(const GfxRenderer& paint, const int outX) { return outX >= 0 && outX < paint.getDisplayWidth(); }
+
 bool rowBakeFn(void* user, const uint16_t rowIdx, const uint8_t* grayRow, const uint16_t width) {
   RowBakeCtx* ctx = static_cast<RowBakeCtx*>(user);
   if (ctx->aborted) return false;
@@ -55,7 +62,7 @@ bool rowBakeFn(void* user, const uint16_t rowIdx, const uint8_t* grayRow, const 
     ctx->aborted = true;
     return false;
   }
-  if (ctx->bake == nullptr || ctx->cache == nullptr || ctx->toneRow == nullptr) return false;
+  if (ctx->bake == nullptr || ctx->toneRow == nullptr) return false;
   if (width != ctx->w) {
     LOG_ERR("TIMGE", "SDK row width mismatch: %u != %u", width, ctx->w);
     ctx->aborted = true;
@@ -65,16 +72,22 @@ bool rowBakeFn(void* user, const uint16_t rowIdx, const uint8_t* grayRow, const 
     ctx->toneRow[x] = ctx->bake->tone(static_cast<int>(x), grayRow[x]);
   }
   ctx->bake->nextRow();
-  if (!ctx->cache->writeRow(ctx->toneRow)) {
+  // A missing writer (cache open failed, uncached paint) must not reject the
+  // row — the rows still paint through the target renderer below.
+  if (ctx->cache != nullptr && !ctx->cache->writeRow(ctx->toneRow)) {
     ctx->aborted = true;  // cache write failed: stop, the writer already dropped the file
     return false;
   }
   if (ctx->paint != nullptr) {
-    DirectPixelWriter pw;
-    pw.init(*ctx->paint);
-    pw.beginRow(ctx->y + static_cast<int>(rowIdx));
-    for (uint16_t col = 0; col < width; ++col) {
-      pw.writePixel(ctx->x + static_cast<int>(col), ctx->toneRow[col]);
+    const int outY = ctx->y + static_cast<int>(rowIdx);
+    if (paintRowOnScreen(*ctx->paint, outY)) {
+      DirectPixelWriter pw;
+      pw.init(*ctx->paint);
+      pw.beginRow(outY);
+      for (uint16_t col = 0; col < width; ++col) {
+        const int outX = ctx->x + static_cast<int>(col);
+        if (paintColOnScreen(*ctx->paint, outX)) pw.writePixel(outX, ctx->toneRow[col]);
+      }
     }
   }
   return true;
@@ -99,6 +112,25 @@ bool publishResult(const char* finalPath, const char* tmpPath, const bool publis
   if (!publishing) return true;
   if (Storage.replaceFile(tmpPath, finalPath)) return true;
   Storage.remove(tmpPath);
+  return false;
+}
+
+// Abort tracker for the converter family: the converters report only a
+// boolean, so wrapping the caller's hook tells decodeAndCache whether a
+// failure was an abort (Busy — foreground takeover) or a genuine decode
+// error (Failed).
+struct AbortTracker {
+  bool (*poll)(void*);
+  void* ctx;
+  bool fired = false;
+};
+
+bool trackAbort(void* user) {
+  auto* t = static_cast<AbortTracker*>(user);
+  if (t->poll != nullptr && t->poll(t->ctx)) {
+    t->fired = true;
+    return true;
+  }
   return false;
 }
 
@@ -152,11 +184,14 @@ struct BmpSource {
           static_cast<int32_t>(static_cast<uint32_t>(info[4]) | (static_cast<uint32_t>(info[5]) << 8) |
                                (static_cast<uint32_t>(info[6]) << 16) | (static_cast<uint32_t>(info[7]) << 24));
       bpp = static_cast<uint16_t>(info[10]) | (static_cast<uint16_t>(info[11]) << 8);
-      const uint32_t compression = static_cast<uint32_t>(info[14]) | (static_cast<uint32_t>(info[15]) << 8) |
-                                   (static_cast<uint32_t>(info[16]) << 16) | (static_cast<uint32_t>(info[17]) << 24);
+      // `info` starts at biWidth: biCompression lives at info[12..15].
+      const uint32_t compression = static_cast<uint32_t>(info[12]) | (static_cast<uint32_t>(info[13]) << 8) |
+                                   (static_cast<uint32_t>(info[14]) << 16) | (static_cast<uint32_t>(info[15]) << 24);
       const uint32_t clrUsed = static_cast<uint32_t>(info[28]) | (static_cast<uint32_t>(info[29]) << 8) |
                                (static_cast<uint32_t>(info[30]) << 16) | (static_cast<uint32_t>(info[31]) << 24);
-      if (w <= 0 || h == 0 || w > 0xFFFF || h > 0xFFFF) return false;
+      // Mirror the positive bound on the negative (top-down) side: negating
+      // INT32_MIN would be signed-overflow UB before the magnitude check.
+      if (w <= 0 || h == 0 || w > 0xFFFF || h > 0xFFFF || h < -0xFFFF) return false;
       width = w;
       topDown = h < 0;
       height = h < 0 ? -h : h;
@@ -248,8 +283,13 @@ struct BmpSource {
 // Quality BMP decode: area-averaged downscale for ≥2x reductions (§5.6),
 // nearest-neighbor otherwise (the converter family's today-behavior),
 // Floyd–Steinberg tone bake, cache rows + paint through `paint`.
+// `cacheStreamOk` (optional) reports whether the tone-cache stream ran to a
+// finalized end — a degraded stream paints every row but produces no cache,
+// so the caller must not publish.
 DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const size_t size, GfxRenderer* paint,
-                           const char* cachePath, const bool caching) {
+                           const char* cachePath, const bool caching, bool (*abortPoll)(void* ctx), void* abortCtx,
+                           bool* cacheStreamOk) {
+  if (cacheStreamOk != nullptr) *cacheStreamOk = false;
   if (paint == nullptr && !caching) return DecodeResult::Failed;  // nothing to produce
   BmpSource src;
   src.file.attach(data, size);
@@ -266,9 +306,12 @@ DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const siz
 
   const bool areaScale = (srcW >= 2 * dstW) || (srcH >= 2 * dstH);
   ttfimg::ToneCacheWriter writer;
-  const bool writerActive = caching && writer.begin(cachePath, dstW, dstH);
-  if (caching && !writerActive) return DecodeResult::Failed;
-
+  bool writerActive = caching && writer.begin(cachePath, dstW, dstH);
+  if (caching && !writerActive) {
+    // Storage failure on the cache stream is not a decode failure: keep
+    // painting the rows and skip the cache (the next pass re-decodes).
+    LOG_ERR("TIMGE", "BMP cache open failed — painting uncached: %s", spec.href);
+  }
   const size_t bitsBytes = src.rowBytes;
   PoolBytes bits{poolMakeBytes(bitsBytes ? bitsBytes : 1)};
   PoolBytes gray{poolMakeBytes(srcW + dstW)};  // gray row (srcW) + tone row (dstW) tail
@@ -309,6 +352,12 @@ DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const siz
         sy = (dstY * srcH) / dstH;
         if (sy > srcH - 1) sy = srcH - 1;
       }
+      // Foreground takeover aborts at the source-row boundary — the same
+      // hook the GIF converter and the SDK row sink honor.
+      if (abortPoll != nullptr && abortPoll(abortCtx)) {
+        writer.abort();
+        return DecodeResult::Busy;
+      }
       if (sy != loadedRow) {
         if (!src.readRowGray(sy, grayRow, bits.get())) {
           writer.abort();
@@ -341,13 +390,21 @@ DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const siz
           toneRow[dstX] = bake.tone(dstX, grayRow[srcX]);
         }
         bake.nextRow();
-        if (writerActive && !writer.writeRow(toneRow)) return DecodeResult::Failed;
+        if (writerActive && !writer.writeRow(toneRow)) {
+          // Storage failure mid-stream: drop the cache, keep painting.
+          writer.abort();
+          writerActive = false;
+        }
         if (paint != nullptr) {
-          DirectPixelWriter pw;
-          pw.init(*paint);
-          pw.beginRow(spec.y + dstY);
-          for (int col = 0; col < dstW; ++col) {
-            pw.writePixel(spec.x + col, toneRow[col]);
+          const int outY = spec.y + dstY;
+          if (paintRowOnScreen(*paint, outY)) {
+            DirectPixelWriter pw;
+            pw.init(*paint);
+            pw.beginRow(outY);
+            for (int col = 0; col < dstW; ++col) {
+              const int outX = spec.x + col;
+              if (paintColOnScreen(*paint, outX)) pw.writePixel(outX, toneRow[col]);
+            }
           }
         }
         continue;
@@ -359,18 +416,27 @@ DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const siz
       toneRow[dstX] = bake.tone(dstX, static_cast<int>(avg > 255 ? 255 : avg));
     }
     bake.nextRow();
-    if (writerActive && !writer.writeRow(toneRow)) return DecodeResult::Failed;
+    if (writerActive && !writer.writeRow(toneRow)) {
+      writer.abort();
+      writerActive = false;
+    }
     if (paint != nullptr) {
-      DirectPixelWriter pw;
-      pw.init(*paint);
-      pw.beginRow(spec.y + dstY);
-      for (int col = 0; col < dstW; ++col) {
-        pw.writePixel(spec.x + col, toneRow[col]);
+      const int outY = spec.y + dstY;
+      if (paintRowOnScreen(*paint, outY)) {
+        DirectPixelWriter pw;
+        pw.init(*paint);
+        pw.beginRow(outY);
+        for (int col = 0; col < dstW; ++col) {
+          const int outX = spec.x + col;
+          if (paintColOnScreen(*paint, outX)) pw.writePixel(outX, toneRow[col]);
+        }
       }
     }
   }
-  if (!writerActive || writer.finalize()) return DecodeResult::Ok;
-  return DecodeResult::Failed;
+  const bool streamOk = writerActive && writer.finalize();
+  if (cacheStreamOk != nullptr) *cacheStreamOk = streamOk;
+  if (!writerActive) return DecodeResult::Ok;  // degraded: rows painted, no cache
+  return streamOk ? DecodeResult::Ok : DecodeResult::Failed;
 }
 
 bool blitFromCache(GfxRenderer& renderer, const ImageSpec& spec, const char* dir, const bool qualityTone) {
@@ -409,11 +475,14 @@ bool blitFromCache(GfxRenderer& renderer, const ImageSpec& spec, const char* dir
     }
     const uint8_t* rowBytes = bulk + static_cast<size_t>(bufferRow) * static_cast<size_t>(bytesPerRow);
     ++bufferRow;
-    pw.beginRow(spec.y + row);
+    const int outY = spec.y + row;
+    if (outY < 0 || outY >= renderer.getDisplayHeight()) continue;
+    pw.beginRow(outY);
     for (int col = 0; col < cachedWidth; ++col) {
       const int bitShift = 6 - (col & 3) * 2;  // MSB first within byte
       const uint8_t tone = (rowBytes[col >> 2] >> bitShift) & 0x03;
-      pw.writePixel(spec.x + col, tone);
+      const int outX = spec.x + col;
+      if (outX >= 0 && outX < renderer.getDisplayWidth()) pw.writePixel(outX, tone);
     }
   }
   return true;
@@ -448,6 +517,8 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
   sdkImage.width = static_cast<uint16_t>(spec.w);
   sdkImage.height = static_cast<uint16_t>(spec.h);
 
+  // Abort tracking lives in the file anon namespace (see trackAbort).
+
   // JPEG/PNG under the legacy policy keep today's behavior exactly (§5.6):
   // no tone cache, SDK error-diffusion at paint — the worker declines them.
   if ((info.kind == ImageInfo::Kind::Png || info.kind == ImageInfo::Kind::Jpeg) && !qualityTone) {
@@ -460,8 +531,14 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
     // appending the cache, and painted through the target row by row. A
     // cache-only job (worker) skips the placement writes entirely.
     ttfimg::ToneCacheWriter writer;
-    if (caching && !writer.begin(writePath, spec.w, spec.h)) return DecodeResult::Failed;
-    ttfimg::ToneCacheWriter* writerPtr = caching ? &writer : nullptr;
+    bool streamPublishing = caching;
+    if (caching && !writer.begin(writePath, spec.w, spec.h)) {
+      // Storage failure on the cache stream is not a decode failure: keep
+      // painting the rows and skip the cache (the next pass re-decodes).
+      LOG_ERR("TIMGE", "Image cache open failed — painting uncached: %s", spec.href);
+      streamPublishing = false;
+    }
+    ttfimg::ToneCacheWriter* writerPtr = streamPublishing ? &writer : nullptr;
 
     ttfimg::FloydSteinberg4 bake(spec.w);
     uint8_t toneRowStack[256];
@@ -490,7 +567,7 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
     const BookStatus st = freeink::book::ImageRenderer::render(source, zip, sdkImage, scratch, &rowBakeFn, &ctx);
     if (st == BookStatus::Ok && !ctx.aborted) {
       if (writerPtr != nullptr && !writerPtr->finalize()) return DecodeResult::Failed;
-      if (!publishResult(cachePath, writePath, publishing)) return DecodeResult::Failed;
+      if (!publishResult(cachePath, writePath, streamPublishing)) return DecodeResult::Failed;
       return DecodeResult::Ok;
     }
     if (writerPtr != nullptr) writerPtr->abort();
@@ -530,21 +607,32 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
     config.qualityTone = qualityTone;  // GIF bake policy (§5.6)
 
     bool decoded = false;
+    bool aborted = false;
     if (info.kind == ImageInfo::Kind::Gif) {
       // Select the converter by the SNIFFED kind, not the href: ImageProbe
       // identified this GIF from its bytes, so a mismatched or extensionless
       // href must still reach the GIF converter (it would otherwise get no
       // decoder and stay blank).
+      AbortTracker tracker{abortPoll, abortCtx};
+      config.abortPoll = &trackAbort;
+      config.abortCtx = &tracker;
       ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(".gif");
       decoded = decoder != nullptr && decoder->decodeToFramebuffer(image.get(), imageSize, *paint, config);
+      aborted = tracker.fired;
     } else {
-      const DecodeResult bmpRes = decodeBmpRows(spec, image.get(), imageSize, paintToTarget ? paint : nullptr,
-                                                caching ? writePath : nullptr, caching);
+      bool cacheStreamOk = false;
+      const DecodeResult bmpRes =
+          decodeBmpRows(spec, image.get(), imageSize, paintToTarget ? paint : nullptr, caching ? writePath : nullptr,
+                        caching, abortPoll, abortCtx, &cacheStreamOk);
       // Lossless BMP: leave rows EMPTY in the cache on decode failure so a
       // later view re-decodes rather than trusting a torn cache.
       decoded = bmpRes == DecodeResult::Ok;
+      aborted = bmpRes == DecodeResult::Busy;
+      // A degraded stream painted every row but produced no cache: skip the
+      // publish instead of failing the whole decode over missing bytes.
+      if (decoded && !cacheStreamOk) return DecodeResult::Ok;
     }
-    if (!decoded) return DecodeResult::Failed;
+    if (!decoded) return aborted ? DecodeResult::Busy : DecodeResult::Failed;
     if (!publishResult(cachePath, writePath, publishing)) return DecodeResult::Failed;
     return DecodeResult::Ok;
   }

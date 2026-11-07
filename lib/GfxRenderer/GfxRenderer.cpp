@@ -231,6 +231,9 @@ bool GfxRenderer::beginWithScratch(uint8_t* buf, const int width, const int heig
   if (buf == nullptr || width != panelWidth || height != panelHeight || bytesPerRow != panelWidthBytes ||
       frameBufferSize != static_cast<uint32_t>(height) * static_cast<uint32_t>(bytesPerRow)) {
     LOG_ERR("GFX", "Scratch framebuffer geometry mismatch (%dx%d, %d B/row)", width, height, bytesPerRow);
+    // Drop any buffer a previous init left behind: hasFrameBuffer() must not
+    // keep reporting true for a renderer whose init failed (inert state).
+    frameBuffer = nullptr;
     return false;
   }
   frameBuffer = buf;

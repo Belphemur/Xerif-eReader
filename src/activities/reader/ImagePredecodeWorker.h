@@ -185,17 +185,29 @@ inline ImagePredecodeWorker* makeImagePredecodeWorkerInternal() {
 
 // Inert stub (PSRAM-less boards keep today's on-demand decode). Methods are
 // static: the stub touches no state, and cppcheck's functionStatic flags the
-// implicit this otherwise.
+// implicit this otherwise. The reader's full call surface (reserve/begun,
+// the owning pointer and its internal-DRAM factory) stays compile-clean so
+// a rollback build keeps on-demand decoding; reserve() false keeps every
+// enqueue path off.
 class ImagePredecodeWorker {
  public:
+  static bool reserve() { return false; }
   static bool begin(Epub*, freeink::book::BookSource*, const freeink::book::ZipCatalog*, const char*, uint32_t) {
     return false;
   }
+  static bool begun() { return false; }
   static void notifyGeneration(uint32_t) {}
   static bool enqueue(const ttfimg::ImageSpec&) { return false; }
   static void setForegroundBusy(bool) {}
   static bool cancel() { return true; }
   static bool active() { return false; }
 };
+
+struct ImagePredecodeWorkerRawDelete {
+  void operator()(ImagePredecodeWorker* p) const { delete p; }
+};
+using ImagePredecodeWorkerPtr = std::unique_ptr<ImagePredecodeWorker, ImagePredecodeWorkerRawDelete>;
+
+inline ImagePredecodeWorker* makeImagePredecodeWorkerInternal() { return new (std::nothrow) ImagePredecodeWorker(); }
 
 #endif  // BOARD_HAS_PSRAM && CROSSPOINT_TTF_READER

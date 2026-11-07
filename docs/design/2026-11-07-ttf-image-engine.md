@@ -168,10 +168,14 @@ on core 0 with no frame deadline; the quality work is therefore:
 
 Both colour/quality decisions are behind a settings-visible default with
 the legacy behavior available (revert switch) — for JPEG/PNG the switch
-has no effect (both paths are the SDK stack either way), for GIF/BMP it
-reverts to the app converters' today-behavior (nearest-neighbor + Bayer
-4-level via `DitherUtils.h`). This matches the repo's pattern for
-rendering changes.
+has no effect (both paths are the SDK stack either way). GIF/BMP scope
+note: the SDK image stack does not decode those kinds, so with
+`imageDecodeQuality = 0` the engine skips them entirely and a book keeps
+the reserved image geometry blank on both policies; the app converters
+run only on the quality path, and their legacy nearest-neighbor + Bayer
+4-level rendering (`DitherUtils.h`) survives only as the converter's
+internal OOM fallback, not as a user-visible revert. This matches the
+repo's pattern for rendering changes.
 
 ### 5.7 Concurrency
 

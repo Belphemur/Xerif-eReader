@@ -34,6 +34,21 @@ void paintTtfPageImages(const freeink::book::Page& page, freeink::book::TtfBookR
 
   const char* dir = ttf.cacheDir();
   if (dir == nullptr || dir[0] == '\0') return;
+  // An href past ImageSpec::kHrefCap cannot key the tone cache, but the SDK
+  // renderer takes the href by pointer with no length cap: paint the whole
+  // page through it instead of leaving those images blank. The quality blits
+  // below overwrite the SDK's own pixels for the cacheable images.
+  for (uint16_t m = 0; m < page.imageCount; ++m) {
+    const freeink::book::PageImage& img = page.images[m];
+    if (img.href != nullptr && strlen(img.href) >= ttfimg::ImageSpec::kHrefCap) {
+      const freeink::book::BookStatus st = freeink::book::PageRenderer::renderImages(
+          page, ttf.source(), ttf.catalog().zip(), ttf.scratch(), makeFrameTarget(renderer));
+      if (st != freeink::book::BookStatus::Ok) {
+        LOG_DBG("QPR", "TTF image render failed: %s", freeink::book::bookStatusName(st));
+      }
+      break;
+    }
+  }
   for (uint16_t m = 0; m < page.imageCount; ++m) {
     const freeink::book::PageImage& img = page.images[m];
     if (img.width == 0 || img.height == 0) continue;
@@ -74,7 +89,12 @@ void paintTtfPageImages(const freeink::book::Page& page, freeink::book::TtfBookR
     // boundary (the per-image claim above already marked it); the bounded
     // wait covers the band unwind. On timeout the space stays blank this
     // pass and the next pass retries — never a stall on the loop task.
-    if (!ImageDecodeGate::acquireForegroundBus(500)) continue;
+    if (!ImageDecodeGate::acquireForegroundBus(500)) {
+      // The GateGuard below never ran: drop the per-image claim or it stays
+      // Owner::Foreground forever and fills the claim table.
+      ImageDecodeGate::releaseForeground(hash);
+      continue;
+    }
     {
       struct GateGuard {
         uint64_t hash;
