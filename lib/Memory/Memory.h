@@ -109,6 +109,49 @@ inline void poolFree(void* p) {
 #endif
 }
 
+// Minimal STL allocator over poolMalloc/poolFree: PSRAM-resident on
+// BOARD_HAS_PSRAM firmware builds, plain malloc on host/non-PSRAM builds. Use
+// it for containers whose contents must not eat DRAM (e.g. the ZIP entry
+// caches in ZipFile/Epub).
+//
+// Nothrow contract: allocate() returns nullptr on failure instead of throwing
+// std::bad_alloc. This departs from the std::allocator requirements, so a
+// container node/string allocation that fails does not raise bad_alloc — the
+// node is constructed at a null pointer and the build crashes. That is the
+// same end state as today's default allocator under -fno-exceptions (OOM
+// aborts), so the container-level failure risk is unchanged; host tests never
+// allocate enough to fail.
+template <typename T>
+struct PoolAllocator {
+  using value_type = T;
+  using size_type = std::size_t;
+  using difference_type = std::ptrdiff_t;
+  using propagate_on_container_move_assignment = std::true_type;
+  using is_always_equal = std::true_type;
+
+  PoolAllocator() noexcept = default;
+  template <typename U>
+  PoolAllocator(const PoolAllocator<U>&) noexcept {}
+
+  template <typename U>
+  struct rebind {
+    using other = PoolAllocator<U>;
+  };
+
+  T* allocate(std::size_t n) noexcept { return static_cast<T*>(poolMalloc(n * sizeof(T))); }
+  void deallocate(T* p, std::size_t /*n*/) noexcept { poolFree(p); }
+
+  // Stateless over one shared pool: all instances compare equal.
+  template <typename U>
+  bool operator==(const PoolAllocator<U>&) const noexcept {
+    return true;
+  }
+  template <typename U>
+  bool operator!=(const PoolAllocator<U>&) const noexcept {
+    return false;
+  }
+};
+
 // RAII wrapper for a byte buffer allocated via poolMalloc / released via poolFree.
 // Eliminates per-call-site #ifdef BOARD_HAS_PSRAM and the error-prone
 // std::unique_ptr<uint8_t[], void(*)(void*)> boilerplate. PoolDeleter is
