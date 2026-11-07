@@ -310,6 +310,7 @@ EpubReaderActivity::~EpubReaderActivity() {
 #ifdef BOARD_HAS_PSRAM
   ImageBlock::setPsramExtractor(nullptr, nullptr);
 #endif
+  stopImagePredecode();  // idempotent; no-op when onExit already stopped it
   // ActivityManager destroys activities with its RenderLock already held;
   // taking another here self-deadlocks (renderingMutex is non-recursive).
   settleOverlayRefresh();
@@ -385,6 +386,9 @@ void EpubReaderActivity::onExit() {
   // R1: transient worker lifetime — cancel + join + free before teardown.
   stopFibpWorker();
 #endif
+  // Image predecode holds an Epub* and must be quiescent before the book
+  // state goes away.
+  stopImagePredecode();
 #ifdef READING_STATS_ENABLED
   if (epub && SETTINGS.shouldTrackReadingStats()) {
     recordCurrentPageReadingTime();
@@ -858,6 +862,34 @@ bool EpubReaderActivity::loadBook() {
   if (fibpWorker_ != nullptr) fibpWorker_->reserveStack();
 #endif
 
+#if defined(BOARD_HAS_PSRAM)
+  // Image predecode arms only for legacy-engine sessions: the .pxc cache and
+  // ImageBlock::render belong to the Section (bitmap-engine) reader path —
+  // the native-TTF chain renders images through the SDK's ImageRenderer with
+  // no .pxc (finding recorded in the design doc's execution notes). Reserving
+  // on a TTF session would idle ~14 KB DRAM + 48 KB PSRAM for a worker whose
+  // jobs can never be enqueued.
+#if defined(CROSSPOINT_TTF_READER)
+  const bool predecodeEnabled = SETTINGS.readerFontEngine == CrossPointSettings::READER_ENGINE_BITMAP;
+#else
+  const bool predecodeEnabled = true;
+#endif
+  if (predecodeEnabled) {
+    // Reserve the queue + scratch BEFORE the EPUB open — the ZIP index cache
+    // can leave no contiguous DRAM block for the ~14 KB ring (same rationale
+    // as the FIBP stack reserve above); the scratch framebuffer is PSRAM-only.
+    if (imagePredecode_ == nullptr) {
+      imagePredecode_.reset(makeImagePredecodeWorkerInternal());
+      if (imagePredecode_ == nullptr) {
+        LOG_ERR("ERS", "Predecode worker object alloc failed — predecode disabled");
+      }
+    }
+    if (imagePredecode_ != nullptr && !imagePredecode_->reserve()) {
+      LOG_ERR("ERS", "Predecode reserve failed — predecode disabled");
+    }
+  }
+#endif
+
   auto loadedEpub = makeUniqueNoThrow<Epub>(bookPath, "/.crosspoint");
   if (!loadedEpub) {
     LOG_ERR("ERS", "Failed to allocate EPUB object");
@@ -908,6 +940,14 @@ bool EpubReaderActivity::loadBook() {
   ImageBlock::setPsramExtractor(epub.get(), [](void* ctx, const char* src, size_t& size) {
     return static_cast<Epub*>(ctx)->extractItemToPsram(src, &size);
   });
+#endif
+
+#if defined(BOARD_HAS_PSRAM)
+  if (imagePredecode_ != nullptr && !imagePredecode_->begun()) {
+    if (!imagePredecode_->begin(epub.get(), imagePredecodeGen_)) {
+      LOG_ERR("ERS", "Predecode worker arm failed — predecode disabled");
+    }
+  }
 #endif
 
   epub->setupCacheDir();
@@ -1188,6 +1228,7 @@ void EpubReaderActivity::prefetchNextChapterDuringDisplay() {
   // Start a new prefetch for the next chapter
   const ReaderRenderSpec renderSpec = SETTINGS.readerRenderSpec(buildViewportWidth, buildViewportHeight);
   nextSectionPrefetch = std::make_unique<Section>(epub, nextSpine, renderer);
+  installImageSightingHook(*nextSectionPrefetch, static_cast<uint16_t>(nextSpine), /*isCurrentSpine=*/false);
   nextSectionSpineIndex = nextSpine;
 
   // Try loading existing cache first; if missing, start a build
@@ -2484,6 +2525,7 @@ bool EpubReaderActivity::launchKOReaderSync() {
 #ifdef BOARD_HAS_PSRAM
     ImageBlock::setPsramExtractor(nullptr, nullptr);
 #endif
+    stopImagePredecode();  // quiesce before section/epub die
     section.reset();
     if (auto* fcm = renderer.getFontCacheManager()) {
       fcm->releaseSdFontCaches();
@@ -2974,6 +3016,11 @@ void EpubReaderActivity::renderBook() {
 
   const ReaderRenderSpec renderSpec = SETTINGS.readerRenderSpec(viewportWidth, viewportHeight);
 
+  // Image predecode generation: the render-spec signature changes exactly
+  // when the layout does, which is when queued .pxc jobs go stale (§3.2).
+  imagePredecodeGen_ = readerRenderSpecSignature(renderSpec);
+  imagePredecode_->notifyGeneration(imagePredecodeGen_);
+
   if (!section) {
     // Chapter changed or first load — clear stale prefetch
     nextSectionPrefetch.reset();
@@ -2981,6 +3028,7 @@ void EpubReaderActivity::renderBook() {
     const auto filepath = epub->getSpineItem(currentSpineIndex).href;
     LOG_DBG("ERS", "Loading file: %s, index: %d", filepath.c_str(), currentSpineIndex);
     section = std::unique_ptr<Section>(new Section(epub, currentSpineIndex, renderer));
+    installImageSightingHook(*section, static_cast<uint16_t>(currentSpineIndex), /*isCurrentSpine=*/true);
     partialRebuildStartFailed = false;
 
     const bool cacheLoaded = section->loadSectionFile(renderSpec);
@@ -5088,6 +5136,72 @@ void EpubReaderActivity::updateFibpWorker(const uint32_t generation, const freei
   }
 }
 
+// Feed the image predecode worker from a section's page-complete sightings
+// (design §3.1). The hook runs on the loop task inside build ticks; it
+// captures the render position (page-local position + the same oriented
+// margins renderContents uses) and skips what the worker must not decode.
+void EpubReaderActivity::installImageSightingHook(Section& target, const uint16_t spineIndex,
+                                                  const bool isCurrentSpine) {
+#if defined(BOARD_HAS_PSRAM)
+  if (imagePredecode_ == nullptr) return;
+  target.imageSightingHook = [this, spineIndex, isCurrentSpine](const Section::ImageSighting& sight) {
+    if (imagePredecode_ == nullptr) return;
+    // Pages behind the reading position only matter when the user pages back,
+    // which decodes on demand exactly as today (prefetch jobs are all ahead).
+    if (isCurrentSpine && section != nullptr && static_cast<int>(sight.pageIndex) < section->currentPage) return;
+
+    ImagePredecodeWorker::Job job{};
+    if (strlen(sight.imagePath) >= ImagePredecodeWorker::Job::kImagePathCap ||
+        strlen(sight.srcPath) >= ImagePredecodeWorker::Job::kSrcPathCap) {
+      LOG_DBG("ERS", "Predecode sighting path too long — skipped");
+      return;
+    }
+    strncpy(job.imagePath, sight.imagePath, ImagePredecodeWorker::Job::kImagePathCap - 1);
+    strncpy(job.srcPath, sight.srcPath, ImagePredecodeWorker::Job::kSrcPathCap - 1);
+
+    // Position + oriented margins captured at sighting time (design §3.3(b)):
+    // the Bayer dither indexes absolute screen coordinates, so .pxc bytes
+    // depend on where the image lands. These are the same margins renderBook
+    // hands to renderContents().
+    int top = 0, right = 0, bottom = 0, left = 0;
+    renderer.getOrientedViewableTRBL(&top, &right, &bottom, &left);
+    const int x = sight.xPos + left + SETTINGS.screenMargin;
+    const int y = sight.yPos + top + SETTINGS.screenMargin;
+    // Same bounds check ImageBlock::render applies: an out-of-bounds image is
+    // never decoded by the foreground, so predecoding it would be waste.
+    if (x < 0 || y < 0 || x + sight.width > renderer.getScreenWidth() ||
+        y + sight.height > renderer.getScreenHeight()) {
+      return;
+    }
+
+    job.spine = spineIndex;
+    job.width = sight.width;
+    job.height = sight.height;
+    job.x = static_cast<int16_t>(x);
+    job.y = static_cast<int16_t>(y);
+    job.generation = imagePredecodeGen_;
+    imagePredecode_->enqueue(job);
+  };
+#else
+  (void)target;
+  (void)spineIndex;
+  (void)isCurrentSpine;
+#endif
+}
+
+void EpubReaderActivity::stopImagePredecode() {
+  if (imagePredecode_ == nullptr) return;
+  if (imagePredecode_->cancel()) {
+    imagePredecode_.reset();
+  } else {
+    // Wedged join: the worker object owns state a live task still touches —
+    // release ownership WITHOUT destroying (leak beats use-after-free, the
+    // stopFibpWorker contract).
+    LOG_ERR("ERS", "Image predecode worker did not stop — releasing without destroy");
+    (void)imagePredecode_.release();
+  }
+}
+
 void EpubReaderActivity::stopFibpWorker() {
   if (fibpWorker_ == nullptr) return;
   if (fibpWorker_->cancel()) {
@@ -5401,6 +5515,18 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const auto t0 = millis();
   const int fontId = SETTINGS.getReaderFontId();
   ImageBlock::clearRenderFailures();
+
+  // Pause the image predecode worker while pixels are being produced for the
+  // user (render+display path, design §3.4 rule 5). Cleared on every exit
+  // path by the guard; an in-flight worker decode ends via the claim's abort
+  // flag instead.
+  struct PredecodePause {
+    ImagePredecodeWorkerPtr& worker;
+    ~PredecodePause() {
+      if (worker != nullptr) worker->setForegroundBusy(false);
+    }
+  } predecodePause{imagePredecode_};
+  if (imagePredecode_ != nullptr) imagePredecode_->setForegroundBusy(true);
 
   struct PxcSlotGuard {
     ~PxcSlotGuard() { ImageBlock::releaseRenderCache(); }

@@ -22,6 +22,7 @@
 #include "ReaderToolbarUi.h"
 #include "TouchLongPressMode.h"
 #include "components/OptionPopup.h"
+#include "ImagePredecodeWorker.h"
 #if defined(CROSSPOINT_TTF_READER)
 #include "FibpPrefetchWorker.h"
 #include "QuickPageCapture.h"
@@ -244,6 +245,15 @@ class EpubReaderActivity final : public ReaderActivity {
   uint16_t buildViewportHeight = 0;
   bool partialRebuildStartFailed = false;
 
+  // Background image predecode (docs/design/2026-11-06-image-predecode.md).
+  // Created + reserved at reader entry (before the EPUB open, so the queue's
+  // DRAM block lands in the whole heap), armed once the Epub exists, fed by
+  // the sections' image-sighting hook, cancelled at reader teardown. Inert
+  // stub on PSRAM-less builds (ImagePredecodeWorker.h) — the C3 floor keeps
+  // today's on-demand decode exactly.
+  ImagePredecodeWorkerPtr imagePredecode_;
+  uint32_t imagePredecodeGen_ = 0;  // render-spec signature the queued jobs belong to
+
 #if defined(CROSSPOINT_TTF_READER)
   // Native-TTF page source (design §3.5). Null until loadBook() succeeds
   // (a failed open falls back to the legacy Section path — build-flag kill
@@ -345,6 +355,11 @@ class EpubReaderActivity final : public ReaderActivity {
   // worker builds the entered chapter, the sync path defers to its commit.
   void updateFibpWorker(uint32_t generation, const freeink::book::LayoutParams& params);
   void stopFibpWorker();
+#endif
+  // Image predecode wiring: arm at loadBook, feed from the section sighting
+  // hook, stop at reader teardown.
+  void installImageSightingHook(Section& target, uint16_t spineIndex, bool isCurrentSpine);
+  void stopImagePredecode();
   void ttfInvalidateCaches();
   void ttfShowIndexingPopup();
   void ttfSaveProgress();
