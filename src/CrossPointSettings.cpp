@@ -128,6 +128,10 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   // GT911 idle sleep toggle — not in SettingsList (no menu UI yet), persisted
   // manually so the owner can flip it without a rebuild.
   doc["touchIdleSleep"] = touchIdleSleep;
+  // TTF image decode quality revert switch — not in SettingsList either; the
+  // value selects the tone bake on new decode paths only (old caches stay
+  // valid under their own bake flag in the cache name).
+  doc["imageDecodeQuality"] = imageDecodeQuality;
 
   bleturner::writeJson(ble, doc);
 }
@@ -274,6 +278,8 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   // GT911 idle sleep toggle — not in SettingsList, load manually (bool-fold:
   // anything non-zero counts as enabled).
   touchIdleSleep = doc["touchIdleSleep"] | (uint8_t)1 ? 1 : 0;
+  // TTF image decode quality: anything non-zero counts as on (default on).
+  imageDecodeQuality = doc["imageDecodeQuality"] | (uint8_t)1 ? 1 : 0;
 
   // The old fork reused the tap/long-press keys with a different value catalog.
   // When that legacy group is present, discard its bytes and fall back to the

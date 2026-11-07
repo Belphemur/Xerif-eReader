@@ -461,6 +461,13 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t finishReadingPrompt = 1;
   // Image rendering mode in EPUB reader
   uint8_t imageRendering = IMAGES_DISPLAY;
+  // TTF-path image decode quality (design 2026-11-07-ttf-image-engine.md §5.6
+  // corrected). 1 = worker/foreground tone caches are baked with
+  // error-diffusion and GIF/BMP decode at all (the new engine). 0 = revert
+  // switch: JPEG/PNG render exactly as before the engine (SDK stack, no
+  // cache) and GIF/BMP stay unrendered. No settings-menu entry yet;
+  // JSON-only (owner adds UI).
+  uint8_t imageDecodeQuality = 1;
   // Tilt-based page turning (X3 only — requires QMI8658 IMU)
   uint8_t tiltPageTurn = TILT_OFF;
   // Master reader-touch toggle on boards with a touch controller.

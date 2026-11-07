@@ -38,6 +38,17 @@ struct GifContext {
   bool caching{false};
   bool success{true};
   uint32_t lastYieldMs{0};
+  // Quality tone mode (RenderConfig::qualityTone): area-averaged downscale
+  // + Floyd–Steinberg 4-level bake instead of nearest + Bayer. Allocation
+  // failure silently falls back to the legacy path.
+  bool quality{false};
+  std::unique_ptr<uint32_t[]> qSums;    // [dstWidth] gray accumulation
+  std::unique_ptr<uint16_t[]> qCounts;  // [dstWidth] samples per column
+  std::unique_ptr<int16_t[]> qErr;      // [dstWidth+2] FS error, current row
+  std::unique_ptr<int16_t[]> qErrNext;  // [dstWidth+2] FS error, next row
+  std::unique_ptr<uint8_t[]> qToneRow;  // [dstWidth] baked 4-level tones
+  int qAccumDstY = -1;                  // dst row currently accumulating (-1 = none)
+  int qFlushedRows = 0;                 // next destination row to bake (in order)
 };
 
 void updateGrayPalette(const GIFDRAW* pDraw, GifContext& ctx) {
@@ -51,7 +62,157 @@ void updateGrayPalette(const GIFDRAW* pDraw, GifContext& ctx) {
   }
 }
 
+// --- quality tone mode (RenderConfig::qualityTone) ---------------------------
+
+void qResetAccum(GifContext& ctx) {
+  memset(ctx.qSums.get(), 0, static_cast<size_t>(ctx.dstWidth) * sizeof(uint32_t));
+  memset(ctx.qCounts.get(), 0, static_cast<size_t>(ctx.dstWidth) * sizeof(uint16_t));
+}
+
+void qSeedError(GifContext& ctx) {
+  memset(ctx.qErr.get(), 0, (static_cast<size_t>(ctx.dstWidth) + 2) * sizeof(int16_t));
+  memset(ctx.qErrNext.get(), 0, (static_cast<size_t>(ctx.dstWidth) + 2) * sizeof(int16_t));
+}
+
+uint8_t qToneAt(GifContext& ctx, const int x, const int gray) {
+  // Floyd–Steinberg into the 4-level tone; x is destination-local.
+  const int v = gray + ctx.qErr[x + 1];
+  int tone = (v + 42) / 85;
+  if (tone < 0) tone = 0;
+  if (tone > 3) tone = 3;
+  const int errVal = v - tone * 85;
+  if (x + 1 < ctx.dstWidth) ctx.qErr[x + 2] += static_cast<int16_t>(errVal * 7 / 16);
+  ctx.qErrNext[x] += static_cast<int16_t>(errVal * 3 / 16);
+  ctx.qErrNext[x + 1] += static_cast<int16_t>(errVal * 5 / 16);
+  ctx.qErrNext[x + 2] += static_cast<int16_t>(errVal * 1 / 16);
+  return static_cast<uint8_t>(tone);
+}
+
+void qNextErrorRow(GifContext& ctx) {
+  memcpy(ctx.qErr.get(), ctx.qErrNext.get(), (static_cast<size_t>(ctx.dstWidth) + 2) * sizeof(int16_t));
+  memset(ctx.qErrNext.get(), 0, (static_cast<size_t>(ctx.dstWidth) + 2) * sizeof(int16_t));
+}
+
+// Bakes one accumulated destination row (counts == 0 → white) and emits it
+// to the pixel cache and the renderer.
+void qFlushRow(const int dstY, GifContext& ctx) {
+  const int outY = ctx.config->y + dstY;
+  DirectCacheWriter cw;
+  const bool caching = ctx.caching;
+  if (caching) {
+    if (!ctx.cache.advanceTo(dstY)) {
+      ctx.success = false;
+      return;
+    }
+    cw.init(ctx.cache.buffer.get(), ctx.cache.bytesPerRow, ctx.cache.bandRows, ctx.cache.originX);
+    cw.beginRow(outY, ctx.config->y + ctx.cache.bandStart);
+  }
+  DirectPixelWriter pw;
+  pw.init(*ctx.renderer);
+  // PortraitInverted swaps the axes inside DirectPixelWriter, so its internal
+  // band guard tracks the wrong axis for off-panel rows — clip both here.
+  const bool paintRow = outY >= 0 && outY < ctx.screenHeight;
+  if (paintRow) pw.beginRow(outY);
+  for (int dstX = 0; dstX < ctx.dstWidth; ++dstX) {
+    const uint32_t avg = ctx.qCounts[dstX] != 0 ? ctx.qSums[dstX] / ctx.qCounts[dstX] : 255;
+    const uint8_t tone = qToneAt(ctx, dstX, avg > 255 ? 255 : static_cast<int>(avg));
+    ctx.qToneRow[dstX] = tone;
+    const int outX = ctx.config->x + dstX;
+    if (paintRow && outX >= 0 && outX < ctx.screenWidth) pw.writePixel(outX, tone);
+    if (caching) cw.writePixel(outX, tone);
+  }
+  qNextErrorRow(ctx);
+  if (dstY == ctx.qFlushedRows) ++ctx.qFlushedRows;
+}
+
+// Quality-mode core of renderCanvasRow: feed one completed source row.
+void qRenderCanvasRow(const uint8_t* grayRow, const int srcY, GifContext& ctx) {
+  int firstDstY = (srcY * ctx.dstHeight) / ctx.srcHeight;
+  const bool upscale = ctx.dstHeight >= ctx.srcHeight;
+  if (upscale) {
+    // Each destination row's box covers a single source row: bake it whole.
+    int endDstY = firstDstY + 1;
+    if (ctx.dstHeight > ctx.srcHeight) endDstY = ((srcY + 1) * ctx.dstHeight) / ctx.srcHeight;
+    if (endDstY > ctx.dstHeight) endDstY = ctx.dstHeight;
+    for (int dstY = firstDstY; dstY < endDstY; ++dstY) {
+      qResetAccum(ctx);
+      for (int dstX = 0; dstX < ctx.dstWidth; ++dstX) {
+        const int x0 = dstX * ctx.srcWidth / ctx.dstWidth;
+        const int x1 = (dstX + 1) * ctx.srcWidth / ctx.dstWidth;
+        if (x1 <= x0) {
+          // Horizontally enlarged: the box span is empty. Nearest-neighbor
+          // the column instead of leaving qCounts at 0, which qFlushRow
+          // bakes as white.
+          ctx.qSums[dstX] = grayRow[x0 < ctx.srcWidth ? x0 : ctx.srcWidth - 1];
+          ctx.qCounts[dstX] = 1;
+          continue;
+        }
+        uint32_t sum = 0;
+        for (int x = x0; x < x1; ++x) sum += grayRow[x];
+        ctx.qSums[dstX] = sum / (x1 - x0);
+        ctx.qCounts[dstX] = 1;
+      }
+      qFlushRow(dstY, ctx);
+      if (!ctx.success) return;
+    }
+    ctx.qAccumDstY = -1;
+    return;
+  }
+
+  // Downscale: source rows accumulate into their shared destination row;
+  // the row bakes when the source band moves past it. The band mapping is
+  // the inverse of the BMP box filter's destination boxes: source row srcY
+  // belongs to the destination row whose [dst*srcH/dstH, (dst+1)*srcH/dstH)
+  // box contains it — floor(((srcY+1)*dstH - 1)/srcH) — so a 5-to-2 shrink
+  // averages rows 0–1 into dst 0, not rows 0–2.
+  firstDstY = ((srcY + 1) * ctx.dstHeight - 1) / ctx.srcHeight;
+  if (ctx.qAccumDstY != firstDstY) {
+    if (ctx.qAccumDstY >= 0) {
+      qFlushRow(ctx.qAccumDstY, ctx);
+      if (!ctx.success) return;
+    }
+    ctx.qAccumDstY = firstDstY;
+    qResetAccum(ctx);
+  }
+  for (int dstX = 0; dstX < ctx.dstWidth; ++dstX) {
+    const int x0 = dstX * ctx.srcWidth / ctx.dstWidth;
+    const int x1 = (dstX + 1) * ctx.srcWidth / ctx.dstWidth;
+    if (x1 <= x0) {
+      // Mixed-axis resize (vertical shrink, horizontal enlargement): the box
+      // span is empty here — nearest-neighbor the column so qCounts stays
+      // populated and the bake neither skips nor whitens it.
+      ctx.qSums[dstX] += grayRow[x0 < ctx.srcWidth ? x0 : ctx.srcWidth - 1];
+      ++ctx.qCounts[dstX];
+      continue;
+    }
+    uint32_t sum = 0;
+    for (int x = x0; x < x1; ++x) sum += grayRow[x];
+    ctx.qSums[dstX] += sum / (x1 - x0);
+    ++ctx.qCounts[dstX];
+  }
+}
+
+// End of frame: bake the pending row and any destination row no source row
+// covered (white). qFlushRow advances qFlushedRows, so everything below the
+// pending accumulator is already on disk.
+void qFlushRemainder(GifContext& ctx) {
+  if (ctx.qAccumDstY >= 0) {
+    qFlushRow(ctx.qAccumDstY, ctx);
+    ctx.qAccumDstY = -1;
+    if (!ctx.success) return;
+  }
+  while (ctx.qFlushedRows < ctx.dstHeight) {
+    qResetAccum(ctx);
+    qFlushRow(ctx.qFlushedRows, ctx);
+    if (!ctx.success) return;
+  }
+}
+
 void renderCanvasRow(const uint8_t* grayRow, int srcY, GifContext& ctx) {
+  if (ctx.quality) {
+    qRenderCanvasRow(grayRow, srcY, ctx);
+    return;
+  }
   // Map source rows using the exact output-height ratio. During downscaling,
   // multiple source rows may map to the same output row; during upscaling, a
   // source row must be repeated across every destination row in its range.
@@ -71,7 +232,7 @@ void renderCanvasRow(const uint8_t* grayRow, int srcY, GifContext& ctx) {
   for (int dstY = firstDstY; dstY < endDstY; ++dstY) {
     ctx.lastDstY = dstY;
     const int outY = ctx.config->y + dstY;
-    if (outY >= ctx.screenHeight) continue;
+    if (outY < 0 || outY >= ctx.screenHeight) continue;
 
     pw.beginRow(outY);
 
@@ -95,7 +256,7 @@ void renderCanvasRow(const uint8_t* grayRow, int srcY, GifContext& ctx) {
 
     for (int dstX = 0; dstX < ctx.dstWidth; ++dstX) {
       const int outX = outXBase + dstX;
-      if (outX < ctx.screenWidth) {
+      if (outX >= 0 && outX < ctx.screenWidth) {
         const uint8_t gray = grayRow[srcX];
         uint8_t ditheredGray;
         if (useDithering) {
@@ -184,6 +345,15 @@ void gifDrawCallback(GIFDRAW* pDraw) {
   auto* ctx = reinterpret_cast<GifContext*>(pDraw->pUser);
   if (!ctx || !ctx->success || !ctx->grayRow || !ctx->whiteRow) return;
 
+  // Predecode abort (worker decodes only; the foreground leaves the hook
+  // null): clearing success makes every remaining row return here
+  // immediately and fails the decode, whose existing !ctx.success path drops
+  // the partial cache file.
+  if (ctx->config->abortPoll != nullptr && ctx->config->abortPoll(ctx->config->abortCtx)) {
+    ctx->success = false;
+    return;
+  }
+
   ImageToFramebufferDecoder::yieldDuringDecode(ctx->lastYieldMs);
 
   const int canvasY = pDraw->iY + pDraw->y;
@@ -240,25 +410,44 @@ bool GifToFramebufferConverter::getDimensionsStatic(const std::string& imagePath
 
 bool GifToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath, GfxRenderer& renderer,
                                                     const RenderConfig& config) {
-  LOG_DBG("GIF", "Decoding GIF: %s", imagePath.c_str());
+  return decodeGifSource(imagePath.c_str(), nullptr, 0, renderer, config);
+}
+
+bool GifToFramebufferConverter::decodeToFramebuffer(uint8_t* data, const size_t size, GfxRenderer& renderer,
+                                                    const RenderConfig& config) {
+  if (data == nullptr) return false;
+  return decodeGifSource(nullptr, data, size, renderer, config);
+}
+
+bool GifToFramebufferConverter::decodeGifSource(const char* imagePath, uint8_t* mem, const size_t memSize,
+                                                GfxRenderer& renderer, const RenderConfig& config) {
+  const char* label = mem != nullptr ? "(memory GIF)" : imagePath;
 
   GifBasicInfo info;
-  if (!readGifInfoFromPath(imagePath, info)) {
-    LOG_ERR("GIF", "Failed to parse GIF header: %s", imagePath.c_str());
+  bool infoParsed = false;
+  if (mem != nullptr) {
+    HalMemoryFile memFile(mem, memSize);
+    infoParsed = GifCommon::readBasicInfoFrom(memFile, info);
+  } else {
+    infoParsed = readGifInfoFromPath(imagePath, info);
+  }
+  if (!infoParsed) {
+    LOG_ERR("GIF", "Failed to parse GIF header: %s", label);
     return false;
   }
   if (info.interlaced) {
-    warnUnsupportedFeature("interlaced GIF", imagePath);
+    warnUnsupportedFeature("interlaced GIF", label);
     return false;
   }
   if (info.canvasWidth > MAX_WIDTH) {
     LOG_ERR("GIF",
             "GIF canvas too wide for AnimatedGIF: canvas=%ux%u MAX_WIDTH=%d "
             "renderTarget=%dx%d file=%s",
-            info.canvasWidth, info.canvasHeight, MAX_WIDTH, config.maxWidth, config.maxHeight, imagePath.c_str());
+            info.canvasWidth, info.canvasHeight, MAX_WIDTH, config.maxWidth, config.maxHeight, label);
     return false;
   }
   ImageDimensions sourceDimensions;
+
   if (!validateAndStoreDimensions(info.canvasWidth, info.canvasHeight, sourceDimensions, "GIF")) return false;
 
   const size_t freeHeap = HalMemory::getInternalHeap().freeBytes;
@@ -299,7 +488,7 @@ bool GifToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
     ctx.dstHeight = static_cast<int>(ctx.srcHeight * ctx.scale);
   }
   if (ctx.dstWidth <= 0 || ctx.dstHeight <= 0) {
-    LOG_ERR("GIF", "Degenerate output dimensions %dx%d for %s", ctx.dstWidth, ctx.dstHeight, imagePath.c_str());
+    LOG_ERR("GIF", "Degenerate output dimensions %dx%d for %s", ctx.dstWidth, ctx.dstHeight, label);
     return false;
   }
 
@@ -311,6 +500,29 @@ bool GifToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
   }
   memset(ctx.whiteRow.get(), 255, static_cast<size_t>(ctx.srcWidth));
 
+  if (config.qualityTone) {
+    // Quality bake state; allocation failure degrades to the legacy path
+    // rather than failing the decode. Partially allocated buffers are
+    // released so the fallback's cache band can still allocate under
+    // pressure.
+    ctx.qSums = makeUniqueNoThrow<uint32_t[]>(ctx.dstWidth);
+    ctx.qCounts = makeUniqueNoThrow<uint16_t[]>(ctx.dstWidth);
+    ctx.qErr = makeUniqueNoThrow<int16_t[]>(ctx.dstWidth + 2);
+    ctx.qErrNext = makeUniqueNoThrow<int16_t[]>(ctx.dstWidth + 2);
+    ctx.qToneRow = makeUniqueNoThrow<uint8_t[]>(ctx.dstWidth);
+    if (ctx.qSums && ctx.qCounts && ctx.qErr && ctx.qErrNext && ctx.qToneRow) {
+      ctx.quality = true;
+      qSeedError(ctx);
+    } else {
+      LOG_ERR("GIF", "OOM: quality bake state — falling back to legacy dither");
+      ctx.qSums.reset();
+      ctx.qCounts.reset();
+      ctx.qErr.reset();
+      ctx.qErrNext.reset();
+      ctx.qToneRow.reset();
+    }
+  }
+
   gif->begin(GIF_PALETTE_RGB888);
   gif->setDrawType(GIF_DRAW_RAW);
   LOG_DBG("GIF",
@@ -318,22 +530,25 @@ bool GifToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
           "renderTarget=%dx%d MAX_WIDTH=%d freeHeap=%u file=%s",
           info.canvasWidth, info.canvasHeight, info.frameWidth, info.frameHeight, info.frameX, info.frameY,
           info.interlaced ? "yes" : "no", config.maxWidth, config.maxHeight, MAX_WIDTH,
-          HalMemory::getInternalHeap().freeBytes, imagePath.c_str());
-  const int rcOpen = gif->open(imagePath.c_str(), gifOpenWithHandle, gifCloseWithHandle, gifReadWithHandle,
-                               gifSeekWithHandle, gifDrawCallback);
+          HalMemory::getInternalHeap().freeBytes, label);
+  const int rcOpen = mem != nullptr ? gif->open(mem, static_cast<int>(memSize), gifDrawCallback)
+                                    : gif->open(label, gifOpenWithHandle, gifCloseWithHandle, gifReadWithHandle,
+                                                gifSeekWithHandle, gifDrawCallback);
   const ScopedCleanup cleanup{[&gif]() { gif->close(); }};
   if (rcOpen != 1) {
     const int err = gif->getLastError();
     LOG_ERR("GIF", "AnimatedGIF open failed: err=%d canvas=%ux%u MAX_WIDTH=%d file=%s", err, info.canvasWidth,
-            info.canvasHeight, MAX_WIDTH, imagePath.c_str());
+            info.canvasHeight, MAX_WIDTH, label);
     return false;
   }
 
   ctx.caching = !config.cachePath.empty();
   if (ctx.caching) {
     if (!ctx.cache.begin(config.cachePath, ctx.dstWidth, ctx.dstHeight, config.x, config.y, 1)) {
-      LOG_ERR("GIF", "Failed to start cache stream");
-      return false;
+      // Storage failure on the cache stream is not a decode failure: keep
+      // painting the frame and skip the cache (the next pass re-decodes).
+      LOG_ERR("GIF", "Cache stream start failed — painting uncached: %s", label);
+      ctx.caching = false;
     }
   }
 
@@ -348,13 +563,23 @@ bool GifToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
 
   processGapRowsUpTo(ctx.srcHeight, ctx);
   if (!ctx.success) {
-    LOG_ERR("GIF", "GIF post-process failed: %s", imagePath.c_str());
+    LOG_ERR("GIF", "GIF post-process failed: %s", label);
     if (ctx.caching) ctx.cache.abort();
     return false;
   }
+  if (ctx.quality) {
+    qFlushRemainder(ctx);
+    if (!ctx.success) {
+      LOG_ERR("GIF", "GIF quality flush failed: %s", label);
+      if (ctx.caching) ctx.cache.abort();
+      return false;
+    }
+  }
 
   if (frameState > 0) {
-    warnUnsupportedFeature("animation (using first frame only)", imagePath);
+    // `label` (never the raw imagePath): the memory entry point passes a
+    // null imagePath and the warning stringifies its argument.
+    warnUnsupportedFeature("animation (using first frame only)", label);
   }
 
   if (ctx.caching && !ctx.cache.finalize()) {

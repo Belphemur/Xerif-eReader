@@ -22,7 +22,8 @@ inline uint16_t readLe16(const uint8_t* data) {
   return static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8);
 }
 
-inline bool skipSubBlocks(HalFile& file) {
+template <class FileT>
+inline bool skipSubBlocks(FileT& file) {
   uint8_t blockLen = 0;
   while (true) {
     if (file.read(&blockLen, 1) != 1) {
@@ -37,8 +38,10 @@ inline bool skipSubBlocks(HalFile& file) {
   }
 }
 
-inline bool readBasicInfo(HalFile& file, GifBasicInfo& info) {
-  info = {};
+// Duck-typed core of the header walk: runs over any HalFile-shaped reader
+// (HalFile from SD, HalMemoryFile from a PSRAM pool buffer).
+template <class FileT>
+inline bool readBasicInfoFrom(FileT& file, GifBasicInfo& info) {
   if (!file.seek(0)) {
     LOG_ERR("GIF", "Failed to seek to GIF header");
     return false;
@@ -131,6 +134,15 @@ inline bool readBasicInfo(HalFile& file, GifBasicInfo& info) {
     file.seek(0);
     return false;
   }
+}
+
+inline bool readBasicInfo(HalFile& file, GifBasicInfo& info) {
+  info = {};
+  if (!file.seek(0)) {
+    LOG_ERR("GIF", "Failed to seek to GIF header");
+    return false;
+  }
+  return readBasicInfoFrom(file, info);
 }
 
 }  // namespace GifCommon

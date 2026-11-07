@@ -150,6 +150,15 @@ class GfxRenderer {
 
   // Setup
   void begin();  // must be called right after display.begin()
+  // Setup against a caller-provided scratch framebuffer instead of the
+  // display's own buffer (background image predecode worker). Performs
+  // begin()'s geometry/framebuffer assignments but never touches the display
+  // and never registers memory-manager sinks: a scratch renderer owns no font
+  // caches, so it has nothing to donate to the evictable-cache registry.
+  // Returns false (renderer left inert) when the declared scratch geometry
+  // does not match the panel — the decode path must see the panel's true
+  // geometry for its output to match the foreground's.
+  bool beginWithScratch(uint8_t* buf, int width, int height, int bytesPerRow);
   void insertFont(int fontId, EpdFontFamily font);
   // Clears both the flash-font map and any SD-font registration for fontId.
   // Coupled to avoid dangling SdCardFont* in sdCardFonts_ when callers free

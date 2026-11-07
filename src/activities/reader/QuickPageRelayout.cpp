@@ -7,10 +7,115 @@
 
 #include "BookFontLoader.h"
 #include "CrossPointSettings.h"
+#include "Epub/blocks/ImageDecodeGate.h"
+#include "TtfImageEngine.h"
 #include "adapters/FrameTargetFactory.h"
 #include "adapters/PagePaint.h"
 #include "render/PageRenderer.h"
 #include "render/TtfFont.h"
+
+namespace {
+
+// Image step of the TTF paint (§5.4): cache hit tone-row blits, else the
+// same decode the worker runs (G3 parity — cache populated in the paint
+// fallback too), else (policy off) today's SDK-renderImages behavior by
+// construction.
+void paintTtfPageImages(const freeink::book::Page& page, freeink::book::TtfBookRuntime& ttf, GfxRenderer& renderer) {
+  const bool qualityTone = SETTINGS.imageDecodeQuality != 0;
+  if (!qualityTone) {
+    // Revert switch: the previous image paint path verbatim.
+    const freeink::book::BookStatus st = freeink::book::PageRenderer::renderImages(
+        page, ttf.source(), ttf.catalog().zip(), ttf.scratch(), makeFrameTarget(renderer));
+    if (st != freeink::book::BookStatus::Ok) {
+      LOG_DBG("QPR", "TTF image render failed: %s", freeink::book::bookStatusName(st));
+    }
+    return;
+  }
+
+  const char* dir = ttf.cacheDir();
+  if (dir == nullptr || dir[0] == '\0') return;
+  // An href past ImageSpec::kHrefCap cannot key the tone cache, but the SDK
+  // renderer takes the href by pointer with no length cap: paint the whole
+  // page through it instead of leaving those images blank. The quality blits
+  // below overwrite the SDK's own pixels for the cacheable images.
+  for (uint16_t m = 0; m < page.imageCount; ++m) {
+    const freeink::book::PageImage& img = page.images[m];
+    if (img.href != nullptr && strlen(img.href) >= ttfimg::ImageSpec::kHrefCap) {
+      const freeink::book::BookStatus st = freeink::book::PageRenderer::renderImages(
+          page, ttf.source(), ttf.catalog().zip(), ttf.scratch(), makeFrameTarget(renderer));
+      if (st != freeink::book::BookStatus::Ok) {
+        LOG_DBG("QPR", "TTF image render failed: %s", freeink::book::bookStatusName(st));
+      }
+      break;
+    }
+  }
+  for (uint16_t m = 0; m < page.imageCount; ++m) {
+    const freeink::book::PageImage& img = page.images[m];
+    if (img.width == 0 || img.height == 0) continue;
+
+    ttfimg::ImageSpec spec{};
+    if (img.href != nullptr && strlen(img.href) < ttfimg::ImageSpec::kHrefCap) {
+      strncpy(spec.href, img.href, ttfimg::ImageSpec::kHrefCap - 1);
+    } else {
+      LOG_DBG("QPR", "Image href missing/overlong — skipped");
+      continue;
+    }
+    spec.generation = ttf.cacheGeneration();
+    spec.spine = ttf.cacheSpine();
+    spec.page = page.pageIndex;
+    spec.imgIdx = m;
+    spec.x = img.x;
+    spec.y = img.y;
+    spec.w = static_cast<int16_t>(img.width);
+    spec.h = static_cast<int16_t>(img.height);
+    spec.orientation = static_cast<uint8_t>(renderer.getOrientation());
+
+    if (ttfimg::hasValidCache(spec, dir, qualityTone) && ttfimg::blitFromCache(renderer, spec, dir, qualityTone)) {
+      continue;
+    }
+    // A cache hit that failed to blit (unreadable file, torn payload) falls
+    // through to the foreground decode: the same path a cache miss takes,
+    // repainting the placement area fully.
+
+    // First-write-cache (§5.4): the foreground decode populates the same
+    // tone cache the worker would have — single-writer gate first (§5.7
+    // rule 1); on gate timeout the space stays blank and a later pass
+    // retries, typically onto the worker's fresh cache.
+    char cachePath[256];
+    if (!ttfimg::cacheNameFor(spec, dir, qualityTone, cachePath, sizeof(cachePath))) continue;
+    const uint64_t hash = ImageDecodeGate::pathHash(cachePath);
+    if (!ImageDecodeGate::acquireForeground(hash)) continue;
+    // Decode bus: the worker yields its in-flight decode at the next band
+    // boundary (the per-image claim above already marked it); the bounded
+    // wait covers the band unwind. On timeout the space stays blank this
+    // pass and the next pass retries — never a stall on the loop task.
+    if (!ImageDecodeGate::acquireForegroundBus(500)) {
+      // The GateGuard below never ran: drop the per-image claim or it stays
+      // Owner::Foreground forever and fills the claim table.
+      ImageDecodeGate::releaseForeground(hash);
+      continue;
+    }
+    {
+      struct GateGuard {
+        uint64_t hash;
+        ~GateGuard() {
+          ImageDecodeGate::releaseForegroundBus();
+          ImageDecodeGate::releaseForeground(hash);
+        }
+      } guard{hash};
+      const size_t scratchMark = ttf.scratch().mark();
+      const ttfimg::DecodeResult res =
+          ttfimg::decodeAndCache(spec, cachePath, ttf.source(), ttf.catalog().zip(), ttf.scratch(), ttf.decodeEpub(),
+                                 &renderer, qualityTone, /*caching=*/true, nullptr, nullptr);
+      ttf.scratch().release(scratchMark);
+      if (res != ttfimg::DecodeResult::Ok) {
+        LOG_DBG("QPR", "TTF image decode: kind=%d %s", static_cast<int>(res), spec.href);
+      }
+    }
+  }
+}
+
+}  // namespace
 
 QuickRelayoutResult quickRelayoutPage(freeink::book::TtfBookRuntime& ttf, GfxRenderer& renderer,
                                       const uint16_t spineIndex, const uint32_t anchorChar,
@@ -95,11 +200,7 @@ void paintCapturedPage(const freeink::book::Page& page, void* font, GfxRenderer&
   }
   freeink::book::PageRenderer::renderRules(page, makeFrameTarget(renderer));
   if (pageHasImages) {
-    const freeink::book::BookStatus st = freeink::book::PageRenderer::renderImages(
-        page, ttf.source(), ttf.catalog().zip(), ttf.scratch(), makeFrameTarget(renderer));
-    if (st != freeink::book::BookStatus::Ok) {
-      LOG_DBG("QPR", "TTF image render failed: %s", freeink::book::bookStatusName(st));
-    }
+    paintTtfPageImages(page, ttf, renderer);
   } else if (SETTINGS.imageRendering == CrossPointSettings::IMAGES_PLACEHOLDER) {
     // §3.5 item 11: image policy is CrossPoint-side; placeholder mode draws
     // the engine's reserved geometry as an outline instead of decoding.

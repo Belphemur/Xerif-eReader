@@ -42,6 +42,7 @@ struct PngContext {
   int lastDstY{-1};  // Track last rendered destination Y to avoid duplicates
   PixelCache cache;
   bool caching{false};
+  bool aborted{false};  // predecode abort fired mid-decode (see pngDrawCallback)
 
   uint8_t* grayLineBuffer{nullptr};
   uint8_t* alphaLineBuffer{nullptr};
@@ -216,6 +217,16 @@ void convertLineToGray(const uint8_t* pPixels, uint8_t* grayLine, int width, int
 int pngDrawCallback(PNGDRAW* pDraw) {
   PngContext* ctx = reinterpret_cast<PngContext*>(pDraw->pUser);
   if (!ctx || !ctx->config || !ctx->renderer || !ctx->grayLineBuffer) return 0;
+
+  // Predecode abort (worker decodes only; the foreground leaves the hook
+  // null): skip all further pixel work and fail the decode after it unwinds,
+  // so the partial cache file is dropped by the aborted branch below instead
+  // of being zero-filled by finalize().
+  if (ctx->config->abortPoll != nullptr && ctx->config->abortPoll(ctx->config->abortCtx)) {
+    ctx->caching = false;
+    ctx->aborted = true;
+    return 0;
+  }
 
   ImageToFramebufferDecoder::yieldDuringDecode(ctx->lastYieldMs);
 
@@ -532,6 +543,16 @@ bool PngToFramebufferConverter::decodeFromOpen(PNG& png, GfxRenderer& renderer, 
 
   ctx.grayLineBuffer = nullptr;
   ctx.alphaLineBuffer = nullptr;
+
+  // Predecode abort fired mid-decode: drop the partial cache and report
+  // failure (finalize() would zero-fill the unflushed rows into a size-valid
+  // but wrong cache). Unconditional abort: the draw callback cleared
+  // ctx.caching BEFORE unwinding, so the flag no longer says "a cache file
+  // exists" — abort() itself is a no-op when nothing was begun.
+  if (ctx.aborted) {
+    ctx.cache.abort();
+    return false;
+  }
 
   if (rc != PNG_SUCCESS) {
     LOG_ERR("PNG", "Decode failed: %d", rc);

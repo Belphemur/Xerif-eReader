@@ -51,6 +51,7 @@ struct JpegContext {
 
   PixelCache cache;
   bool caching{false};
+  bool aborted{false};  // predecode abort fired mid-decode (see jpegDrawCallback)
 
   uint32_t lastYieldMs{0};  // throttle state for yieldDuringDecode()
 };
@@ -133,6 +134,17 @@ constexpr int32_t FP_MASK = FP_ONE - 1;
 int jpegDrawCallback(JPEGDRAW* pDraw) {
   JpegContext* ctx = reinterpret_cast<JpegContext*>(pDraw->pUser);
   if (!ctx || !ctx->config || !ctx->renderer) return 0;
+
+  // Predecode abort (worker decodes only; the foreground leaves the hook
+  // null): returning 0 stops JPEGDEC's pixel loops at this band boundary.
+  // JPEGDEC still reports success (DecodeJPEG returns iErr == 0), so the
+  // converter must check ctx->aborted after decode() and treat the decode as
+  // failed — otherwise finalize() would zero-fill the unflushed rows into a
+  // size-valid but wrong cache.
+  if (ctx->config->abortPoll != nullptr && ctx->config->abortPoll(ctx->config->abortCtx)) {
+    ctx->aborted = true;
+    return 0;
+  }
 
   ImageToFramebufferDecoder::yieldDuringDecode(ctx->lastYieldMs);
 
@@ -596,6 +608,15 @@ static bool decodeToFramebufferFromOpen(JPEGDEC& jpeg, GfxRenderer& renderer, co
   ctx.lastYieldMs = decodeStart;
   const int rc = jpeg.decode(0, 0, jpegScaleOption);
   unsigned long decodeTime = millis() - decodeStart;
+
+  // Predecode abort fired mid-decode: drop the partial cache and report
+  // failure (finalize() would zero-fill the unflushed rows into a size-valid
+  // but wrong cache — JPEGDEC's draw-callback stop does not by itself set an
+  // error, so the aborted flag is the authoritative signal).
+  if (ctx.aborted) {
+    if (ctx.caching) ctx.cache.abort();
+    return false;
+  }
 
   if (rc != 1) {
     LOG_ERR("JPG", "Decode failed (rc=%d, lastError=%d)", rc, jpeg.getLastError());

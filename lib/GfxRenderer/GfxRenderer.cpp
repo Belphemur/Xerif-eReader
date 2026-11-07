@@ -223,6 +223,24 @@ void GfxRenderer::begin() {
   // body instead of registered.
 }
 
+bool GfxRenderer::beginWithScratch(uint8_t* buf, const int width, const int height, const int bytesPerRow) {
+  panelWidth = display.getDisplayWidth();
+  panelHeight = display.getDisplayHeight();
+  panelWidthBytes = display.getDisplayWidthBytes();
+  frameBufferSize = display.getBufferSize();
+  if (buf == nullptr || width != panelWidth || height != panelHeight || bytesPerRow != panelWidthBytes ||
+      frameBufferSize != static_cast<uint32_t>(height) * static_cast<uint32_t>(bytesPerRow)) {
+    LOG_ERR("GFX", "Scratch framebuffer geometry mismatch (%dx%d, %d B/row)", width, height, bytesPerRow);
+    // Drop any buffer a previous init left behind: hasFrameBuffer() must not
+    // keep reporting true for a renderer whose init failed (inert state).
+    frameBuffer = nullptr;
+    return false;
+  }
+  frameBuffer = buf;
+  bwBufferChunks.assign((frameBufferSize + BW_BUFFER_CHUNK_SIZE - 1) / BW_BUFFER_CHUNK_SIZE, nullptr);
+  return true;
+}
+
 void GfxRenderer::releaseFrameBufferForBuild() {
   // Lend the framebuffer's bytes IN PLACE: the allocation is never freed, so
   // it cannot move and repeated loans cannot fragment the heap (the previous
