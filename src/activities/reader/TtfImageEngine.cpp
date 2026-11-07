@@ -1,5 +1,7 @@
 #include "TtfImageEngine.h"
 
+#include "TtfImageCache.h"
+
 #if defined(CROSSPOINT_TTF_READER)
 
 #include <GfxRenderer.h>
@@ -29,150 +31,17 @@ namespace {
 
 // --- tone codecs -------------------------------------------------------------
 
-// Floyd–Steinberg error diffusion into the 4-level tone (design §5.6). The
-// error chain is seeded per image and runs row-sequentially over image-local
-// columns — never over absolute panel coordinates — so a completed .pxc encodes
-// the image's tone, and the placement lives only in the cache identity.
-struct FloydSteinberg4 {
-  std::unique_ptr<int16_t[]> err;      // error carried into this pixel
-  std::unique_ptr<int16_t[]> errNext;  // error passed to the next row
-  const int width;
-
-  explicit FloydSteinberg4(const int w) : width(w) {
-    err.reset(new (std::nothrow) int16_t[w + 2]);
-    errNext.reset(new (std::nothrow) int16_t[w + 2]);
-    if (err && errNext) {
-      memset(err.get(), 0, (w + 2) * sizeof(int16_t));
-      memset(errNext.get(), 0, (w + 2) * sizeof(int16_t));
-    }
-  }
-  bool ok() const { return err != nullptr && errNext != nullptr; }
-
-  // x is image-local (0-based). Returns the quantized 4-level tone.
-  uint8_t tone(const int x, const int gray) {
-    const int v = gray + err[x + 1];
-    int tone = (v + 42) / 85;  // nearest of {0, 85, 170, 255}
-    if (tone < 0) tone = 0;
-    if (tone > 3) tone = 3;
-    const int errVal = v - tone * 85;
-    if (x + 1 < width) err[x + 2] += static_cast<int16_t>(errVal * 7 / 16);
-    errNext[x] += static_cast<int16_t>(errVal * 3 / 16);
-    errNext[x + 1] += static_cast<int16_t>(errVal * 5 / 16);
-    errNext[x + 2] += static_cast<int16_t>(errVal * 1 / 16);
-    return static_cast<uint8_t>(tone);
-  }
-  void nextRow() {
-    if (err == nullptr || errNext == nullptr) return;
-    memcpy(err.get(), errNext.get(), (width + 2) * sizeof(int16_t));
-    memset(errNext.get(), 0, (width + 2) * sizeof(int16_t));
-  }
-};
-
 // --- tone cache stream -------------------------------------------------------
 
-// Streaming .pxc writer (same on-disk format as the shared PixelCache: u16
-// width, u16 height, then 2-bit rows, 4 pixels per byte, MSB first). Rows
-// arrive in raster order; abort() drops the partial file on any failure path.
-struct ToneCacheWriter {
-  HalFile file;
-  char path[160] = {};
-  int width = 0;
-  int height = 0;
-  int bytesPerRow = 0;
-  int writtenRows = 0;
-  bool ok = false;
-
-  bool begin(const char* p, const int w, const int h) {
-    snprintf(path, sizeof(path), "%s", p);
-    width = w;
-    height = h;
-    bytesPerRow = (w + 3) / 4;
-    writtenRows = 0;
-    ok = false;
-    if (w <= 0 || h <= 0 || bytesPerRow <= 0 || w > 0xFFFF || h > 0xFFFF) return false;
-    if (!Storage.openFileForWrite("TIMGE", path, file)) {
-      LOG_ERR("TIMGE", "Cache open failed: %s", path);
-      return false;
-    }
-    const uint16_t w16 = static_cast<uint16_t>(w);
-    const uint16_t h16 = static_cast<uint16_t>(h);
-    if (file.write(&w16, 2) != 2 || file.write(&h16, 2) != 2) {
-      abort();
-      return false;
-    }
-    ok = true;
-    return true;
-  }
-
-  // toneValues carries width quantized tones (0..3), image-local columns.
-  bool writeRow(const uint8_t* toneValues) {
-    if (!ok) return false;
-    uint8_t row[256];  // widest shipped panel row: (800+3)/4 = 201 bytes
-    if (bytesPerRow > static_cast<int>(sizeof(row))) {
-      abort();
-      return false;
-    }
-    memset(row, 0, static_cast<size_t>(bytesPerRow));
-    for (int x = 0; x < width; ++x) {
-      const int shift = 6 - (x & 3) * 2;  // MSB first within byte
-      row[x >> 2] |= static_cast<uint8_t>((toneValues[x] & 0x03) << shift);
-    }
-    if (file.write(row, static_cast<uint32_t>(bytesPerRow)) != static_cast<int>(bytesPerRow)) {
-      LOG_ERR("TIMGE", "Cache write error row %d: %s", writtenRows, path);
-      abort();
-      return false;
-    }
-    ++writtenRows;
-    return true;
-  }
-
-  bool finalize() {
-    if (!ok) {
-      abort();
-      return false;
-    }
-    if (writtenRows != height) {
-      LOG_ERR("TIMGE", "Cache incomplete: %s (%d/%d rows)", path, writtenRows, height);
-      abort();
-      return false;
-    }
-    if (!file.close()) {
-      ok = false;
-      Storage.remove(path);
-      LOG_ERR("TIMGE", "Cache close failed: %s", path);
-      return false;
-    }
-    ok = false;
-    return true;
-  }
-
-  void abort() {
-    if (file.isOpen()) file.close();
-    if (path[0] != '\0') Storage.remove(path);
-    ok = false;
-  }
-};
-
 // --- cache reads --------------------------------------------------------------
-
-bool readValidCacheHeader(HalFile& cacheFile, const int expectedWidth, const int expectedHeight,
-                          uint16_t& cachedWidth, uint16_t& cachedHeight) {
-  if (cacheFile.read(&cachedWidth, 2) != 2 || cacheFile.read(&cachedHeight, 2) != 2) return false;
-  const int widthDiff = abs(cachedWidth - expectedWidth);
-  const int heightDiff = abs(cachedHeight - expectedHeight);
-  if (widthDiff > 1 || heightDiff > 1) return false;
-  const size_t bytesPerRow = (cachedWidth + 3) / 4;
-  const size_t expectedSize = 4 + bytesPerRow * cachedHeight;
-  return cacheFile.size() >= expectedSize;
-}
 
 // Row sink for the SDK ImageRenderer on the quality JPEG/PNG decode: aborts
 // first (foreground takeover is instant), then bakes tone, appends the cache
 // row, and paints the same tone through the target renderer.
 struct RowBakeCtx {
-  ToneCacheWriter* cache = nullptr;
+  ttfimg::ToneCacheWriter* cache = nullptr;
   GfxRenderer* paint = nullptr;
-  FloydSteinberg4* bake = nullptr;
+  ttfimg::FloydSteinberg4* bake = nullptr;
   uint8_t* toneRow = nullptr;  // decode-local scratch [width]
   int16_t x = 0;
   int16_t y = 0;
@@ -377,14 +246,14 @@ DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const siz
   if (srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) return DecodeResult::Failed;
 
   const bool areaScale = (srcW >= 2 * dstW) || (srcH >= 2 * dstH);
-  ToneCacheWriter writer;
+  ttfimg::ToneCacheWriter writer;
   const bool writerActive = caching && writer.begin(cachePath, dstW, dstH);
   if (caching && !writerActive) return DecodeResult::Failed;
 
   const size_t bitsBytes = src.rowBytes;
   PoolBytes bits{poolMakeBytes(bitsBytes ? bitsBytes : 1)};
   PoolBytes gray{poolMakeBytes(srcW + dstW)};  // gray row (srcW) + tone row (dstW) tail
-  FloydSteinberg4 bake(dstW);
+  ttfimg::FloydSteinberg4 bake(dstW);
   if (!bits || !gray || !bake.ok()) {
     writer.abort();
     return DecodeResult::Failed;
@@ -475,35 +344,6 @@ DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const siz
   return DecodeResult::Failed;
 }
 
-bool cacheNameFor(const ImageSpec& spec, const char* dir, const bool qualityTone, char* out, const size_t cap) {
-  // Identity: generation + href + placement (+ the tone policy, so the
-  // quality revert switch never mixes bakes in one file).
-  uint64_t hash = 14695981039346656037ull;
-  for (const char* p = spec.href; *p != '\0'; ++p) {
-    hash ^= static_cast<uint8_t>(*p);
-    hash *= 1099511628211ull;
-  }
-  const uint32_t fields[4] = {static_cast<uint32_t>(spec.x), static_cast<uint32_t>(spec.y),
-                              static_cast<uint32_t>(spec.w), static_cast<uint32_t>(spec.h)};
-  for (const uint32_t v : fields) {
-    hash ^= static_cast<uint64_t>(v);
-    hash *= 1099511628211ull;
-  }
-  const int n = snprintf(out, cap, "%s/i%c%08x-%08x.pxc", dir, qualityTone ? 'q' : 'l',
-                         static_cast<unsigned>(spec.generation), static_cast<unsigned>(hash & 0xFFFFFFFFull));
-  return n > 0 && static_cast<size_t>(n) < cap;
-}
-
-bool hasValidCache(const ImageSpec& spec, const char* dir, const bool qualityTone) {
-  char path[256];
-  if (!cacheNameFor(spec, dir, qualityTone, path, sizeof(path))) return false;
-  HalFile cacheFile;
-  if (!Storage.openFileForRead("TIMGE", path, cacheFile)) return false;
-  uint16_t cachedWidth = 0;
-  uint16_t cachedHeight = 0;
-  return readValidCacheHeader(cacheFile, spec.w, spec.h, cachedWidth, cachedHeight);
-}
-
 bool blitFromCache(GfxRenderer& renderer, const ImageSpec& spec, const char* dir, const bool qualityTone) {
   char path[256];
   if (!cacheNameFor(spec, dir, qualityTone, path, sizeof(path))) return false;
@@ -578,11 +418,11 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
     // Quality decode (§5.3 corrected): SDK gray rows — area-averaged exactly
     // as the foreground fallback's SDK stack — baked to 4-level tone while
     // appending the cache, and painted through the target row by row.
-    ToneCacheWriter writer;
+    ttfimg::ToneCacheWriter writer;
     if (caching && !writer.begin(cachePath, spec.w, spec.h)) return DecodeResult::Failed;
-    ToneCacheWriter* writerPtr = caching ? &writer : nullptr;
+    ttfimg::ToneCacheWriter* writerPtr = caching ? &writer : nullptr;
 
-    FloydSteinberg4 bake(spec.w);
+    ttfimg::FloydSteinberg4 bake(spec.w);
     uint8_t toneRowStack[256];
     uint8_t* toneRow = toneRowStack;
     PoolBytes toneRowHeap;

@@ -146,6 +146,7 @@ add_subdirectory(bmp_to_bmp)
 
 add_subdirectory(sd_card_font)
 add_subdirectory(psram_image_staging)
+add_subdirectory(ttf_image_engine)
 add_subdirectory(ttf_reader_runtime)
 add_subdirectory(progress_manager)
 add_subdirectory(style_bits)
