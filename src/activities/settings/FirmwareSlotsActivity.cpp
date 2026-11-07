@@ -7,9 +7,9 @@
 #include <cstdio>
 
 #include "MappedInputManager.h"
-#include "OtaBootSwitch.h"
 #include "activities/RenderLock.h"
 #include "components/UITheme.h"
+#include "network/OtaBootSwitch.h"
 
 namespace fui = freeink::ui;
 

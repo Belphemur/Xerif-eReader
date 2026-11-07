@@ -10,11 +10,11 @@
 
 #include "HalPowerManager.h"
 #include "MappedInputManager.h"
-#include "OtaBootSwitch.h"
-#include "OtaSlots.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
+#include "network/OtaBootSwitch.h"
+#include "network/OtaSlots.h"
 #include "util/MemoryClaimGateDevice.h"
 
 namespace {
