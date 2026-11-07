@@ -445,6 +445,14 @@ class EpubReaderActivity final : public ReaderActivity {
   // "Connecting Bluetooth…" or "Bluetooth failed" in place of the status bar title.
   mutable LinkNoteTitle linkNoteTitle;
   static constexpr size_t RENDER_MIN_FREE_HEAP = 24 * 1024;
+  // Render-heap stall recovery (§3.5). When the render gate postpones, log
+  // stall entry once, then at most every RENDER_HEAP_STALL_LOG_INTERVAL_MS
+  // while stuck, and drop the ZIP entry cache once per episode. The latches
+  // reset on the next committed frame (ttfCommitFrame).
+  static constexpr uint32_t RENDER_HEAP_STALL_LOG_INTERVAL_MS = 5000;
+  bool renderHeapStallLogged = false;
+  uint32_t renderHeapStallLastLogMs = 0;
+  bool renderHeapStallCacheUnloaded = false;
   // Chunked prerender slice budget (soak finding #5): one prerender slice per
   // loop tick, so a button press is served at most one slice after it lands
   // (the loop processes input before the render pass runs).
