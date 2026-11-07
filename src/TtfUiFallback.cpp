@@ -103,11 +103,13 @@ void TtfUiFallback::update(GfxRenderer& renderer) {
     return;
   }
 
+  bool idCollision = false;
   for (size_t i = 0; i < kUiSizeCount; ++i) {
     const UiFontSize& ui = kUiFontSizes[i];
     const int ttfId = computeTtfUiFontId(SETTINGS.ttfFontFamilyName, ui.pointSize);
     if (renderer.getFontMap().count(ttfId) != 0) {
       LOG_ERR("TTFUI", "Font id %d collision — skipping UI size %u", ttfId, static_cast<unsigned>(ui.pointSize));
+      idCollision = true;  // emptiness depends on renderer state — not cacheable
       continue;
     }
     const void* bytes[4] = {};
@@ -138,7 +140,14 @@ void TtfUiFallback::update(GfxRenderer& renderer) {
             ttfId);
   }
   registeredFingerprint_ = fingerprint;
-  noCoverageFingerprint_ = 0;  // the family now registered — clear any stale negative cache
+  if (registeredCount_ > 0) {
+    noCoverageFingerprint_ = 0;  // the family now registered — clear any stale negative cache
+  } else if (!idCollision) {
+    // Deterministic empty pass: every size attempted begin() and failed on
+    // these bytes. Cache it like the script-probe failure, or this pass
+    // re-runs (chain probe + three face builds) on every redraw.
+    noCoverageFingerprint_ = fingerprint;
+  }
   for (uint8_t s = 0; s < 4; ++s) borrowedSnapshot_[s] = fontLoader.slotFaceBytes(s);
   LOG_INF("TTFUI", "%u TTF UI fallback size(s) registered", static_cast<unsigned>(registeredCount_));
 }
