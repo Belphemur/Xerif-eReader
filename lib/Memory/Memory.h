@@ -130,8 +130,11 @@ struct PoolAllocator {
   using is_always_equal = std::true_type;
 
   PoolAllocator() noexcept = default;
+  // Non-explicit by design: allocator rebinding/interop relies on the
+  // implicit conversion (std::allocator's converting ctor is non-explicit
+  // too), so the noExplicitConstructor style finding is suppressed.
   template <typename U>
-  PoolAllocator(const PoolAllocator<U>&) noexcept {}
+  PoolAllocator(const PoolAllocator<U>&) noexcept {}  // cppcheck-suppress noExplicitConstructor
 
   template <typename U>
   struct rebind {
