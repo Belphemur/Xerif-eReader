@@ -207,4 +207,7 @@ class ImagePredecodeWorker {
   bool active() const { return false; }
 };
 
+// The reader holds the worker through the same pointer type on all builds.
+using ImagePredecodeWorkerPtr = std::unique_ptr<ImagePredecodeWorker>;
+
 #endif  // BOARD_HAS_PSRAM
