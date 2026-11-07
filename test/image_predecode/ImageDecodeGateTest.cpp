@@ -10,7 +10,7 @@ namespace ImageDecodeGateHost {
 uint32_t nowMs = 0;
 uint32_t nowMsFn() { return nowMs; }
 void sleepMs(uint32_t ms) { nowMs += ms; }
-}  // namespace
+}  // namespace ImageDecodeGateHost
 #endif
 
 #include "ImageDecodeGate.cpp"

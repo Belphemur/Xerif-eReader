@@ -11,7 +11,7 @@
 namespace ImageDecodeGateHost {
 uint32_t nowMsFn();
 void sleepMs(uint32_t ms);
-}
+}  // namespace ImageDecodeGateHost
 #define IMAGE_GATE_NOW() ::ImageDecodeGateHost::nowMsFn()
 #define IMAGE_GATE_SLEEP(ms) ::ImageDecodeGateHost::sleepMs(ms)
 #else

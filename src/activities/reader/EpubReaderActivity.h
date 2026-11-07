@@ -15,6 +15,7 @@
 #include "ChapterPosition.h"
 #include "ClipSelectionActivity.h"
 #include "EpubReaderMenuActivity.h"
+#include "ImagePredecodeWorker.h"
 #include "LinkNoteTitle.h"
 #include "ProgressManager.h"
 #include "ProgressMapper.h"
@@ -22,7 +23,6 @@
 #include "ReaderToolbarUi.h"
 #include "TouchLongPressMode.h"
 #include "components/OptionPopup.h"
-#include "ImagePredecodeWorker.h"
 #if defined(CROSSPOINT_TTF_READER)
 #include "FibpPrefetchWorker.h"
 #include "QuickPageCapture.h"

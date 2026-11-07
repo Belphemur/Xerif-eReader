@@ -1,12 +1,8 @@
-#include <gtest/gtest.h>
-
 #include <Epub/converters/ImageToFramebufferDecoder.h>
 #include <Epub/converters/JpegToFramebufferConverter.h>
+#include <gtest/gtest.h>
 
 // The decode-surface mirror the converters run against (see the file comment).
-#include "GfxRenderer.h"
-#include "HalDisplay.h"
-
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -14,6 +10,9 @@
 #include <iterator>
 #include <string>
 #include <vector>
+
+#include "GfxRenderer.h"
+#include "HalDisplay.h"
 
 // Pixel-cache parity between the foreground decode path and the image
 // predecode worker's decode path (docs/design/2026-11-06-image-predecode.md
@@ -98,8 +97,8 @@ static void configureAsForeground(GfxRenderer& renderer) {
 }
 
 static bool decodeWith(GfxRenderer& renderer, const std::vector<uint8_t>& jpeg, const int x, const int y,
-                       const int width, const int height, const std::string& cachePath,
-                       bool (*abortPoll)(void*), void* abortCtx) {
+                       const int width, const int height, const std::string& cachePath, bool (*abortPoll)(void*),
+                       void* abortCtx) {
   JpegToFramebufferConverter converter;
   RenderConfig config;
   config.x = x;

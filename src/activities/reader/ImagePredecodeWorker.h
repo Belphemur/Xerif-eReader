@@ -23,19 +23,17 @@ class Epub;
 
 #if defined(BOARD_HAS_PSRAM)
 
+#include <Epub/blocks/ImageBlock.h>
+#include <Epub/blocks/ImageDecodeGate.h>
+#include <FreeRTOS.h>
 #include <GfxRenderer.h>
 #include <HalDisplay.h>
-
 #include <esp_heap_caps.h>
-#include <atomic>
-#include <new>
-
-#include <FreeRTOS.h>
 #include <semphr.h>
 #include <task.h>
 
-#include <Epub/blocks/ImageBlock.h>
-#include <Epub/blocks/ImageDecodeGate.h>
+#include <atomic>
+#include <new>
 
 #if defined(__has_include)
 #if __has_include(<sdkconfig.h>)
@@ -117,12 +115,12 @@ class ImagePredecodeWorker {
 
   // Session constants (§3.6 budget + ImageBlock's heap-gate precedents).
   static constexpr size_t kStackBytes = 16 * 1024;
-  static constexpr size_t kMinFreeHeap = 24 * 1024;        // PXC_HEAP_RESERVE precedent
-  static constexpr size_t kMinLargestBlock = 8 * 1024;     // PXC_MAX_ALLOC_RESERVE precedent
-  static constexpr size_t kMinFreePsram = 256 * 1024;      // headroom under the pool's existing ~4 MB cap
-  static constexpr uint8_t kMaxDeferrals = 4;              // gate-failed retries before a job drops
-  static constexpr uint32_t kIdleTimeoutMs = 4000;         // empty-queue self-exit window
-  static constexpr uint32_t kJobDelayMs = 4;               // pace between jobs
+  static constexpr size_t kMinFreeHeap = 24 * 1024;     // PXC_HEAP_RESERVE precedent
+  static constexpr size_t kMinLargestBlock = 8 * 1024;  // PXC_MAX_ALLOC_RESERVE precedent
+  static constexpr size_t kMinFreePsram = 256 * 1024;   // headroom under the pool's existing ~4 MB cap
+  static constexpr uint8_t kMaxDeferrals = 4;           // gate-failed retries before a job drops
+  static constexpr uint32_t kIdleTimeoutMs = 4000;      // empty-queue self-exit window
+  static constexpr uint32_t kJobDelayMs = 4;            // pace between jobs
   static constexpr uint32_t kJoinTimeoutMs = 3000;
   static constexpr uint32_t kReapWaitMaxMs = 50;
   static constexpr uint32_t kReapWaitStepMs = 2;
@@ -169,7 +167,8 @@ class ImagePredecodeWorker {
 // allocation goes through the hard-capped factory below, the size assert is
 // the secondary guard (FibpPrefetchWorker.h, kody-rr9).
 #if !defined(CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL)
-#error "CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL missing from sdkconfig.h — ImagePredecodeWorker's TCB residency guard cannot compile"
+#error \
+    "CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL missing from sdkconfig.h — ImagePredecodeWorker's TCB residency guard cannot compile"
 #endif
 static_assert(sizeof(ImagePredecodeWorker) <= CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL,
               "ImagePredecodeWorker grew past the PSRAM-prefer threshold; taskTcb_ would no longer be DRAM-resident");

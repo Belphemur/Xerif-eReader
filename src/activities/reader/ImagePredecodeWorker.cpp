@@ -12,7 +12,7 @@
 
 #include <cstring>
 
-namespace {// (helpers live in the class: the reap wait needs the private step constant)
+namespace {  // (helpers live in the class: the reap wait needs the private step constant)
 }  // namespace
 
 bool ImagePredecodeWorker::reserve() {
@@ -55,7 +55,7 @@ bool ImagePredecodeWorker::begin(Epub* epub, const uint32_t generation) {
   if (epub == nullptr || queueStorage_ == nullptr || scratchFb_ == nullptr) return false;
   if (sessionValid_.load(std::memory_order_acquire)) {
     if (epub_ == epub) return true;  // already armed for this book
-    cancel();  // re-open of a different book inside one reader session
+    cancel();                        // re-open of a different book inside one reader session
   }
   epub_ = epub;
   generation_.store(generation, std::memory_order_release);
@@ -64,7 +64,7 @@ bool ImagePredecodeWorker::begin(Epub* epub, const uint32_t generation) {
   exitedSem_ = xSemaphoreCreateBinary();
   queueMux_ = xSemaphoreCreateMutex();
   queueSem_ = xSemaphoreCreateCounting(kQueueCapacity, 0);
-    if (exitedSem_ == nullptr || queueMux_ == nullptr || queueSem_ == nullptr) {
+  if (exitedSem_ == nullptr || queueMux_ == nullptr || queueSem_ == nullptr) {
     LOG_ERR("IPR", "OOM: worker semaphores — predecode disabled");
     if (exitedSem_ != nullptr) vSemaphoreDelete(exitedSem_);
     if (queueMux_ != nullptr) vSemaphoreDelete(queueMux_);
@@ -76,8 +76,8 @@ bool ImagePredecodeWorker::begin(Epub* epub, const uint32_t generation) {
     return false;
   }
   sessionValid_.store(true, std::memory_order_release);
-  LOG_INF("IPR", "Worker armed: gen=%08x queue=%ux%uB scratch=%uB psram", (unsigned)generation, (unsigned)kQueueCapacity,
-          (unsigned)sizeof(Job), (unsigned)scratchFbBytes_);
+  LOG_INF("IPR", "Worker armed: gen=%08x queue=%ux%uB scratch=%uB psram", (unsigned)generation,
+          (unsigned)kQueueCapacity, (unsigned)sizeof(Job), (unsigned)scratchFbBytes_);
   // No spawn here: the task starts on the first enqueue that has work.
   return true;
 }
@@ -89,7 +89,8 @@ bool ImagePredecodeWorker::enqueue(const Job& job) {
     // Duplicate suppression: the same image can appear on several pages (and
     // a rebuild re-fires sightings); one queued decode is enough.
     for (size_t i = 0; i < queueCount_; ++i) {
-      const Job& other = *reinterpret_cast<const Job*>(queueStorage_ + ((queueHead_ + i) % kQueueCapacity) * sizeof(Job));
+      const Job& other =
+          *reinterpret_cast<const Job*>(queueStorage_ + ((queueHead_ + i) % kQueueCapacity) * sizeof(Job));
       if (strncmp(other.imagePath, job.imagePath, Job::kImagePathCap) == 0) {
         xSemaphoreGive(queueMux_);
         return true;
