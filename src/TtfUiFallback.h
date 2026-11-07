@@ -48,6 +48,12 @@ class TtfUiFallback {
   int primaryIds_[kUiSizeCount] = {};
   uint8_t registeredCount_ = 0;
   uint32_t registeredFingerprint_ = 0;  // loader fingerprint the registrations borrow
+  // Loader fingerprint whose fallback-script probe FAILED. Negative result
+  // cache for update(): without it a no-coverage family re-probed and
+  // re-logged on every redraw (TtfUiFallback.cpp negative-cache comment).
+  // Keyed on the fingerprint, so a font swap invalidates it for free; NOT
+  // reset in release() — release runs on the empty path every update call.
+  uint32_t noCoverageFingerprint_ = 0;
   // Borrowed byte owners per style slot, captured at registration. The
   // fingerprint does NOT identify buffer addresses: an ensureLoaded() reload
   // with identical content re-creates the byte owners (possibly at different
