@@ -5,11 +5,10 @@
 
 #include <string>
 
+#include "activities/Activity.h"
 #include "components/OptionPopup.h"
 #include "network/DevOtaClient.h"
 #include "network/OtaJson.h"
-
-#include "activities/Activity.h"
 
 class MappedInputManager;
 class WifiSelectionActivity;

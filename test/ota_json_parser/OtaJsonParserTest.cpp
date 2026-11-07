@@ -585,9 +585,8 @@ TEST(OtaDevManifestParse, ParsesEntriesNewestFirst) {
   ASSERT_TRUE(parseOtaDevManifest(kDevManifest, strlen(kDevManifest), entries, 3, &count));
   ASSERT_EQ(count, 2);
   EXPECT_STREQ(entries[0].name, "xerif-dev-0123456789abcdef0123456789abcdef01234567-x4pro.bin");
-  EXPECT_EQ(entries[0].url,
-            std::string_view("https://github.com/Belphemur/Xerif-eReader/releases/download/dev/"
-                             "xerif-dev-0123456789abcdef0123456789abcdef01234567-x4pro.bin"));
+  EXPECT_EQ(entries[0].url, std::string_view("https://github.com/Belphemur/Xerif-eReader/releases/download/dev/"
+                                             "xerif-dev-0123456789abcdef0123456789abcdef01234567-x4pro.bin"));
   EXPECT_STREQ(entries[0].date, "2026-11-07T12:00:00Z");
   EXPECT_TRUE(entries[0].hasSha);
   // First digest byte decodes from "e3" (e3b0c4... is sha256 of "").
@@ -596,7 +595,8 @@ TEST(OtaDevManifestParse, ParsesEntriesNewestFirst) {
 }
 
 TEST(OtaDevManifestParse, MalformedHexDigestSetsHasShaFalse) {
-  constexpr char kBadSha[] = R"({"versions": [{"name": "a.bin", "url": "https://x/a.bin", "sha256": "nothex", "date": "d"}]})";
+  constexpr char kBadSha[] =
+      R"({"versions": [{"name": "a.bin", "url": "https://x/a.bin", "sha256": "nothex", "date": "d"}]})";
   OtaDevVersionEntry entries[3];
   int count = -1;
 

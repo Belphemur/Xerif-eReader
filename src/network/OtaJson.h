@@ -39,9 +39,9 @@ bool parseOtaManifest(const char* data, size_t len, ManifestBoardEntry* entries,
 // overflow-truncated strings like the rest of this module.
 struct OtaDevVersionEntry {
   bool hasSha = false;
-  char name[64] = {0};   // asset file name, e.g. "xerif-dev-<sha>-x4pro.bin"
-  char url[192] = {0};   // browser_download_url
-  char date[32] = {0};   // build date (ISO 8601), display only
+  char name[64] = {0};  // asset file name, e.g. "xerif-dev-<sha>-x4pro.bin"
+  char url[192] = {0};  // browser_download_url
+  char date[32] = {0};  // build date (ISO 8601), display only
   uint8_t sha256[32] = {0};
 };
 

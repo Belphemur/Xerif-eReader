@@ -25,14 +25,14 @@
 #if defined(CROSSPOINT_TTF_READER)
 #include "TtfFontDownloadActivity.h"
 #endif
+#include "DevOtaActivity.h"
+#include "FirmwareSlotsActivity.h"
 #include "HomeButtonSettingsActivity.h"
 #include "KOReaderSettingsActivity.h"
 #include "KeyboardLayoutsActivity.h"
 #include "LanguageSelectActivity.h"
 #include "MappedInputManager.h"
 #include "OpdsServerListActivity.h"
-#include "DevOtaActivity.h"
-#include "FirmwareSlotsActivity.h"
 #include "OtaUpdateActivity.h"
 #include "SdCardFontSystem.h"
 #include "SdFirmwareUpdateActivity.h"

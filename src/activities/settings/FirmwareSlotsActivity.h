@@ -3,10 +3,9 @@
 #include <GfxRenderer.h>
 #include <I18n.h>
 
+#include "activities/UiListActivity.h"
 #include "components/OptionPopup.h"
 #include "network/OtaSlots.h"
-
-#include "activities/UiListActivity.h"
 
 class MappedInputManager;
 

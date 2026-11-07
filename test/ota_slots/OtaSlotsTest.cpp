@@ -3,7 +3,6 @@
 #include <cstring>
 
 #include "network/OtaSlots.h"
-
 #include "stubs/esp_ota_ops.h"
 #include "stubs/esp_partition.h"
 

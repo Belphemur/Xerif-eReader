@@ -1,10 +1,10 @@
 // Host stubs for OtaSlots: a simulated partition table backed by a small
 // in-memory flash image. Only what OtaSlots.cpp touches is implemented.
-#include "esp_ota_ops.h"
-#include "esp_partition.h"
-
 #include <cstring>
 #include <vector>
+
+#include "esp_ota_ops.h"
+#include "esp_partition.h"
 
 namespace {
 constexpr size_t kFlashSize = 16 * 1024 * 1024;

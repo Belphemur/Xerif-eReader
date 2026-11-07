@@ -179,7 +179,8 @@ bool pendingInstallGet(char* versionOut, size_t cap) {
 bool pendingInstallSet(const char* version) {
   nvs_handle_t handle;
   if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) return false;
-  const bool ok = nvs_set_str(handle, NVS_PENDING_KEY, version ? version : "") == ESP_OK && nvs_commit(handle) == ESP_OK;
+  const bool ok =
+      nvs_set_str(handle, NVS_PENDING_KEY, version ? version : "") == ESP_OK && nvs_commit(handle) == ESP_OK;
   nvs_close(handle);
   if (!ok) LOG_ERR("DEVOTA", "pending-install flag write failed");
   return ok;

@@ -333,8 +333,7 @@ void DevOtaActivity::render(RenderLock&&) {
       renderer.drawText(UI_10_FONT_ID, pageWidth - side - 70, y, entries.items[i].date);
       y += height + metrics.verticalSpacing;
     }
-    const auto labels =
-        mappedInput.mapLabels(tr(STR_BACK), tr(STR_CONFIRM), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_CONFIRM), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   } else if (state == CONFIRMING) {
     renderer.drawText(UI_10_FONT_ID, side, pageHeight / 6, runningLine);
@@ -343,8 +342,7 @@ void DevOtaActivity::render(RenderLock&&) {
     renderer.drawText(UI_10_FONT_ID, side, pageHeight / 6, runningLine);
     renderer.drawCenteredText(UI_10_FONT_ID, top, installWriting ? tr(STR_DEV_WRITING) : tr(STR_DEV_DOWNLOADING));
     const int barY = top + height + metrics.verticalSpacing;
-    GUI.drawProgressBar(renderer,
-                        Rect{side, barY, pageWidth - side * 2, metrics.progressBarHeight},
+    GUI.drawProgressBar(renderer, Rect{side, barY, pageWidth - side * 2, metrics.progressBarHeight},
                         installPercent < 0 ? 0 : installPercent, 100);
   } else if (state == FAILED) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATE_FAILED), true, EpdFontFamily::BOLD);

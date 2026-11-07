@@ -1301,9 +1301,7 @@ void setup() {
 // Design §6: keep OTA-image verification pending past initArduino() so the
 // confirm can happen after a full boot instead. The non-weak definition
 // overrides the Arduino core's weak default (which confirms immediately).
-bool verifyRollbackLater() {
-  return true;
-}
+bool verifyRollbackLater() { return true; }
 
 // Runs once at the top of the first loop() pass (see bootFinalized there).
 // Silent boots have already painted their first frame synchronously in
