@@ -195,16 +195,18 @@ inline ImagePredecodeWorker* makeImagePredecodeWorkerInternal() {
 
 #else  // !BOARD_HAS_PSRAM
 
-// Inert stub (PSRAM-less boards keep today's on-demand decode).
+// Inert stub (PSRAM-less boards keep today's on-demand decode). Methods are
+// static: the no-ops touch no state, and cppcheck's functionStatic check
+// (--fail-on-defect low) fails the CI gate otherwise.
 class ImagePredecodeWorker {
  public:
   struct Job {};
-  bool begin(Epub*, uint32_t) { return false; }
-  void notifyGeneration(uint32_t) {}
-  bool enqueue(const Job&) { return false; }
-  void setForegroundBusy(bool) {}
-  bool cancel() { return true; }
-  bool active() const { return false; }
+  static bool begin(Epub*, uint32_t) { return false; }
+  static void notifyGeneration(uint32_t) {}
+  static bool enqueue(const Job&) { return false; }
+  static void setForegroundBusy(bool) {}
+  static bool cancel() { return true; }
+  static bool active() { return false; }
 };
 
 // The reader holds the worker through the same pointer type on all builds.
