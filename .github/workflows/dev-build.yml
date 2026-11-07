@@ -139,9 +139,12 @@ jobs:
                   "name": name,
                   "url": f"https://github.com/{repo}/releases/download/dev/{name}",
                   "sha256": hashlib.sha256(data).hexdigest(),
-                  # Retained builds are dated by their release asset; this
-                  # run's build falls back to the commit timestamp.
-                  "date": when or date,
+                  # Retained builds are dated by their release asset; an
+                  # unknown asset date stays empty (the device shows no date)
+                  # rather than inheriting this run's commit timestamp. Only
+                  # this run's build — which passes no date — falls back to
+                  # the commit timestamp.
+                  "date": when if when is not None else date,
               }
 
           versions = [entry_from_file(os.path.join(dist, f"xerif-dev-{sha}-x4pro.bin"))]
