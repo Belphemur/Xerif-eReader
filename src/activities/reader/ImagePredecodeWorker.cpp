@@ -5,13 +5,12 @@
 #include <BookArena.h>
 #include <BookTypes.h>
 #include <CrossPointSettings.h>
+#include <Epub/blocks/ImageDecodeGate.h>
 #include <HalMemory.h>
 #include <Logging.h>
 
 #include <cstdio>
 #include <cstring>
-
-#include <Epub/blocks/ImageDecodeGate.h>
 
 #include "TtfImageEngine.h"
 

@@ -8,12 +8,12 @@
 // The decode paths (SDK row render, converters, BMP row decoder) stay in
 // TtfImageEngine.cpp — they pull the render stack.
 
-#include "TtfImageEngine.h"
-
 #include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <new>
+
+#include "TtfImageEngine.h"
 
 #if defined(CROSSPOINT_TTF_READER)
 

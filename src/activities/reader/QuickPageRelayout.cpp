@@ -7,13 +7,12 @@
 
 #include "BookFontLoader.h"
 #include "CrossPointSettings.h"
+#include "Epub/blocks/ImageDecodeGate.h"
+#include "TtfImageEngine.h"
 #include "adapters/FrameTargetFactory.h"
 #include "adapters/PagePaint.h"
 #include "render/PageRenderer.h"
 #include "render/TtfFont.h"
-
-#include "Epub/blocks/ImageDecodeGate.h"
-#include "TtfImageEngine.h"
 
 namespace {
 

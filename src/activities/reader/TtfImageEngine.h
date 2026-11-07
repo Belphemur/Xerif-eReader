@@ -18,10 +18,9 @@
 // fallback, so both paths produce byte-identical caches by construction
 // (the same decode code runs on both sides).
 
+#include <BookArena.h>  // freeink::book::Arena (book-side alias of freeink::font::Arena)
 #include <HalStorage.h>
 #include <Logging.h>
-
-#include <BookArena.h>  // freeink::book::Arena (book-side alias of freeink::font::Arena)
 
 #include <cstdint>
 #include <cstring>
@@ -75,10 +74,10 @@ bool hasValidCache(const ImageSpec& spec, const char* dir, bool qualityTone);
 bool blitFromCache(GfxRenderer& renderer, const ImageSpec& spec, const char* dir, bool qualityTone);
 
 enum class DecodeResult : uint8_t {
-  Ok = 0,        // cache written (when caching) + rows painted
-  Skip = 1,      // nothing applicable (unknown format / missing entry / policy off)
-  Busy = 2,      // abort fired at a row boundary (foreground took over)
-  Failed = 3,    // transient memory/storage failure — retry next pass
+  Ok = 0,      // cache written (when caching) + rows painted
+  Skip = 1,    // nothing applicable (unknown format / missing entry / policy off)
+  Busy = 2,    // abort fired at a row boundary (foreground took over)
+  Failed = 3,  // transient memory/storage failure — retry next pass
 };
 
 // Tone-cache production. `paint` may be nullptr: worker JPEG/PNG decodes
@@ -92,6 +91,8 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
 // Full decode gates for a worker job (the #292 heap-gate precedents).
 bool decodeGatesOk();
 
-}  // namespace ttfimg
-
 #endif  // CROSSPOINT_TTF_READER
+
+}  // namespace ttfimg
+// (ImageSpec above is unguarded so the inert worker stub on non-TTF builds
+// keeps the same enqueue signature; the namespace closes after the guard.)

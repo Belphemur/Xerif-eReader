@@ -4,28 +4,25 @@
 
 #if defined(CROSSPOINT_TTF_READER)
 
-#include <GfxRenderer.h>
-
 #include <BitmapHelpers.h>
 #include <CrossPointSettings.h>
 #include <Epub.h>
+#include <Epub/blocks/ImageDecodeGate.h>
+#include <GfxRenderer.h>
 #include <HalMemory.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <epub/ImageProbe.h>
+#include <render/ImageRenderer.h>
 
 #include <cstdio>
 #include <cstring>
 #include <new>
 
-#include <epub/ImageProbe.h>
-#include <render/ImageRenderer.h>
-
 #include "Epub/converters/DirectPixelWriter.h"
 #include "Epub/converters/GifToFramebufferConverter.h"
 #include "Epub/converters/ImageDecoderFactory.h"
 #include "Epub/converters/ImageToFramebufferDecoder.h"
-
-#include <Epub/blocks/ImageDecodeGate.h>
 
 namespace {
 
@@ -134,16 +131,15 @@ struct BmpSource {
     } else if (dibSize >= 40 && dibSize <= 124) {
       uint8_t info[36];  // w(4) h(4) planes(2) bpp(2) compression(4) sizeImage(4) ppm(4x2) clrUsed(4) clrImportant(4)
       if (file.read(info, 36) != 36) return false;
-      const int32_t w = static_cast<int32_t>(static_cast<uint32_t>(info[0]) | (static_cast<uint32_t>(info[1]) << 8) |
-                                             (static_cast<uint32_t>(info[2]) << 16) |
-                                             (static_cast<uint32_t>(info[3]) << 24));
-      const int32_t h = static_cast<int32_t>(static_cast<uint32_t>(info[4]) | (static_cast<uint32_t>(info[5]) << 8) |
-                                             (static_cast<uint32_t>(info[6]) << 16) |
-                                             (static_cast<uint32_t>(info[7]) << 24));
+      const int32_t w =
+          static_cast<int32_t>(static_cast<uint32_t>(info[0]) | (static_cast<uint32_t>(info[1]) << 8) |
+                               (static_cast<uint32_t>(info[2]) << 16) | (static_cast<uint32_t>(info[3]) << 24));
+      const int32_t h =
+          static_cast<int32_t>(static_cast<uint32_t>(info[4]) | (static_cast<uint32_t>(info[5]) << 8) |
+                               (static_cast<uint32_t>(info[6]) << 16) | (static_cast<uint32_t>(info[7]) << 24));
       bpp = static_cast<uint16_t>(info[10]) | (static_cast<uint16_t>(info[11]) << 8);
       const uint32_t compression = static_cast<uint32_t>(info[14]) | (static_cast<uint32_t>(info[15]) << 8) |
-                                   (static_cast<uint32_t>(info[16]) << 16) |
-                                   (static_cast<uint32_t>(info[17]) << 24);
+                                   (static_cast<uint32_t>(info[16]) << 16) | (static_cast<uint32_t>(info[17]) << 24);
       const uint32_t clrUsed = static_cast<uint32_t>(info[28]) | (static_cast<uint32_t>(info[29]) << 8) |
                                (static_cast<uint32_t>(info[30]) << 16) | (static_cast<uint32_t>(info[31]) << 24);
       if (w <= 0 || h == 0 || w > 0xFFFF || h > 0xFFFF) return false;
@@ -198,7 +194,8 @@ struct BmpSource {
         const uint16_t step = bpp / 8;
         for (int x = 0; x < width; ++x) {
           // Byte order is B,G,R ([,A]) — luma weights for the RGB channels.
-          gray[x] = static_cast<uint8_t>((bits[x * step + 2] * 77 + bits[x * step + 1] * 150 + bits[x * step] * 29) >> 8);
+          gray[x] =
+              static_cast<uint8_t>((bits[x * step + 2] * 77 + bits[x * step + 1] * 150 + bits[x * step] * 29) >> 8);
         }
         break;
       }
@@ -207,7 +204,8 @@ struct BmpSource {
         break;
       case 4:
         for (int x = 0; x < width; ++x) {
-          const uint8_t idx = (x & 1) == 0 ? static_cast<uint8_t>(bits[x >> 1] >> 4) : static_cast<uint8_t>(bits[x >> 1] & 0x0F);
+          const uint8_t idx =
+              (x & 1) == 0 ? static_cast<uint8_t>(bits[x >> 1] >> 4) : static_cast<uint8_t>(bits[x >> 1] & 0x0F);
           gray[x] = paletteLuma[idx & 0x0F];
         }
         break;
@@ -492,8 +490,8 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
       ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(spec.href);
       decoded = decoder != nullptr && decoder->decodeToFramebuffer(image.get(), imageSize, *paint, config);
     } else {
-      const DecodeResult bmpRes = decodeBmpRows(spec, image.get(), imageSize, paint,
-                                                caching ? cachePath : nullptr, caching);
+      const DecodeResult bmpRes =
+          decodeBmpRows(spec, image.get(), imageSize, paint, caching ? cachePath : nullptr, caching);
       // Lossless BMP: leave rows EMPTY in the cache on decode failure so a
       // later view re-decodes rather than trusting a torn cache.
       decoded = bmpRes == DecodeResult::Ok;

@@ -145,5 +145,4 @@ inline bool readBasicInfo(HalFile& file, GifBasicInfo& info) {
   return readBasicInfoFrom(file, info);
 }
 
-
 }  // namespace GifCommon

@@ -75,8 +75,8 @@ void ToneCacheWriter::abort() {
   ok = false;
 }
 
-bool readValidCacheHeader(HalFile& cacheFile, const int expectedWidth, const int expectedHeight,
-                          uint16_t& cachedWidth, uint16_t& cachedHeight) {
+bool readValidCacheHeader(HalFile& cacheFile, const int expectedWidth, const int expectedHeight, uint16_t& cachedWidth,
+                          uint16_t& cachedHeight) {
   if (cacheFile.read(&cachedWidth, 2) != 2 || cacheFile.read(&cachedHeight, 2) != 2) return false;
   const int widthDiff = abs(cachedWidth - expectedWidth);
   const int heightDiff = abs(cachedHeight - expectedHeight);

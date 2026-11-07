@@ -42,13 +42,13 @@ struct GifContext {
   // + Floyd–Steinberg 4-level bake instead of nearest + Bayer. Allocation
   // failure silently falls back to the legacy path.
   bool quality{false};
-  std::unique_ptr<uint32_t[]> qSums;       // [dstWidth] gray accumulation
-  std::unique_ptr<uint16_t[]> qCounts;     // [dstWidth] samples per column
-  std::unique_ptr<int16_t[]> qErr;         // [dstWidth+2] FS error, current row
-  std::unique_ptr<int16_t[]> qErrNext;     // [dstWidth+2] FS error, next row
-  std::unique_ptr<uint8_t[]> qToneRow;     // [dstWidth] baked 4-level tones
-  int qAccumDstY = -1;                     // dst row currently accumulating (-1 = none)
-  int qFlushedRows = 0;                    // next destination row to bake (in order)
+  std::unique_ptr<uint32_t[]> qSums;    // [dstWidth] gray accumulation
+  std::unique_ptr<uint16_t[]> qCounts;  // [dstWidth] samples per column
+  std::unique_ptr<int16_t[]> qErr;      // [dstWidth+2] FS error, current row
+  std::unique_ptr<int16_t[]> qErrNext;  // [dstWidth+2] FS error, next row
+  std::unique_ptr<uint8_t[]> qToneRow;  // [dstWidth] baked 4-level tones
+  int qAccumDstY = -1;                  // dst row currently accumulating (-1 = none)
+  int qFlushedRows = 0;                 // next destination row to bake (in order)
 };
 
 void updateGrayPalette(const GIFDRAW* pDraw, GifContext& ctx) {
@@ -504,8 +504,8 @@ bool GifToFramebufferConverter::decodeGifSource(const char* imagePath, uint8_t* 
           info.interlaced ? "yes" : "no", config.maxWidth, config.maxHeight, MAX_WIDTH,
           HalMemory::getInternalHeap().freeBytes, label);
   const int rcOpen = mem != nullptr ? gif->open(mem, static_cast<int>(memSize), gifDrawCallback)
-                                    : gif->open(label, gifOpenWithHandle, gifCloseWithHandle,
-                                                gifReadWithHandle, gifSeekWithHandle, gifDrawCallback);
+                                    : gif->open(label, gifOpenWithHandle, gifCloseWithHandle, gifReadWithHandle,
+                                                gifSeekWithHandle, gifDrawCallback);
   const ScopedCleanup cleanup{[&gif]() { gif->close(); }};
   if (rcOpen != 1) {
     const int err = gif->getLastError();

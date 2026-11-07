@@ -31,19 +31,16 @@ struct ImageSpec;
 
 #if defined(BOARD_HAS_PSRAM) && defined(CROSSPOINT_TTF_READER)
 
-#include <GfxRenderer.h>
-
 #include <BookArena.h>  // freeink::book::Arena (book-side alias of freeink::font::Arena)
+#include <FreeRTOS.h>
+#include <GfxRenderer.h>
+#include <esp_heap_caps.h>
 #include <sdkconfig.h>
+#include <semphr.h>
+#include <task.h>
 
 #include <atomic>
 #include <new>
-
-#include <esp_heap_caps.h>
-
-#include <FreeRTOS.h>
-#include <semphr.h>
-#include <task.h>
 
 #include "TtfImageEngine.h"
 
@@ -60,8 +57,8 @@ class ImagePredecodeWorker {
   // the sync primitives, and arms the session (the task itself starts on the
   // first enqueue). Requires a successful reserve(). Re-arm re-runs reserve
   // after cancel() freed the buffers (book switch inside one reader session).
-  bool begin(Epub* epub, freeink::book::BookSource* source, const freeink::book::ZipCatalog* zip,
-             const char* cacheDir, uint32_t generation);
+  bool begin(Epub* epub, freeink::book::BookSource* source, const freeink::book::ZipCatalog* zip, const char* cacheDir,
+             uint32_t generation);
   bool begun() const { return sessionValid_.load(std::memory_order_acquire); }
   // Main thread. Layout generation change: later jobs not matching the new
   // generation are dropped at dequeue (their placement, and with it the .pxc
@@ -122,7 +119,7 @@ class ImagePredecodeWorker {
   std::atomic<uint32_t> generation_{0};
 
   Epub* epub_ = nullptr;                         // reader-owned; cleared by cancel()
-  freeink::book::BookSource* source_ = nullptr;   // reader-owned (same lifetime)
+  freeink::book::BookSource* source_ = nullptr;  // reader-owned (same lifetime)
   const freeink::book::ZipCatalog* zip_ = nullptr;
   char cacheDir_[160] = {};
 
@@ -157,7 +154,8 @@ class ImagePredecodeWorker {
 // allocation goes through the internal-DRAM-capped factory below, the size
 // assert is the secondary guard (FibpPrefetchWorker.h, kody-rr9).
 #if !defined(CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL)
-#error "CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL missing from sdkconfig.h — ImagePredecodeWorker's TCB residency guard cannot compile"
+#error \
+    "CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL missing from sdkconfig.h — ImagePredecodeWorker's TCB residency guard cannot compile"
 #endif
 static_assert(sizeof(ImagePredecodeWorker) <= CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL,
               "ImagePredecodeWorker grew past the PSRAM-prefer threshold; taskTcb_ would no longer be DRAM-resident");
@@ -184,17 +182,19 @@ inline ImagePredecodeWorker* makeImagePredecodeWorkerInternal() {
 
 #else  // !BOARD_HAS_PSRAM || !CROSSPOINT_TTF_READER
 
-// Inert stub (PSRAM-less boards keep today's on-demand decode).
+// Inert stub (PSRAM-less boards keep today's on-demand decode). Methods are
+// static: the stub touches no state, and cppcheck's functionStatic flags the
+// implicit this otherwise.
 class ImagePredecodeWorker {
  public:
-  bool begin(Epub*, freeink::book::BookSource*, const freeink::book::ZipCatalog*, const char*, uint32_t) {
+  static bool begin(Epub*, freeink::book::BookSource*, const freeink::book::ZipCatalog*, const char*, uint32_t) {
     return false;
   }
-  void notifyGeneration(uint32_t) {}
-  bool enqueue(const ttfimg::ImageSpec&) { return false; }
-  void setForegroundBusy(bool) {}
-  bool cancel() { return true; }
-  bool active() const { return false; }
+  static void notifyGeneration(uint32_t) {}
+  static bool enqueue(const ttfimg::ImageSpec&) { return false; }
+  static void setForegroundBusy(bool) {}
+  static bool cancel() { return true; }
+  static bool active() { return false; }
 };
 
 #endif  // BOARD_HAS_PSRAM && CROSSPOINT_TTF_READER

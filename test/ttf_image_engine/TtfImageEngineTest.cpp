@@ -9,19 +9,17 @@
 // device render surface and is exercised on-device; the host suite pins the
 // deterministic core both decode paths share.
 
+#include <Arduino.h>
 #include <gtest/gtest.h>
 
 #include <cstdint>
 #include <cstring>
 #include <string>
 
-#include <Arduino.h>
-
-#include "HalStorage.h"
-
 #include "Epub/Epub/blocks/ImageDecodeGate.h"
-#include "TtfImageEngine.h"
+#include "HalStorage.h"
 #include "TtfImageCache.h"
+#include "TtfImageEngine.h"
 
 namespace {
 
@@ -124,14 +122,14 @@ TEST(CacheValidity, HeaderDimsToleranceAndPayloadGuard) {
   uint16_t w = 0, h = 0;
   HalFile f;
   openFresh(f);
-  EXPECT_TRUE(ttfimg::readValidCacheHeader(f, 15, 8, w, h));   // -1 width
+  EXPECT_TRUE(ttfimg::readValidCacheHeader(f, 15, 8, w, h));  // -1 width
   EXPECT_EQ(w, 16);
   openFresh(f);
-  EXPECT_TRUE(ttfimg::readValidCacheHeader(f, 16, 7, w, h));   // -1 height
+  EXPECT_TRUE(ttfimg::readValidCacheHeader(f, 16, 7, w, h));  // -1 height
   openFresh(f);
   EXPECT_FALSE(ttfimg::readValidCacheHeader(f, 14, 8, w, h));  // -2 width
   openFresh(f);
-  EXPECT_FALSE(ttfimg::readValidCacheHeader(f, 16, 10, w, h)); // +2 height
+  EXPECT_FALSE(ttfimg::readValidCacheHeader(f, 16, 10, w, h));  // +2 height
   // Truncate the payload: no longer valid for the cached dims.
   std::string& data = storage.files["/t/dims.pxc"];
   data.resize(4 + 4 * 5);
