@@ -16,8 +16,8 @@ constexpr size_t APP_DESC_OFFSET = 0x20;
 constexpr size_t VERSION_OFFSET_IN_DESC = 16;
 constexpr uint32_t APP_DESC_MAGIC = 0xABCD5432;
 
-const esp_partition_t* findOtaAppSlot(uint32_t subtype) {
-  return esp_partition_find_first(ESP_PARTITION_TYPE_APP, static_cast<uint8_t>(subtype), nullptr);
+const esp_partition_t* findOtaAppSlot(esp_partition_subtype_t subtype) {
+  return esp_partition_find_first(ESP_PARTITION_TYPE_APP, subtype, nullptr);
 }
 }  // namespace
 

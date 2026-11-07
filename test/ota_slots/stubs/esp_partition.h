@@ -12,6 +12,8 @@ using esp_err_t = int;
 #define ESP_PARTITION_SUBTYPE_APP_OTA_0 0x10
 #define ESP_PARTITION_SUBTYPE_APP_OTA_1 0x11
 
+typedef int esp_partition_subtype_t;
+
 struct esp_partition_t {
   const char* label;
   uint32_t address;
@@ -20,7 +22,7 @@ struct esp_partition_t {
 };
 
 // Backed by a test-owned flash image (see Stubs.cpp).
-const esp_partition_t* esp_partition_find_first(uint8_t type, uint8_t subtype, const char* label);
+const esp_partition_t* esp_partition_find_first(int type, int subtype, const char* label);
 esp_err_t esp_partition_read(const esp_partition_t* partition, size_t src_offset, void* dst, size_t size);
 
 // Test hooks: install a simulated partition table + flash image.

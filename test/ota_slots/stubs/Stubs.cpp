@@ -38,7 +38,7 @@ void testOtaSlotsSetRunning(const uint32_t address) {
   }
 }
 
-const esp_partition_t* esp_partition_find_first(const uint8_t type, const uint8_t subtype, const char* label) {
+const esp_partition_t* esp_partition_find_first(const int type, const int subtype, const char* label) {
   if (type != ESP_PARTITION_TYPE_APP) return nullptr;
   for (const auto& p : g_partitions) {
     if (p.subtype != subtype) continue;
