@@ -184,6 +184,15 @@ void gifDrawCallback(GIFDRAW* pDraw) {
   auto* ctx = reinterpret_cast<GifContext*>(pDraw->pUser);
   if (!ctx || !ctx->success || !ctx->grayRow || !ctx->whiteRow) return;
 
+  // Background predecode abort (worker decodes only; the foreground leaves
+  // the config hook null): clearing success makes every remaining row return
+  // here immediately and fails the decode, whose existing !ctx.success path
+  // drops the partial cache file.
+  if (ctx->config->abortPoll != nullptr && ctx->config->abortPoll(ctx->config->abortCtx)) {
+    ctx->success = false;
+    return;
+  }
+
   ImageToFramebufferDecoder::yieldDuringDecode(ctx->lastYieldMs);
 
   const int canvasY = pDraw->iY + pDraw->y;

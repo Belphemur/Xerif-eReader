@@ -134,6 +134,12 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
   JpegContext* ctx = reinterpret_cast<JpegContext*>(pDraw->pUser);
   if (!ctx || !ctx->config || !ctx->renderer) return 0;
 
+  // Background predecode abort (worker decodes only; the foreground leaves
+  // the config hook null): returning 0 stops JPEGDEC at this band boundary,
+  // the decode reports failure, and the partial cache file is dropped by the
+  // existing failure path below.
+  if (ctx->config->abortPoll != nullptr && ctx->config->abortPoll(ctx->config->abortCtx)) return 0;
+
   ImageToFramebufferDecoder::yieldDuringDecode(ctx->lastYieldMs);
 
   // In EIGHT_BIT_GRAYSCALE mode, pPixels contains 8-bit grayscale values

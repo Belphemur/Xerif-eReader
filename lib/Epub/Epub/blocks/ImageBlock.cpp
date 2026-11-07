@@ -12,6 +12,7 @@
 
 #include "Epub/converters/DirectPixelWriter.h"
 #include "Epub/converters/ImageDecoderFactory.h"
+#include "ImageDecodeGate.h"
 
 // Cache file format:
 // - uint16_t width
@@ -70,14 +71,7 @@ constexpr size_t MAX_RENDER_IMAGE_FAILURES = 16;
 uint64_t failedImageHashes[MAX_RENDER_IMAGE_FAILURES];
 size_t failedImageCount = 0;
 
-uint64_t imagePathHash(const std::string& path) {
-  uint64_t hash = 14695981039346656037ull;
-  for (const char c : path) {
-    hash ^= static_cast<uint8_t>(c);
-    hash *= 1099511628211ull;
-  }
-  return hash;
-}
+uint64_t imagePathHash(const std::string& path) { return ImageDecodeGate::pathHash(path); }
 
 bool imageFailedThisRender(const std::string& path) {
   const uint64_t hash = imagePathHash(path);
@@ -292,7 +286,9 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
 
 }  // namespace
 
-bool ImageBlock::hasValidCache() const {
+std::string ImageBlock::cachePathFor(const std::string& imagePath) { return getCachePath(imagePath); }
+
+bool ImageBlock::hasValidCacheFor(const std::string& imagePath, const int16_t width, const int16_t height) {
   const auto cachePath = getCachePath(imagePath);
   HalFile cacheFile;
   if (!Storage.openFileForRead("IMG", cachePath, cacheFile)) {
@@ -302,6 +298,8 @@ bool ImageBlock::hasValidCache() const {
   uint16_t cachedWidth, cachedHeight;
   return readValidCacheHeader(cacheFile, width, height, cachedWidth, cachedHeight);
 }
+
+bool ImageBlock::hasValidCache() const { return hasValidCacheFor(imagePath, width, height); }
 
 bool ImageBlock::needsDecode() const { return !imageFailedThisRender(imagePath) && !hasValidCache(); }
 
@@ -395,6 +393,20 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
     renderer.preserveImagePolarity(x, y, width, height);
     return;  // Successfully rendered from cache
   }
+
+  // Single-writer gate (design §3.4 rule 2): the foreground wins cache
+  // production. A predecode worker holding the claim is told to abort at its
+  // next band boundary; on timeout draw the placeholder and leave the cache
+  // absent — a later render pass retries with the worker's cache warm.
+  const uint64_t gateHash = ImageDecodeGate::pathHash(imagePath);
+  if (!ImageDecodeGate::acquireForeground(gateHash)) {
+    renderPlaceholder(renderer, x, y);
+    return;
+  }
+  struct GateGuard {
+    uint64_t hash;
+    ~GateGuard() { ImageDecodeGate::releaseForeground(hash); }
+  } gateGuard{gateHash};
 
   // The build only header-probed the image for dimensions; pull the actual
   // file out of the book now, on first visit to the page.

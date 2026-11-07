@@ -26,6 +26,25 @@ class Section {
   void writeSectionFileHeader(const ReaderRenderSpec& spec);
   uint32_t onPageComplete(std::unique_ptr<Page> page);
 
+  // Background image predecode sighting (docs/design/2026-11-06-image-predecode.md
+  // §3.1): fired from onPageComplete for each freshly laid-out image whose
+  // .pxc cache is absent. Pages are serialized to the section file and
+  // destroyed inside onPageComplete, so this is the only point the new
+  // page's ImageBlocks exist in RAM — the "pages that landed this tick" scan
+  // lands here rather than after buildSomeMore returns. Null = disabled (no
+  // scan cost). Installed by the reader activity when it enables the worker.
+  struct ImageSighting {
+    uint16_t spineIndex;
+    uint16_t pageIndex;
+    const char* srcPath;
+    const char* imagePath;
+    int16_t width;
+    int16_t height;
+    int16_t xPos;
+    int16_t yPos;
+  };
+  std::function<void(const ImageSighting&)> imageSightingHook;
+
   // Page-offset table entry, kept in RAM while an incremental build is running so
   // already-built pages can be located in the partially-written .bin.
   struct PageLutEntry {

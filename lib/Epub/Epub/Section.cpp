@@ -209,6 +209,27 @@ uint32_t Section::onPageComplete(std::unique_ptr<Page> page) {
   if (builtPageCount_ > pageCount) {
     pageCount = builtPageCount_;
   }
+
+  // Predecode sighting: the page is about to be destroyed with the serialize
+  // scope, so inspect its images here. hasValidCache() is one small SD
+  // open+header read per image, only on pages carrying images, only while a
+  // hook is installed (the reader enables it on PSRAM boards with the worker).
+  if (imageSightingHook) {
+    const uint16_t pageIndex = builtPageCount_ - 1;
+    page->forEachUncachedImage([&](const PageImage& img) {
+      const ImageBlock& block = img.getImageBlock();
+      if (block.getSrcPath().empty()) return;  // no source to extract from
+      const ImageSighting sighting{spineIndex,
+                                   pageIndex,
+                                   block.getSrcPath().c_str(),
+                                   block.getImagePath().c_str(),
+                                   block.getWidth(),
+                                   block.getHeight(),
+                                   img.xPos,
+                                   img.yPos};
+      imageSightingHook(sighting);
+    });
+  }
   return position;
 }
 

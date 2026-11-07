@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -185,6 +186,17 @@ class Page {
       return element->getTag() == TAG_PageImage &&
              static_cast<const PageImage&>(*element).getImageBlock().needsDecode();
     });
+  }
+
+  // Images on this page whose .pxc cache is absent (background predecode
+  // sighting — fired from the page-complete path, the only point a freshly
+  // laid-out Page exists in RAM before it is serialized and destroyed).
+  void forEachUncachedImage(const std::function<void(const PageImage&)>& fn) const {
+    for (const auto& el : elements) {
+      if (el->getTag() != TAG_PageImage) continue;
+      const auto& img = static_cast<const PageImage&>(*el);
+      if (!img.getImageBlock().hasValidCache()) fn(img);
+    }
   }
 
   // Get bounding box of all images on the page (union of image rects)

@@ -75,6 +75,13 @@ struct RenderConfig {
   float sourceCropY = 0.0f;         // Fraction cropped equally from the top and bottom edges
   bool preserveAlpha = false;       // Skip transparent pixels instead of compositing them against white
   std::string cachePath;            // If non-empty, decoder will write pixel cache to this path
+  // Cooperative abort for the background image predecode worker (design
+  // §3.4 rule 2). Checked at each converter's band boundary; when it returns
+  // true the decode stops and fails, and the partial pixel cache is dropped
+  // by the converter's existing failure path. Foreground paths leave both
+  // null — no behavior change.
+  bool (*abortPoll)(void* ctx) = nullptr;
+  void* abortCtx = nullptr;
 };
 
 class ImageToFramebufferDecoder {

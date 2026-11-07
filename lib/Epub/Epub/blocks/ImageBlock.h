@@ -14,11 +14,18 @@ class ImageBlock final : public Block {
   ~ImageBlock() override = default;
 
   const std::string& getImagePath() const { return imagePath; }
+  const std::string& getSrcPath() const { return srcPath; }
   int16_t getWidth() const { return width; }
   int16_t getHeight() const { return height; }
 
   bool hasValidCache() const;
   bool needsDecode() const;
+  // Shared single-writer helpers (ImageDecodeGate consumers): the .pxc path
+  // derived from an image path, and a cache-validity check for a block's
+  // dimensions without an ImageBlock instance (the predecode worker holds
+  // only the sighting's paths and sizes).
+  static std::string cachePathFor(const std::string& imagePath);
+  static bool hasValidCacheFor(const std::string& imagePath, int16_t width, int16_t height);
   void renderPlaceholder(GfxRenderer& renderer, int x, int y) const;
   static void clearRenderFailures();
 
