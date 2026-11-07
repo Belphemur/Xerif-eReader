@@ -249,25 +249,44 @@ bool GifToFramebufferConverter::getDimensionsStatic(const std::string& imagePath
 
 bool GifToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath, GfxRenderer& renderer,
                                                     const RenderConfig& config) {
-  LOG_DBG("GIF", "Decoding GIF: %s", imagePath.c_str());
+  return decodeGifSource(imagePath.c_str(), nullptr, 0, renderer, config);
+}
+
+bool GifToFramebufferConverter::decodeToFramebuffer(uint8_t* data, const size_t size, GfxRenderer& renderer,
+                                                    const RenderConfig& config) {
+  if (data == nullptr) return false;
+  return decodeGifSource(nullptr, data, size, renderer, config);
+}
+
+bool GifToFramebufferConverter::decodeGifSource(const char* imagePath, uint8_t* mem, const size_t memSize,
+                                                GfxRenderer& renderer, const RenderConfig& config) {
+  const char* label = mem != nullptr ? "(memory GIF)" : imagePath;
 
   GifBasicInfo info;
-  if (!readGifInfoFromPath(imagePath, info)) {
-    LOG_ERR("GIF", "Failed to parse GIF header: %s", imagePath.c_str());
+  bool infoParsed = false;
+  if (mem != nullptr) {
+    HalMemoryFile memFile(mem, memSize);
+    infoParsed = GifCommon::readBasicInfoFrom(memFile, info);
+  } else {
+    infoParsed = readGifInfoFromPath(imagePath, info);
+  }
+  if (!infoParsed) {
+    LOG_ERR("GIF", "Failed to parse GIF header: %s", label);
     return false;
   }
   if (info.interlaced) {
-    warnUnsupportedFeature("interlaced GIF", imagePath);
+    warnUnsupportedFeature("interlaced GIF", label);
     return false;
   }
   if (info.canvasWidth > MAX_WIDTH) {
     LOG_ERR("GIF",
             "GIF canvas too wide for AnimatedGIF: canvas=%ux%u MAX_WIDTH=%d "
             "renderTarget=%dx%d file=%s",
-            info.canvasWidth, info.canvasHeight, MAX_WIDTH, config.maxWidth, config.maxHeight, imagePath.c_str());
+            info.canvasWidth, info.canvasHeight, MAX_WIDTH, config.maxWidth, config.maxHeight, label);
     return false;
   }
   ImageDimensions sourceDimensions;
+
   if (!validateAndStoreDimensions(info.canvasWidth, info.canvasHeight, sourceDimensions, "GIF")) return false;
 
   const size_t freeHeap = HalMemory::getInternalHeap().freeBytes;
@@ -308,7 +327,7 @@ bool GifToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
     ctx.dstHeight = static_cast<int>(ctx.srcHeight * ctx.scale);
   }
   if (ctx.dstWidth <= 0 || ctx.dstHeight <= 0) {
-    LOG_ERR("GIF", "Degenerate output dimensions %dx%d for %s", ctx.dstWidth, ctx.dstHeight, imagePath.c_str());
+    LOG_ERR("GIF", "Degenerate output dimensions %dx%d for %s", ctx.dstWidth, ctx.dstHeight, label);
     return false;
   }
 
@@ -327,14 +346,15 @@ bool GifToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
           "renderTarget=%dx%d MAX_WIDTH=%d freeHeap=%u file=%s",
           info.canvasWidth, info.canvasHeight, info.frameWidth, info.frameHeight, info.frameX, info.frameY,
           info.interlaced ? "yes" : "no", config.maxWidth, config.maxHeight, MAX_WIDTH,
-          HalMemory::getInternalHeap().freeBytes, imagePath.c_str());
-  const int rcOpen = gif->open(imagePath.c_str(), gifOpenWithHandle, gifCloseWithHandle, gifReadWithHandle,
-                               gifSeekWithHandle, gifDrawCallback);
+          HalMemory::getInternalHeap().freeBytes, label);
+  const int rcOpen = mem != nullptr ? gif->open(mem, static_cast<int>(memSize), gifDrawCallback)
+                                    : gif->open(label, gifOpenWithHandle, gifCloseWithHandle,
+                                                gifReadWithHandle, gifSeekWithHandle, gifDrawCallback);
   const ScopedCleanup cleanup{[&gif]() { gif->close(); }};
   if (rcOpen != 1) {
     const int err = gif->getLastError();
     LOG_ERR("GIF", "AnimatedGIF open failed: err=%d canvas=%ux%u MAX_WIDTH=%d file=%s", err, info.canvasWidth,
-            info.canvasHeight, MAX_WIDTH, imagePath.c_str());
+            info.canvasHeight, MAX_WIDTH, label);
     return false;
   }
 
@@ -357,7 +377,7 @@ bool GifToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
 
   processGapRowsUpTo(ctx.srcHeight, ctx);
   if (!ctx.success) {
-    LOG_ERR("GIF", "GIF post-process failed: %s", imagePath.c_str());
+    LOG_ERR("GIF", "GIF post-process failed: %s", label);
     if (ctx.caching) ctx.cache.abort();
     return false;
   }
