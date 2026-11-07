@@ -8,7 +8,7 @@
 #include <Memory.h>
 #include <Serialization.h>
 #include <esp_system.h>
-#ifdef ESP_PLATFORM
+#if defined(ESP_PLATFORM) || defined(BOARD_HAS_PSRAM)
 #include <esp_heap_caps.h>
 #endif
 #include <algorithm>

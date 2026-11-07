@@ -94,6 +94,9 @@ bool ZipFile::loadAllFileStatSlims() {
 
   uint32_t sig;
   char itemName[256];
+  // Entries are emplaced directly into the PSRAM-resident FileStatSlimCache
+  // (pool-allocated nodes + key strings) — never into a DRAM intermediate
+  // that would transiently double the footprint at open.
   fileStatSlimCache.clear();
   fileStatSlimCache.reserve(zipDetails.totalEntries);
 
@@ -139,7 +142,9 @@ bool ZipFile::loadAllFileStatSlims() {
 
 bool ZipFile::loadFileStatSlim(const char* filename, FileStatSlim* fileStat) {
   if (!fileStatSlimCache.empty()) {
-    const auto it = fileStatSlimCache.find(filename);
+    // PoolString key: the (rare) cache-hit probe allocates one short pool
+    // string in PSRAM instead of DRAM.
+    const auto it = fileStatSlimCache.find(PoolString{filename});
     if (it != fileStatSlimCache.end()) {
       *fileStat = it->second;
       return true;

@@ -1,7 +1,9 @@
 #pragma once
 #include <HalStorage.h>
+#include <Memory.h>
 
 #include <deque>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -14,6 +16,18 @@ class ZipFile {
     uint32_t uncompressedSize;   // Uncompressed size
     uint32_t localHeaderOffset;  // Offset of local file header
   };
+
+  // Pool-backed key string + cache map for the slim-stat directory. Key
+  // strings AND map nodes allocate through PoolAllocator (poolMalloc), so a
+  // populated cache costs PSRAM on BOARD_HAS_PSRAM boards instead of DRAM —
+  // the whole point of this type: a 465-entry book previously cost ~56 KB of
+  // DRAM at open and could push free heap below the reader's render gate. On
+  // host/non-PSRAM builds poolMalloc is plain malloc and the layout is
+  // equivalent to the old std::string map.
+  using PoolString = std::basic_string<char, std::char_traits<char>, PoolAllocator<char>>;
+  using FileStatSlimCache =
+      std::unordered_map<PoolString, FileStatSlim, std::hash<PoolString>, std::equal_to<PoolString>,
+                         PoolAllocator<std::pair<const PoolString, FileStatSlim>>>;
 
   struct ZipDetails {
     uint32_t centralDirOffset;
@@ -42,7 +56,7 @@ class ZipFile {
   const std::string& filePath;
   HalFile file;
   ZipDetails zipDetails = {0, 0, false};
-  std::unordered_map<std::string, FileStatSlim> fileStatSlimCache;
+  FileStatSlimCache fileStatSlimCache;
 
   // Cursor for sequential central-dir scanning optimization
   uint32_t lastCentralDirPos = 0;
@@ -74,10 +88,10 @@ class ZipFile {
   bool loadAllFileStatSlims();
   bool getInflatedFileSize(const char* filename, size_t* size);
   // Access the full fileStatSlimCache populated by loadAllFileStatSlims().
-  const std::unordered_map<std::string, FileStatSlim>& getFileStatSlimCache() const { return fileStatSlimCache; }
+  const FileStatSlimCache& getFileStatSlimCache() const { return fileStatSlimCache; }
   // Move the cache out of this ZipFile (caller takes ownership). After this call
   // the local cache is empty; the next loadAllFileStatSlims() rebuilds it.
-  std::unordered_map<std::string, FileStatSlim> takeFileStatSlimCache() { return std::move(fileStatSlimCache); }
+  FileStatSlimCache takeFileStatSlimCache() { return std::move(fileStatSlimCache); }
   // Batch lookup: scan ZIP central dir once and fill sizes for matching targets.
   // targets must be sorted by (hash, len). sizes[target.index] receives uncompressedSize.
   // Returns number of targets matched.
@@ -98,7 +112,7 @@ class ZipFile {
   bool enumerateFilePaths(F&& callback) {
     if (!fileStatSlimCache.empty()) {
       for (const auto& entry : fileStatSlimCache) {
-        callback(std::string_view{entry.first});
+        callback(std::string_view{entry.first.data(), entry.first.size()});
       }
       return true;
     }

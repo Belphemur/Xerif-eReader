@@ -267,7 +267,7 @@ void Epub::discoverCssFilesFromZip() {
 #ifdef BOARD_HAS_PSRAM
   if (zipCache_ && zipCache_->isLoaded()) {
     for (const auto& entry : zipCache_->cacheRef()) {
-      const std::string_view filePath = entry.first;
+      const std::string_view filePath{entry.first.data(), entry.first.size()};
       if (!opfDir.empty() && filePath.find(opfDir) != 0) {
         continue;
       }
@@ -1582,6 +1582,14 @@ int Epub::resolveHrefToSpineIndex(const std::string& href) const {
   return -1;
 }
 
+void Epub::unloadZipFileCache() {
+#ifdef BOARD_HAS_PSRAM
+  if (zipCache_) {
+    zipCache_->unload();
+  }
+#endif
+}
+
 #ifdef BOARD_HAS_PSRAM
 void Epub::ZipFileCache::load(const std::string& epubPath) {
   // ZipFile stores its filePath as a const std::string& member. Pass an lvalue
@@ -1593,9 +1601,10 @@ void Epub::ZipFileCache::load(const std::string& epubPath) {
   if (!zf.open()) return;
   if (!zf.loadAllFileStatSlims()) return;
   // Move the cache out of zf to avoid the ~2x transient copy the const& getter
-  // would force. The map lives in DRAM and is entry-count dependent
-  // (~115 B/entry incl. heap nodes; ~56 KB at 465 entries — measured in the
-  // 2026-11-03 soak), big enough to make the copy worth avoiding.
+  // would force. The map is PSRAM-resident end to end (pool-allocated nodes
+  // and key strings — ZipFile::FileStatSlimCache), so a populated cache costs
+  // ~0 DRAM; the move preserves the zero-copy handoff without any DRAM
+  // intermediate at open.
   cache_ = zf.takeFileStatSlimCache();
   loaded_ = true;
   LOG_DBG("ZIP", "ZIP cache loaded: %zu entries", static_cast<size_t>(cache_.size()));
@@ -1603,14 +1612,12 @@ void Epub::ZipFileCache::load(const std::string& epubPath) {
 
 const ZipFile::FileStatSlim* Epub::ZipFileCache::get(std::string_view itemPath) const {
   if (!loaded_) return nullptr;
-  // Allocate the lookup key once. Caller passes std::string_view to avoid
-  // the per-call FsHelpers::normalisePath() + string copy the old API did
-  // (CodeRabbit IPV8; AGENTS.md rule 4); the std::string here is unavoidable
-  // without C++20 heterogeneous lookup (transparent hash + comparator on the
-  // map). The cost is one short-string allocation per cache lookup, which is
-  // still far less than the previous path (which allocated a path AND
-  // normalised it AND compared to a std::string key).
-  if (auto it = cache_.find(std::string{itemPath}); it != cache_.end()) {
+  // PoolString lookup key: one short pool-backed allocation per call (PSRAM
+  // on firmware, malloc on host). Constructing from the string_view keeps
+  // everything else at the call site allocation-free (CodeRabbit IPV8;
+  // AGENTS.md rule 4) — heterogeneous lookup is not available because the
+  // pool hash/comparator stay type-exact.
+  if (auto it = cache_.find(ZipFile::PoolString{itemPath.data(), itemPath.size()}); it != cache_.end()) {
     return &it->second;
   }
   return nullptr;
@@ -1619,7 +1626,16 @@ const ZipFile::FileStatSlim* Epub::ZipFileCache::get(std::string_view itemPath) 
 void Epub::ZipFileCache::invalidate(std::string_view itemPath) {
   // Erase one cached entry so the next read re-scans the ZIP central
   // directory for this item. No-op if the entry is not present.
-  cache_.erase(std::string{itemPath});
+  cache_.erase(ZipFile::PoolString{itemPath.data(), itemPath.size()});
+}
+
+void Epub::ZipFileCache::unload() {
+  const size_t dropped = cache_.size();
+  cache_.clear();
+  loaded_ = false;
+  if (dropped > 0) {
+    LOG_DBG("ZIP", "ZIP entry cache unloaded: %zu entries", dropped);
+  }
 }
 
 #ifdef BOARD_HAS_PSRAM

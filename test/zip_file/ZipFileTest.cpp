@@ -1,4 +1,5 @@
 #include <HalStorage.h>
+#include <Memory.h>
 #include <ZipFile.h>
 #include <gtest/gtest.h>
 
@@ -6,9 +7,19 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace {
+
+// The slim-stat cache must stay pool-backed (PSRAM-resident on firmware):
+// pin the allocator types at compile time so a revert to std::string keys or
+// a default-allocator node map fails this build instead of silently eating
+// DRAM again (render-heap-gate recovery, 2026-11).
+static_assert(std::is_same_v<ZipFile::FileStatSlimCache::key_type, ZipFile::PoolString>);
+static_assert(std::is_same_v<ZipFile::PoolString::allocator_type, PoolAllocator<char>>);
+static_assert(std::is_same_v<ZipFile::FileStatSlimCache::allocator_type,
+                             PoolAllocator<std::pair<const ZipFile::PoolString, ZipFile::FileStatSlim>>>);
 
 constexpr uint16_t METHOD_STORED = 0;
 constexpr uint16_t METHOD_DEFLATED = 8;
@@ -319,6 +330,25 @@ TEST_F(ZipFileTest, PreloadedDirectoryServesLookupsWithoutOpeningTheArchive) {
   EXPECT_EQ(sizeOf(zip, "a.txt"), 4u);
   EXPECT_EQ(sizeOf(zip, "b.txt"), 2u);
   EXPECT_EQ(Storage.openCount, opensAfterPreload);
+}
+
+TEST_F(ZipFileTest, SlimStatCacheMovesOutAndRebuildsOnReload) {
+  ZipBuilder builder;
+  builder.addStored("a.txt", "aaaa").addStored("b.txt", "bb");
+  install(builder);
+
+  ZipFile zip(path);
+  ASSERT_TRUE(zip.loadAllFileStatSlims());
+  ASSERT_EQ(zip.getFileStatSlimCache().size(), 2u);
+
+  const auto taken = zip.takeFileStatSlimCache();
+  EXPECT_EQ(taken.size(), 2u);
+  EXPECT_TRUE(zip.getFileStatSlimCache().empty());
+
+  // Reload rebuilds the local cache from the archive (Epub::ZipFileCache::load
+  // relies on this after taking the first cache).
+  EXPECT_TRUE(zip.loadAllFileStatSlims());
+  EXPECT_EQ(zip.getFileStatSlimCache().size(), 2u);
 }
 
 TEST_F(ZipFileTest, RejectsArchivesWithoutAnEndOfCentralDirectoryRecord) {

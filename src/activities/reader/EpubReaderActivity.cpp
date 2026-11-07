@@ -3794,7 +3794,30 @@ void EpubReaderActivity::renderBookTtf() {
 
   // Render-path heap gate (§3.5): a low DRAM floor postpones the raster to
   // the next loop pass rather than fragmenting the hot path.
+  //
+  // The postpone must stay diagnosable. A reopen of an image-heavy book after
+  // a previous session can leave free DRAM under the floor with nothing that
+  // recovers it: the background build is gated off too (buildHeapPaused), so
+  // every pass postponed itself silently forever — soak 2026-11-07:
+  // HeapFree=19252 < 24576 after book open, then no paint, no [GFX]/[PREF],
+  // only [MEM]/IDLE0 heartbeats. Log the stall (once on entry, then at most
+  // every 5 s) and drop the ZIP entry cache once per episode as a cheap
+  // best-effort net: with the PSRAM-resident entry map this frees PSRAM, not
+  // DRAM — kept because PSRAM pressure feeds the same fragmentation spiral
+  // through pool fallbacks. Never blocks; buttons stay live between passes.
   if (ESP.getFreeHeap() < RENDER_MIN_FREE_HEAP) {
+    const uint32_t now = millis();
+    if (!renderHeapStallLogged || now - renderHeapStallLastLogMs >= RENDER_HEAP_STALL_LOG_INTERVAL_MS) {
+      LOG_ERR("REND", "render heap stall: free=%u maxBlock=%u floor=%u — render postponed",
+              static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()),
+              static_cast<unsigned>(RENDER_MIN_FREE_HEAP));
+      renderHeapStallLogged = true;
+      renderHeapStallLastLogMs = now;
+    }
+    if (!renderHeapStallCacheUnloaded && epub) {
+      epub->unloadZipFileCache();
+      renderHeapStallCacheUnloaded = true;
+    }
     requestUpdate();
     return;
   }
@@ -4451,6 +4474,10 @@ void EpubReaderActivity::ttfCommitFrame(const freeink::book::Page& page, const f
 #endif
     // Cleanup has restored the framebuffer after the final gray-plane pass.
     ttfFrameRenderComplete.store(true, std::memory_order_release);
+    // A committed frame ends the heap-stall episode: re-arm the gate's log
+    // throttle and one-shot cache unload for any future stall.
+    renderHeapStallLogged = false;
+    renderHeapStallCacheUnloaded = false;
     // The frame is fully committed: allow rememberBookOnceRendered() to set
     // openEpubPath + recents. Missing here meant sleep-from-reader had no
     // staged cover path (blank sleep screen) and fresh books never entered
@@ -4499,6 +4526,9 @@ void EpubReaderActivity::ttfCommitFrame(const freeink::book::Page& page, const f
   // The B/W frame and status chrome are fully painted (and any async submit
   // has completed) before overlay opens may paint directly onto this frame.
   ttfFrameRenderComplete.store(true, std::memory_order_release);
+  // Same episode-end reset as the gray path above.
+  renderHeapStallLogged = false;
+  renderHeapStallCacheUnloaded = false;
   // Same rememberBookOnceRendered() contract as the gray path above.
   markPageRendered();
 #ifdef READING_STATS_ENABLED
