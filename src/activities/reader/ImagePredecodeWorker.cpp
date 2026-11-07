@@ -125,7 +125,13 @@ bool ImagePredecodeWorker::enqueue(const Job& job) {
       const size_t slot = (queueHead_ + i) % kQueueCapacity;
       Job& other = *reinterpret_cast<Job*>(queueStorage_ + slot * sizeof(Job));
       if (strncmp(other.imagePath, job.imagePath, Job::kImagePathCap) == 0) {
+        // Refresh only the closure-captured render fields and keep the queued
+        // record's deferrals: the fresh sighting always carries deferrals=0,
+        // so copying it over would reset the gate-starvation counter and a
+        // re-sighted job could defer past kMaxDeferrals forever.
+        const uint8_t deferrals = other.deferrals;
         other = job;
+        other.deferrals = deferrals;
         xSemaphoreGive(queueMux_);
         return true;
       }
