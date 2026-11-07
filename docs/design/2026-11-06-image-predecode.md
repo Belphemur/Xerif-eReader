@@ -271,3 +271,43 @@ host parity + protocol tests, `pio run -e x4pro` + `-e default` gates, on-device
 measurement per §5. Standing rules in the brief: default/global git config only, no
 Co-authored-by, separate commits for core/device/tests, firmware-handoff before
 declared done, PR to the fork.
+
+---
+
+## 9. As-built (2026-11-06, branch `feat/image-predecode`)
+
+Implemented on top of §7 with the following documented deviations:
+
+1. **Detection site.** Pages are serialized to the section file and destroyed inside
+   `Section::onPageComplete` (`Section.cpp:186`) — the LUT holds only file offsets, so a
+   post-tick scan of Page objects is impossible. The "pages that landed this tick" scan
+   fires from `onPageComplete` instead (single site, same coverage for build-tick pages;
+   sections loaded wholly from cache have no build ticks under either formulation, and
+   their images decode on demand as today). The §3.3(b) "PageImage position accessor"
+   was not needed: `PageElement::xPos/yPos` are already public.
+2. **§3.4 rule 3 mechanism.** No decode-spanning mutex. The converters' decode state is
+   call-local (local `JPEGDEC`/`PNG`/`AnimatedGIF` per call — verified in the three
+   converters), so concurrent decodes are safe by construction; the one real race is the
+   factory's lazy singleton init, now guarded by a static init mutex inside
+   `ImageDecoderFactory::getDecoder()`. A decode-spanning mutex would serialize worker
+   decodes against the parser's in-build dimension probes
+   (`ChapterHtmlSlimParser.cpp:1710/:1741`), which run on the loop task during indexing —
+   blocking it breaks the buttons rule, while failing the probe yields zero-dimension
+   ImageBlocks (broken layout).
+3. **Worker enablement.** All `BOARD_HAS_PSRAM` boards per §7.4, but only for
+   legacy-engine sessions (`SETTINGS.readerFontEngine == READER_ENGINE_BITMAP` on
+   TTF-capable builds): the `.pxc`/`ImageBlock` path belongs to the Section reader — the
+   native-TTF chain renders images through the SDK's `ImageRenderer` with no `.pxc`, so a
+   TTF session would only idle the reservations (~14 KB DRAM queue + 48 KB PSRAM scratch).
+4. **§3.6 queue budget.** The "<2 KB" line is unreachable with inline path storage
+   (~224 B/record × 64). The ring is one session-lifetime DRAM heap block (~14 KB)
+   allocated at reader entry (before the EPUB open, same window as the FibpPrefetchWorker
+   stack reserve), not `.bss`.
+5. **GIF images.** `GifToFramebufferConverter` has no memory-source decode variant, so a
+   GIF job fails at the worker the same way the foreground's PSRAM path does; the cache
+   is produced on first view by the existing SD-staging path. Not a regression.
+6. **Sighting scope.** Pages behind the reader's current page are skipped at enqueue
+   (their cache only matters when paging back, which decodes on demand as today).
+7. **Cancel-time aborts.** `ImageDecodeGate::abortAllWorkerClaims()` flags every
+   worker-held claim at reader teardown so an in-flight decode stops at its next band
+   boundary instead of outliving the bounded `cancel()` join.
