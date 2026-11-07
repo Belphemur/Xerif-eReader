@@ -55,7 +55,10 @@ bool ImagePredecodeWorker::begin(Epub* epub, const uint32_t generation) {
   if (epub == nullptr || queueStorage_ == nullptr || scratchFb_ == nullptr) return false;
   if (sessionValid_.load(std::memory_order_acquire)) {
     if (epub_ == epub) return true;  // already armed for this book
-    cancel();                        // re-open of a different book inside one reader session
+    // Re-open of a different book inside one reader session: cancel() frees
+    // the queue and scratch, so re-reserve before re-arming.
+    cancel();
+    if (!reserve()) return false;
   }
   epub_ = epub;
   generation_.store(generation, std::memory_order_release);
@@ -326,9 +329,13 @@ ImagePredecodeWorker::SpawnResult ImagePredecodeWorker::spawnTask() {
 bool ImagePredecodeWorker::cancel() {
   cancel_.store(true, std::memory_order_release);
   // Order matters: the session gate closes before the join, so a task between
-  // two steps can never re-enter epub_ after this returns. Waking the idle
-  // wait keeps the join prompt (the task's only long sleep is the queue wait).
+  // two steps can never re-enter epub_ after this returns. A decode still in
+  // flight is aborted at its next band boundary (otherwise a multi-second
+  // large-image decode would outlive the bounded join and leak the worker);
+  // waking the idle wait keeps the join prompt (the task's only long sleep is
+  // the queue wait).
   sessionValid_.store(false, std::memory_order_release);
+  ImageDecodeGate::abortAllWorkerClaims();
   if (queueSem_ != nullptr) xSemaphoreGive(queueSem_);
   if (exitedSem_ != nullptr) {
     if (xSemaphoreTake(exitedSem_, pdMS_TO_TICKS(kJoinTimeoutMs)) != pdTRUE) {

@@ -111,6 +111,13 @@ bool ImageDecodeGate::workerAbortRequested(const uint64_t hash) {
   return entry != nullptr && entry->owner == Owner::Worker && entry->abort;
 }
 
+void ImageDecodeGate::abortAllWorkerClaims() {
+  std::lock_guard<std::mutex> lock(registryMux);
+  for (auto& entry : entries) {
+    if (entry.owner == Owner::Worker) entry.abort = true;
+  }
+}
+
 void ImageDecodeGate::resetForTest() {
   std::lock_guard<std::mutex> lock(registryMux);
   for (auto& entry : entries) {

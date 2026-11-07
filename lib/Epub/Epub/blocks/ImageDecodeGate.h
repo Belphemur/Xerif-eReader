@@ -61,6 +61,10 @@ class ImageDecodeGate {
   static void releaseWorker(uint64_t hash);
   // Band-boundary abort poll (converter callbacks; worker decodes only).
   static bool workerAbortRequested(uint64_t hash);
+  // Reader teardown: flag every worker-held claim so a decode still in
+  // flight stops at its next band boundary instead of outliving the bounded
+  // cancel() join. Foreground claims are never touched.
+  static void abortAllWorkerClaims();
 
   // Test seam: drop every entry (host tests run many scenarios in one process).
   static void resetForTest();

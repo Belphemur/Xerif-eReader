@@ -114,4 +114,20 @@ TEST_F(ImageDecodeGateTest, ResetForTestClearsEveryEntry) {
   EXPECT_TRUE(ImageDecodeGate::tryAcquireWorker(hash));
 }
 
+// Reader teardown: every worker-held claim is flagged so an in-flight decode
+// stops at its next band boundary; foreground claims are untouched.
+TEST_F(ImageDecodeGateTest, AbortAllWorkerClaimsFlagsOnlyWorkerEntries) {
+  const uint64_t workerHash = hashOf("/cache/img_3_0.jpg");
+  const uint64_t fgHash = hashOf("/cache/img_3_1.jpg");
+  ASSERT_TRUE(ImageDecodeGate::tryAcquireWorker(workerHash));
+  ASSERT_TRUE(ImageDecodeGate::acquireForeground(fgHash));
+  ImageDecodeGate::abortAllWorkerClaims();
+  EXPECT_TRUE(ImageDecodeGate::workerAbortRequested(workerHash));
+  ImageDecodeGate::releaseWorker(workerHash);
+  EXPECT_FALSE(ImageDecodeGate::workerAbortRequested(workerHash));
+  // The foreground's own claim survives the sweep (re-acquire is idempotent).
+  EXPECT_TRUE(ImageDecodeGate::acquireForeground(fgHash));
+  ImageDecodeGate::releaseForeground(fgHash);
+}
+
 }  // namespace
