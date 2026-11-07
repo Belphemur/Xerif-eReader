@@ -131,7 +131,7 @@ jobs:
           date = subprocess.run(["git", "show", "-s", f"--format=%cI", sha], check=True,
                                 capture_output=True, text=True).stdout.strip()
 
-          def entry_from_file(path):
+          def entry_from_file(path, when=None):
               name = os.path.basename(path)
               with open(path, "rb") as f:
                   data = f.read()
@@ -139,7 +139,9 @@ jobs:
                   "name": name,
                   "url": f"https://github.com/{repo}/releases/download/dev/{name}",
                   "sha256": hashlib.sha256(data).hexdigest(),
-                  "date": date,
+                  # Retained builds are dated by their release asset; this
+                  # run's build falls back to the commit timestamp.
+                  "date": when or date,
               }
 
           versions = [entry_from_file(os.path.join(dist, f"xerif-dev-{sha}-x4pro.bin"))]
@@ -199,8 +201,13 @@ jobs:
           # The device caps the manifest fetch (DevOtaClient MAX_MANIFEST_BYTES).
           if len(text.encode()) > 4096:
               raise SystemExit(f"dev manifest is {len(text)} bytes, over the 4096-byte fetch cap")
-          with open(os.path.join(dist, "manifest.json"), "w") as f:
+          manifest_path = os.path.join(dist, "manifest.json")
+          # Publish via temp + rename so a failed write can never leave a
+          # truncated manifest at the path the upload step reads.
+          tmp_path = manifest_path + ".tmp"
+          with open(tmp_path, "w") as f:
               f.write(text)
+          os.replace(tmp_path, manifest_path)
           print(json.dumps(manifest, indent=2))
           PY
 

@@ -25,6 +25,7 @@ void testOtaSlotsAddPartition(const char* label, const uint32_t address, const s
 
 void testOtaSlotsFlashWrite(const uint32_t address, const void* data, const size_t len) {
   if (g_flash.empty()) g_flash.assign(kFlashSize, 0xFF);
+  if (!data || address > kFlashSize || len > kFlashSize - address) return;
   memcpy(g_flash.data() + address, data, len);
 }
 
