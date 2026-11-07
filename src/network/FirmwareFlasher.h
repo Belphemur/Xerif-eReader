@@ -1,9 +1,9 @@
 #pragma once
 
+#include <esp_partition.h>
+
 #include <cstddef>
 #include <cstdint>
-
-#include <esp_partition.h>
 
 // Flash a firmware image from an SD-card path into the next OTA app
 // partition, then switch otadata so the X3/X4 stock bootloader picks it up
