@@ -63,12 +63,12 @@ bool hashFile(const char* path, uint8_t out[32]) {
 
 Error fetchDevManifest(OtaDevVersionEntry* entries, int maxEntries, int* outCount) {
   if (outCount) *outCount = 0;
-  if (!entries || maxEntries <= 0 || !outCount) return JSON_PARSE_ERROR;
+  if (!entries || maxEntries <= 0 || !outCount) return Error::JSON_PARSE_ERROR;
 
   std::string releaseBody;
   if (!HttpDownloader::fetchUrl(devReleaseUrl, releaseBody, "", "", MAX_RELEASE_BYTES)) {
     LOG_ERR("DEVOTA", "Dev release fetch failed");
-    return HTTP_ERROR;
+    return Error::HTTP_ERROR;
   }
 
   // Reuse the release parser to locate the manifest.json asset (name + URL);
@@ -77,21 +77,21 @@ Error fetchDevManifest(OtaDevVersionEntry* entries, int maxEntries, int* outCoun
   parseOtaRelease(releaseBody.data(), releaseBody.size(), nullptr, "manifest.json", info);
   if (!info.hasManifest) {
     LOG_ERR("DEVOTA", "Dev release has no manifest.json");
-    return NO_MANIFEST;
+    return Error::NO_MANIFEST;
   }
 
   std::string manifestBody;
   if (!HttpDownloader::fetchUrl(info.manifestUrl, manifestBody, "", "", MAX_MANIFEST_BYTES)) {
     LOG_ERR("DEVOTA", "Dev manifest fetch failed");
-    return HTTP_ERROR;
+    return Error::HTTP_ERROR;
   }
   if (!parseOtaDevManifest(manifestBody.data(), manifestBody.size(), entries, maxEntries, outCount)) {
     LOG_ERR("DEVOTA", "Dev manifest parse failed");
-    return JSON_PARSE_ERROR;
+    return Error::JSON_PARSE_ERROR;
   }
   if (*outCount == 0) {
     LOG_ERR("DEVOTA", "Dev manifest lists no versions");
-    return NO_VERSIONS;
+    return Error::NO_VERSIONS;
   }
   return Error::OK;
 }

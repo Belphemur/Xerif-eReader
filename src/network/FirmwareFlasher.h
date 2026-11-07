@@ -3,6 +3,9 @@
 #include <cstddef>
 #include <cstdint>
 
+// Opaque here; the .cpp includes the real ESP-IDF header (host tests stub it).
+struct esp_partition_t;
+
 // Flash a firmware image from an SD-card path into the next OTA app
 // partition, then switch otadata so the X3/X4 stock bootloader picks it up
 // on next boot. Mirrors the web flasher: raw esp_partition_erase_range +
