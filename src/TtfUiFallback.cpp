@@ -79,6 +79,13 @@ void TtfUiFallback::update(GfxRenderer& renderer) {
     release(renderer);
   }
 
+  // Negative cache: this fingerprint already failed the fallback-script probe.
+  // Without it the probe re-ran (and logged) on EVERY redraw — hundreds of
+  // TTFUI DBG lines per reader session and a wasted chain walk each time.
+  if (noCoverageFingerprint_ == fingerprint) {
+    return;
+  }
+
   // Heap gate: FreeType faces + glyph rings need PSRAM headroom.
   const HalMemory::HeapStats psram = HalMemory::getPsramHeap();
   if (psram.totalBytes == 0 || psram.largestBlockBytes < kMinPsramLargestBlock) {
@@ -92,6 +99,7 @@ void TtfUiFallback::update(GfxRenderer& renderer) {
   FontChain* chain = fontLoader.getReaderFont();
   if (chain == nullptr || !familyCoversFallbackScripts(*chain)) {
     LOG_DBG("TTFUI", "Family '%s' has no fallback-script coverage", SETTINGS.ttfFontFamilyName);
+    noCoverageFingerprint_ = fingerprint;  // cache the failed probe for this content
     return;
   }
 
@@ -130,6 +138,7 @@ void TtfUiFallback::update(GfxRenderer& renderer) {
             ttfId);
   }
   registeredFingerprint_ = fingerprint;
+  noCoverageFingerprint_ = 0;  // the family now registered — clear any stale negative cache
   for (uint8_t s = 0; s < 4; ++s) borrowedSnapshot_[s] = fontLoader.slotFaceBytes(s);
   LOG_INF("TTFUI", "%u TTF UI fallback size(s) registered", static_cast<unsigned>(registeredCount_));
 }
