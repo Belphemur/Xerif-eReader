@@ -26,6 +26,18 @@ bool ImagePredecodeWorker::reserve() {
     return false;
   }
 
+  // Task stack in the same reserve window (review round 3): a lazy first-spawn
+  // allocation would meet a fragmented heap and silently disable a worker
+  // the reader already believes is armed.
+  taskStack_ = static_cast<uint8_t*>(
+      heap_caps_aligned_alloc(portBYTE_ALIGNMENT, kStackBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  if (taskStack_ == nullptr) {
+    LOG_ERR("IPR", "Task stack alloc failed (%u B) — predecode disabled", static_cast<unsigned>(kStackBytes));
+    heap_caps_free(queueStorage_);
+    queueStorage_ = nullptr;
+    return false;
+  }
+
   // Scratch framebuffer: PSRAM-only (a 48 KB internal-DRAM scratch would be
   // the exact pressure this worker exists to avoid). HalMemory::allocatePsram
   // never falls back to internal RAM.
@@ -34,6 +46,8 @@ bool ImagePredecodeWorker::reserve() {
   if (scratchFb_ == nullptr) {
     LOG_ERR("IPR", "Scratch framebuffer alloc failed (%u B) — predecode disabled",
             static_cast<unsigned>(scratchFbBytes_));
+    heap_caps_free(taskStack_);
+    taskStack_ = nullptr;
     heap_caps_free(queueStorage_);
     queueStorage_ = nullptr;
     return false;
@@ -42,6 +56,8 @@ bool ImagePredecodeWorker::reserve() {
                                          display.getDisplayWidthBytes())) {
     heap_caps_free(scratchFb_);
     scratchFb_ = nullptr;
+    heap_caps_free(taskStack_);
+    taskStack_ = nullptr;
     heap_caps_free(queueStorage_);
     queueStorage_ = nullptr;
     return false;
@@ -78,6 +94,10 @@ bool ImagePredecodeWorker::begin(Epub* epub, const uint32_t generation) {
     epub_ = nullptr;
     return false;
   }
+  // The initial token means "no live worker task" (review round 3): an empty binary semaphore would make the first
+  // spawnable() fail forever — predecode never ran, and every cancel() burned
+  // the full 3 s join on a token no task could give.
+  xSemaphoreGive(exitedSem_);
   sessionValid_.store(true, std::memory_order_release);
   LOG_INF("IPR", "Worker armed: gen=%08x queue=%ux%uB scratch=%uB psram", (unsigned)generation,
           (unsigned)kQueueCapacity, (unsigned)sizeof(Job), (unsigned)scratchFbBytes_);
@@ -86,15 +106,26 @@ bool ImagePredecodeWorker::begin(Epub* epub, const uint32_t generation) {
 }
 
 bool ImagePredecodeWorker::enqueue(const Job& job) {
-  if (queueStorage_ == nullptr || cancel_.load(std::memory_order_acquire)) return false;
+  // sessionValid_ gates the primitive pointers alongside the buffer check
+  // (review round 3): a begin() that OOM'd on
+  // its semaphores nulls queueMux_ while the buffers stay reserved, and the
+  // next sighting would pass a null handle to xSemaphoreTake.
+  if (queueStorage_ == nullptr || !sessionValid_.load(std::memory_order_acquire) ||
+      cancel_.load(std::memory_order_acquire))
+    return false;
   {
     if (xSemaphoreTake(queueMux_, pdMS_TO_TICKS(kJoinTimeoutMs)) != pdTRUE) return false;
     // Duplicate suppression: the same image can appear on several pages (and
-    // a rebuild re-fires sightings); one queued decode is enough.
+    // a rebuild re-fires sightings); one queued decode is enough. When the
+    // queued record was captured under an older render spec (settings
+    // changed while queued — review round 3), refresh it in place with the
+    // authoritative sighting: dropping the new sighting would leave a record
+    // that dequeue discards as stale, so the rebuilt image gets no predecode.
     for (size_t i = 0; i < queueCount_; ++i) {
-      const Job& other =
-          *reinterpret_cast<const Job*>(queueStorage_ + ((queueHead_ + i) % kQueueCapacity) * sizeof(Job));
+      const size_t slot = (queueHead_ + i) % kQueueCapacity;
+      Job& other = *reinterpret_cast<Job*>(queueStorage_ + slot * sizeof(Job));
       if (strncmp(other.imagePath, job.imagePath, Job::kImagePathCap) == 0) {
+        other = job;
         xSemaphoreGive(queueMux_);
         return true;
       }
@@ -181,7 +212,12 @@ bool ImagePredecodeWorker::abortTrampoline(void* ctx) {
 }
 
 void ImagePredecodeWorker::processJob(const Job& job) {
-  const uint64_t hash = ImageDecodeGate::pathHash(job.imagePath);
+  // Claims key on the .pxc path (review round 3): ImageBlock derives
+  // the cache file by dropping the source extension, so two image paths can
+  // map onto ONE cache file — the single-writer rule must identify the file
+  // actually written. Same string reused for config.cachePath below.
+  const std::string cachePath = ImageBlock::cachePathFor(job.imagePath);
+  const uint64_t hash = ImageDecodeGate::pathHash(cachePath);
 
   // The cache can appear between enqueue and dequeue (foreground decoded it,
   // or an earlier sighting's job): re-check before any work (§3.1).
@@ -216,6 +252,10 @@ void ImagePredecodeWorker::processJob(const Job& job) {
   } claimRelease{hash};
 
   if (!sessionValid_.load(std::memory_order_acquire)) return;
+  // Re-check AFTER the claim was acquired (review round 3): the
+  // foreground can publish the cache while this job waits for the claim;
+  // decoding now would truncate a cache the foreground just wrote.
+  if (ImageBlock::hasValidCacheFor(job.imagePath, job.width, job.height)) return;
   size_t imageSize = 0;
   PoolBytes image{epub_->extractItemToPsram(job.srcPath, &imageSize)};
   if (!image) {
@@ -233,6 +273,11 @@ void ImagePredecodeWorker::processJob(const Job& job) {
   ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(job.imagePath);
   if (decoder == nullptr) return;
 
+  // Decode under the capture-time orientation (review round 3): getScreenWidth() is orientation-aware and the
+  // converters clamp at it — the worker renderer defaults to portrait, so a landscape session never decodes columns
+  // past 480 and finalize() zero-fills the right side.
+  scratchRenderer_.setOrientation(static_cast<GfxRenderer::Orientation>(job.orientation));
+
   RenderConfig config;
   config.x = job.x;
   config.y = job.y;
@@ -242,7 +287,7 @@ void ImagePredecodeWorker::processJob(const Job& job) {
   config.useDithering = true;
   config.performanceMode = false;
   config.useExactDimensions = true;
-  config.cachePath = ImageBlock::cachePathFor(job.imagePath);
+  config.cachePath = cachePath;  // equals ImageBlock::cachePathFor(job.imagePath) — the claim key
   AbortContext abortCtx{hash};
   config.abortPoll = &ImagePredecodeWorker::abortTrampoline;
   config.abortCtx = &abortCtx;
@@ -267,9 +312,17 @@ void ImagePredecodeWorker::run() {
     if (xSemaphoreTake(queueSem_, pdMS_TO_TICKS(kIdleTimeoutMs)) != pdTRUE) {
       // Idle window elapsed: self-exit so the session-resident stack is the
       // only permanent cost. A later enqueue respawns (static buffers).
-      bool empty = true;
+      bool empty = false;
       if (xSemaphoreTake(queueMux_, pdMS_TO_TICKS(kJoinTimeoutMs)) == pdTRUE) {
         empty = queueCount_ == 0;
+        if (empty) {
+          // Exit decision taken under the ring mutex (review round 3): an
+          // enqueue that pushed a job while this task held the mutex either
+          // finds running_ still true and defers the spawn to its next
+          // sighting, or (after running_ is cleared here) spawns the next
+          // instance itself — the job is never stranded without a worker.
+          running_.store(false, std::memory_order_release);
+        }
         xSemaphoreGive(queueMux_);
       }
       if (empty) break;
@@ -310,13 +363,11 @@ bool ImagePredecodeWorker::spawnable() {
 }
 
 ImagePredecodeWorker::SpawnResult ImagePredecodeWorker::spawnTask() {
+  // The stack is a reserve()-time allocation (review round 3): a lazy spawn could
+  // hit a fragmented heap and silently disable the worker mid-session.
   if (taskStack_ == nullptr) {
-    taskStack_ = static_cast<uint8_t*>(
-        heap_caps_aligned_alloc(portBYTE_ALIGNMENT, kStackBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-    if (taskStack_ == nullptr) {
-      LOG_ERR("IPR", "Stack alloc failed (%u B)", (unsigned)kStackBytes);
-      return SpawnResult::Failed;
-    }
+    LOG_ERR("IPR", "spawnTask without a reserved stack");
+    return SpawnResult::Failed;
   }
   if (xTaskCreateStaticPinnedToCore(taskTrampoline, "imgpredecode", kStackBytes, this, kPriority,
                                     reinterpret_cast<StackType_t*>(taskStack_), &taskTcb_, kCore) == nullptr) {

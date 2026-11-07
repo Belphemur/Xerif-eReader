@@ -3018,8 +3018,10 @@ void EpubReaderActivity::renderBook() {
 
   // Image predecode generation: the render-spec signature changes exactly
   // when the layout does, which is when queued .pxc jobs go stale (§3.2).
+  // The worker object is optional in a session (factory allocation or
+  // reserve() failed — review round 3), so the notification is opt-in.
   imagePredecodeGen_ = readerRenderSpecSignature(renderSpec);
-  imagePredecode_->notifyGeneration(imagePredecodeGen_);
+  if (imagePredecode_ != nullptr) imagePredecode_->notifyGeneration(imagePredecodeGen_);
 
   if (!section) {
     // Chapter changed or first load — clear stale prefetch
@@ -3479,6 +3481,10 @@ void EpubReaderActivity::installImageSightingHook(Section& target, const uint16_
     job.x = static_cast<int16_t>(x);
     job.y = static_cast<int16_t>(y);
     job.generation = imagePredecodeGen_;
+    // Capture the oriented frame with the position (review round 3): the
+    // worker decodes through its own renderer, which defaults to portrait,
+    // while the converters clamp at the (orientation-aware) screen width.
+    job.orientation = static_cast<uint8_t>(renderer.getOrientation());
     imagePredecode_->enqueue(job);
   };
 #else

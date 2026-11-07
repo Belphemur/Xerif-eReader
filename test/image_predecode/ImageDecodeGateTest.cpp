@@ -17,7 +17,10 @@ void sleepMs(uint32_t ms) { nowMs += ms; }
 
 namespace {
 
-constexpr uint64_t hashOf(const char* path) { return ImageDecodeGate::pathHash(path); }
+// Not constexpr on purpose (review round 3): pathHash is a runtime
+// std::string-based FNV, so a constexpr wrapper is rejected by GCC 11 in
+// C++20 mode and no test uses it in a constant expression.
+inline uint64_t hashOf(const char* path) { return ImageDecodeGate::pathHash(path); }
 
 class ImageDecodeGateTest : public ::testing::Test {
  protected:

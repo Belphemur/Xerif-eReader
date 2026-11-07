@@ -1340,11 +1340,11 @@ bool Epub::readItemContentsToStream(const std::string& itemHref, Print& out, con
   // We open the ZIP once, then call the FileStatSlim overload of readFileToStream
   // which avoids the second CD scan that loadFileStatSlim would otherwise do.
   if (zipCache_) {
-    const ZipFile::FileStatSlim* stat = zipCache_->get(path);
-    if (stat) {
+    ZipFile::FileStatSlim stat;  // by value: the worker task never maps a pointer across a loop-task erase
+    if (zipCache_->statFor(path, stat)) {
       ZipFile zf(filepath);
       if (zf.open()) {
-        if (zf.readFileToStream(*stat, out, chunkSize, allowEarlyStop)) {
+        if (zf.readFileToStream(stat, out, chunkSize, allowEarlyStop)) {
           return true;
         }
         // Cached read failed (rare: shifted localHeaderOffset, mid-stream inflate
@@ -1419,9 +1419,9 @@ bool Epub::getItemSize(const std::string& itemHref, size_t* size) const {
   const std::string path = FsHelpers::normalisePath(itemHref);
 #ifdef BOARD_HAS_PSRAM
   if (zipCache_) {
-    const ZipFile::FileStatSlim* stat = zipCache_->get(path);
-    if (stat) {
-      *size = stat->uncompressedSize;
+    ZipFile::FileStatSlim stat;
+    if (zipCache_->statFor(path, stat)) {
+      *size = stat.uncompressedSize;
       return true;
     }
   }
@@ -1610,15 +1610,29 @@ const ZipFile::FileStatSlim* Epub::ZipFileCache::get(std::string_view itemPath) 
   // map). The cost is one short-string allocation per cache lookup, which is
   // still far less than the previous path (which allocated a path AND
   // normalised it AND compared to a std::string key).
+  std::lock_guard<std::mutex> lock(cacheMutex_);
   if (auto it = cache_.find(std::string{itemPath}); it != cache_.end()) {
     return &it->second;
   }
   return nullptr;
 }
 
+bool Epub::ZipFileCache::statFor(std::string_view itemPath, ZipFile::FileStatSlim& out) const {
+  if (!loaded_) return false;
+  std::lock_guard<std::mutex> lock(cacheMutex_);
+  if (auto it = cache_.find(std::string{itemPath}); it != cache_.end()) {
+    out = it->second;
+    return true;
+  }
+  return false;
+}
+
 void Epub::ZipFileCache::invalidate(std::string_view itemPath) {
   // Erase one cached entry so the next read re-scans the ZIP central
   // directory for this item. No-op if the entry is not present.
+  // Guarded: the predecode worker's lookups run beside this loop-task erase
+  // (qodo round-3 #4).
+  std::lock_guard<std::mutex> lock(cacheMutex_);
   cache_.erase(std::string{itemPath});
 }
 

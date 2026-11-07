@@ -397,8 +397,11 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   // Single-writer gate (design §3.4 rule 2): the foreground wins cache
   // production. A predecode worker holding the claim is told to abort at its
   // next band boundary; on timeout draw the placeholder and leave the cache
-  // absent — a later render pass retries with the worker's cache warm.
-  const uint64_t gateHash = ImageDecodeGate::pathHash(imagePath);
+  // absent — a later render pass retries with the worker's cache warm. The
+  // claim keys on the .pxc path (review round 3): two image files whose
+  // basename collides after the extension strip would otherwise hold two
+  // claims onto one cache file.
+  const uint64_t gateHash = ImageDecodeGate::pathHash(cachePath);
   if (!ImageDecodeGate::acquireForeground(gateHash)) {
     renderPlaceholder(renderer, x, y);
     return;

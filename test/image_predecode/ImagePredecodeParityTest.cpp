@@ -3,12 +3,15 @@
 #include <gtest/gtest.h>
 
 // The decode-surface mirror the converters run against (see the file comment).
+#include <unistd.h>
+
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include "GfxRenderer.h"
@@ -71,7 +74,10 @@ class ImagePredecodeParityTest : public ::testing::Test {
  protected:
   void SetUp() override {
     jpegBytes_ = fromHex(GRADIENT_JPEG_HEX);
-    dir_ = std::filesystem::temp_directory_path() / "crosspoint-image-predecode";
+    // Unique per test process (review round 3): gtest_discover_tests runs
+    // tests in parallel ctest processes; a fixed path lets one suite remove
+    // another suite's cache files mid-run.
+    dir_ = std::filesystem::temp_directory_path() / ("crosspoint-image-predecode-" + std::to_string(::getpid()));
     std::filesystem::create_directories(dir_);
   }
   void TearDown() override {
@@ -127,7 +133,11 @@ TEST_F(ImagePredecodeParityTest, WorkerDefaultsMatchForegroundMidRenderStateAtOn
 
   const std::vector<uint8_t> foregroundBytes = readAll(foregroundCache);
   const std::vector<uint8_t> workerBytes = readAll(workerCache);
+  // Size guards first (review round 3): readAll() returns an empty vector
+  // for a missing file, so a failed cache write would make the equality
+  // below vacuously pass.
   ASSERT_FALSE(foregroundBytes.empty());
+  ASSERT_FALSE(workerBytes.empty());
   EXPECT_EQ(foregroundBytes, workerBytes);
 }
 
@@ -141,7 +151,12 @@ TEST_F(ImagePredecodeParityTest, WorkerDefaultsMatchForegroundMidRenderStateDown
   ASSERT_TRUE(decodeWith(foreground, jpegBytes_, 0, 0, 8, 8, foregroundCache, nullptr, nullptr));
   ASSERT_TRUE(decodeWith(worker, jpegBytes_, 0, 0, 8, 8, workerCache, nullptr, nullptr));
 
-  EXPECT_EQ(readAll(foregroundCache), readAll(workerCache));
+  // Size guards first (review round 3): see the one-to-one case above.
+  const std::vector<uint8_t> foregroundBytes = readAll(foregroundCache);
+  const std::vector<uint8_t> workerBytes = readAll(workerCache);
+  ASSERT_FALSE(foregroundBytes.empty());
+  ASSERT_FALSE(workerBytes.empty());
+  EXPECT_EQ(foregroundBytes, workerBytes);
 }
 
 TEST_F(ImagePredecodeParityTest, SameConfigAndPositionIsDeterministic) {
@@ -151,7 +166,12 @@ TEST_F(ImagePredecodeParityTest, SameConfigAndPositionIsDeterministic) {
   const std::string secondCache = (dir_ / "d2.pxc").string();
   ASSERT_TRUE(decodeWith(first, jpegBytes_, 2, 1, 16, 16, firstCache, nullptr, nullptr));
   ASSERT_TRUE(decodeWith(second, jpegBytes_, 2, 1, 16, 16, secondCache, nullptr, nullptr));
-  EXPECT_EQ(readAll(firstCache), readAll(secondCache));
+  // Size guards first (review round 3): see the one-to-one case above.
+  const std::vector<uint8_t> firstBytes = readAll(firstCache);
+  const std::vector<uint8_t> secondBytes = readAll(secondCache);
+  ASSERT_FALSE(firstBytes.empty());
+  ASSERT_FALSE(secondBytes.empty());
+  EXPECT_EQ(firstBytes, secondBytes);
 }
 
 TEST_F(ImagePredecodeParityTest, PositionShiftChangesCacheBytes) {
@@ -160,9 +180,14 @@ TEST_F(ImagePredecodeParityTest, PositionShiftChangesCacheBytes) {
   const std::string atShift = (dir_ / "p1.pxc").string();
   ASSERT_TRUE(decodeWith(renderer, jpegBytes_, 0, 0, 16, 16, atOrigin, nullptr, nullptr));
   ASSERT_TRUE(decodeWith(renderer, jpegBytes_, 2, 1, 16, 16, atShift, nullptr, nullptr));
+  // Size guards first (review round 3): see the one-to-one case above.
+  const std::vector<uint8_t> originBytes = readAll(atOrigin);
+  const std::vector<uint8_t> shiftBytes = readAll(atShift);
+  ASSERT_FALSE(originBytes.empty());
+  ASSERT_FALSE(shiftBytes.empty());
   // The Bayer dither indexes absolute screen coordinates (design §3.3(b)):
   // this is why a predecode job must carry the capture-time position.
-  EXPECT_NE(readAll(atOrigin), readAll(atShift));
+  EXPECT_NE(originBytes, shiftBytes);
 }
 
 TEST_F(ImagePredecodeParityTest, AbortedDecodeFailsAndDeletesThePartialCache) {

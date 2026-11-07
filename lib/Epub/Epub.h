@@ -6,6 +6,7 @@
 #include <ZipFile.h>
 
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -124,6 +125,12 @@ class Epub {
   class ZipFileCache {
     std::unordered_map<std::string, ZipFile::FileStatSlim> cache_;
     bool loaded_ = false;
+    // The background predecode worker (core 0) calls statFor()/invalidate()
+    // beside the loop task's decode path (review round 3): find()/erase() would otherwise
+    // while a lookup is in flight would corrupt the unordered_map, and a
+    // pointer handed out here would dangle on erase (the 16-byte POD is
+    // returned by value under the guard instead).
+    mutable std::mutex cacheMutex_;
 
    public:
     // Note: takes const std::string& (not const char*) because ZipFile stores
@@ -137,6 +144,11 @@ class Epub {
     // allocation that was happening on every cache lookup (CodeRabbit IPV8;
     // AGENTS.md rule 4 prohibits std::string in hot paths).
     const ZipFile::FileStatSlim* get(std::string_view itemPath) const;
+    // Mutex-guarded by-value lookup for cross-thread callers: the worker task
+    // reads entries while the loop task may erase one after a failed cached
+    // read. Takes the guard only for the find+copy (one 16-byte POD); the
+    // ZipFile construction and streaming stay outside it.
+    bool statFor(std::string_view itemPath, ZipFile::FileStatSlim& out) const;
     // Drop one cached entry so the next read re-scans the ZIP central
     // directory. Used when a cached read fails (rare: shifted
     // localHeaderOffset, mid-stream inflate error). Does not invalidate

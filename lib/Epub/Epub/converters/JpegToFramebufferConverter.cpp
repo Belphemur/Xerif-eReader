@@ -614,7 +614,7 @@ static bool decodeToFramebufferFromOpen(JPEGDEC& jpeg, GfxRenderer& renderer, co
   // but wrong cache — JPEGDEC's draw-callback stop does not by itself set an
   // error, so the aborted flag is the authoritative signal).
   if (ctx.aborted) {
-    ctx.cache.abort();
+    if (ctx.caching) ctx.cache.abort();
     return false;
   }
 

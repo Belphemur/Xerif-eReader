@@ -59,13 +59,20 @@ class ImagePredecodeWorker {
     int16_t y = 0;
     uint32_t generation = 0;
     uint8_t deferrals = 0;  // heap/PSRAM gate retries before the job drops
+    // GfxRenderer::Orientation of the foreground renderer at capture time;
+    // the converters clamp at the (orientation-aware) screen width, so the
+    // worker renderer must decode under the same orientation (review round 3).
+    uint8_t orientation = 0;
   };
   static constexpr size_t kQueueCapacity = 64;
 
-  // Main thread (reader entry, BEFORE the EPUB open — the queue's DRAM block
-  // must land while the heap is still whole, the same window and rationale as
-  // the FibpPrefetchWorker stack reserve). Allocates the queue ring (DRAM)
-  // and the scratch framebuffer (PSRAM) and begins the scratch renderer.
+  // Main thread (reader entry, BEFORE the EPUB open — the queue ring, task
+  // stack, and scratch framebuffer DRAM/PSRAM blocks must land while the heap
+  // is still whole, the same window and rationale as the FibpPrefetchWorker
+  // stack reserve). Allocates the queue ring (DRAM), the task stack (DRAM —
+  // lazily allocating it at spawn would let mid-session fragmentation
+  // silently disable the worker), and the scratch framebuffer (PSRAM), and
+  // begins the scratch renderer.
   // Idempotent. Returns false when an allocation fails: the worker stays
   // disabled for the session and the foreground decode path is unchanged.
   bool reserve();
@@ -158,6 +165,8 @@ class ImagePredecodeWorker {
   size_t scratchFbBytes_ = 0;
 
   // Session-persistent static task storage (dram-x3 Finding 1 pattern).
+  // Allocated in reserve(), not lazily at spawn: the reserve window is the
+  // only point where the 16 KB DRAM block fits deterministically.
   uint8_t* taskStack_ = nullptr;
   StaticTask_t taskTcb_ = {};
   bool taskCreated_ = false;

@@ -548,7 +548,7 @@ bool PngToFramebufferConverter::decodeFromOpen(PNG& png, GfxRenderer& renderer, 
   // failure (finalize() would zero-fill the unflushed rows into a size-valid
   // but wrong cache).
   if (ctx.aborted) {
-    ctx.cache.abort();
+    if (ctx.caching) ctx.cache.abort();
     return false;
   }
 

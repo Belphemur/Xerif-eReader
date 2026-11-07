@@ -311,3 +311,82 @@ Implemented on top of §7 with the following documented deviations:
 7. **Cancel-time aborts.** `ImageDecodeGate::abortAllWorkerClaims()` flags every
    worker-held claim at reader teardown so an in-flight decode stops at its next band
    boundary instead of outliving the bounded `cancel()` join.
+
+### 9.3 As-built addendum (review round 3)
+
+- **Exit semaphore starts armed.** `begin()` gives the initial token after
+  creating the exit semaphore; the token means "no live worker task". An
+  empty binary semaphore made the first `spawnable()` take fail forever —
+  the worker never spawned, and every `cancel()` burned its full 3 s join on
+  a token no task could give. `spawnable()` re-creates the semaphore armed
+  after a spawn failure deletes it. Supersedes the §3.3 "created empty" line.
+- **Worker hardening batch (review round 3).**
+  - `notifyGeneration()` is null-guarded in `renderBook()`: the worker object
+    is optional per session (factory allocation or `reserve()` failure).
+  - `enqueue()` refuses while the session is invalid: a `begin()` that OOM'd
+    on its semaphores nulls the mutex while the buffers stay reserved.
+  - The 16 KB task stack is a `reserve()`-time allocation (same DRAM window
+    as the queue ring); a lazy first-spawn allocation could silently disable
+    the worker on a fragmented heap.
+  - Duplicate suppression refreshes a queued record captured under an older
+    render generation instead of discarding the fresh sighting (which the
+    dequeue would then drop as stale).
+  - The idle-exit decision clears `running_` under the ring mutex, so an
+    enqueue racing the exit either defers or respawns; a queued job is never
+    left without a worker.
+  - Gate claims (worker and foreground) key on the **.pxc path**, not the
+    image path: two image files whose basenames collide after the extension
+    strip must never hold two claims onto one cache file.
+  - `processJob()` re-checks cache validity after acquiring the claim: the
+    foreground can publish the cache while the job waits for the claim.
+  - Jobs carry the capture-time `GfxRenderer::Orientation`; the worker
+    renderer decodes under it, so landscape sessions no longer zero-fill
+    columns past the portrait screen width.
+  - `Epub::ZipFileCache` lookups are mutex-guarded and return `FileStatSlim`
+    by value: the worker task reads entries beside the loop task's decode
+    path, whose `invalidate()` could otherwise race a lookup or free the
+    referenced node.
+- **Test host fixes.** Per-process temp directory (parallel ctest safety);
+  size guards before every byte comparison (`readAll()` returns an empty
+  vector for a missing file, which made equality vacuous); `hashOf` is no
+  longer `constexpr` (GCC 11 / C++20 rejects it — `pathHash` is runtime
+  string based); JPEGDEC patches a build-owned copy in the build directory
+  with the patch list registered as a CMake configure dependency.
+
+### 9.4 Rebutted review findings (evidence, not applied)
+
+- **PNG abort latency (coderabbit).** The pinned PNGdec stops on the first
+  draw callback that returns 0: `png.inl:980-983` sets
+  `pPage->iError = PNG_QUIT_EARLY; bDone = TRUE;`. The converter's callback
+  (PngToFramebufferConverter.cpp:221-227) fires per row, sets
+  `caching=false; aborted=true` and returns 0 — the remaining inflate is at
+  most the current scanline, and the abandoned decode is strictly cheaper
+  than the same decode without abort. A bounded-wait placeholder that
+  self-heals on the next render pass is the documented §3.4 outcome.
+- **Stale-position .pxc capture (qodo #9 / coderabbit).** A job dequeued
+  under generation N-1 that publishes under N is accepted by
+  `readValidCacheHeader()` only when dimensions coincide (±1). A cache whose
+  dimensions match at a new capture position is in exactly the same class as
+  the shipped foreground behavior on `develop`: the .pxc header carries only
+  width/height (ImageBlock.cpp:43-58), so the foreground consumes a
+  position-shifted cache the same way. Any position stamp/widening of the
+  cache header is a cache-format change for both producers (owner §7 scope).
+- **RAII for cap-matched raw pointers (kody).** The heap-caps allocation +
+  raw pointer + explicit free on every failure path is the established
+  FibpPrefetchWorker pattern (same review lineage: the kody-rr9 ruling on
+  that campaign rejected smart-pointer wrapping for cap-matched blocks); the
+  reader-facing object IS held by a `unique_ptr` with a `heap_caps_free`
+  deleter (`ImagePredecodeWorkerPtr`).
+- **Sighting coverage for fully cached sections (qodo #8).** Sightings fire
+  from `Section::onPageComplete` (as-built §9 item 1): a section restored
+  wholly from cache has no build ticks under either formulation, and its
+  missing .pxc decodes on demand exactly as on `develop` — not a regression
+  introduced by predecode. Extending sightings to the restore path is a
+  reader-side change deferred past this PR.
+- **Worker-held `Epub*` lifetime (coderabbit).** The reader calls
+  `stopImagePredecode()` before section/EPUB teardown
+  (EpubReaderActivity.cpp:389-391, :2528, :3019), and `cancel()` closes the
+  session gate and aborts worker claims before its bounded join. The
+  residual window (a decode-wide extract surviving the 3 s join) is the
+  documented leak-beats-UAF trade of the FibpPrefetchWorker contract;
+  shared `Epub` ownership is a lib surface change deferred past this PR.

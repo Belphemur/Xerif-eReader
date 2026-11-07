@@ -15,8 +15,20 @@ if(NOT JPEGDEC_SOURCE_DIR)
   set(JPEGDEC_SOURCE_DIR "${jpegdec_SOURCE_DIR}")
 endif()
 
+# Patch a build-owned copy, never the original tree (review round 3): an
+# explicitly provided JPEGDEC_SOURCE_DIR may sit on a read-only filesystem,
+# and incremental rebuilds must always see the current patch set applied to
+# pristine sources. file(COPY) + apply runs on every re-configure; the patch
+# list below is registered as a configure dependency so editing a patch
+# re-runs configure before the next build picks its sources.
+set(JPEGDEC_PATCHED_DIR "${CMAKE_BINARY_DIR}/jpegdec-patched")
+file(REMOVE_RECURSE "${JPEGDEC_PATCHED_DIR}")
+file(COPY "${JPEGDEC_SOURCE_DIR}/" DESTINATION "${JPEGDEC_PATCHED_DIR}")
+set(JPEGDEC_SOURCE_DIR "${JPEGDEC_PATCHED_DIR}")
+
 file(GLOB JPEGDEC_PATCHES "${REPO_ROOT}/scripts/jpegdec_patches/*.patch")
 foreach(PATCH ${JPEGDEC_PATCHES})
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PATCH}")
   execute_process(
     COMMAND git -C ${JPEGDEC_SOURCE_DIR} apply --check --reverse ${PATCH}
     RESULT_VARIABLE already_applied ERROR_QUIET OUTPUT_QUIET)
