@@ -4,6 +4,7 @@
 #include <Memory.h>
 
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include "GifToFramebufferConverter.h"
@@ -15,6 +16,13 @@ std::unique_ptr<PngToFramebufferConverter> ImageDecoderFactory::pngDecoder = nul
 std::unique_ptr<GifToFramebufferConverter> ImageDecoderFactory::gifDecoder = nullptr;
 
 ImageToFramebufferDecoder* ImageDecoderFactory::getDecoder(const std::string& imagePath) {
+  // Lazy singleton init must be thread-safe: the image predecode worker
+  // (core 0) and the loop task (core 1, page renders) can reach this
+  // concurrently. The converters' decode state is call-local, so once
+  // constructed the shared instances need no further locking.
+  static std::mutex initMux;
+  std::lock_guard<std::mutex> initLock(initMux);
+
   std::string ext = imagePath;
   size_t dotPos = ext.rfind('.');
   if (dotPos != std::string::npos) {
