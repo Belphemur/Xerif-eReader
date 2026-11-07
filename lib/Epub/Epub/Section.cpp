@@ -219,7 +219,7 @@ uint32_t Section::onPageComplete(std::unique_ptr<Page> page) {
     page->forEachUncachedImage([&](const PageImage& img) {
       const ImageBlock& block = img.getImageBlock();
       if (block.getSrcPath().empty()) return;  // no source to extract from
-      const ImageSighting sighting{spineIndex,
+      const ImageSighting sighting{static_cast<uint16_t>(spineIndex),
                                    pageIndex,
                                    block.getSrcPath().c_str(),
                                    block.getImagePath().c_str(),
