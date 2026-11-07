@@ -291,6 +291,21 @@ Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, boo
     LOG_ERR("FLASH", "no next-update partition");
     return Result::NO_PARTITION;
   }
+  return flashFromSdPathInto(sdPath, dest, onProgress, ctx, alreadyValidated);
+}
+
+Result flashFromSdPathInto(const char* sdPath, const esp_partition_t* dest, ProgressCb onProgress, void* ctx,
+                           bool alreadyValidated) {
+  if (!dest) {
+    LOG_ERR("FLASH", "no destination partition");
+    return Result::NO_PARTITION;
+  }
+  // Role rule (design §3): the running slot is never a write target.
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  if (running && running->address == dest->address) {
+    LOG_ERR("FLASH", "refusing to flash the running slot (%s)", dest->label);
+    return Result::NO_PARTITION;
+  }
 
   // When the caller already ran validateImageFile() against this same partition
   // size (e.g. SdFirmwareUpdateActivity validates before the confirmation

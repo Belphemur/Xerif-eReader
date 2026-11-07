@@ -49,6 +49,13 @@ using ProgressCb = void (*)(size_t written, size_t total, void* ctx);
 // the defense-in-depth check.
 Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, bool alreadyValidated = false);
 
+// Role-targeted variant (design §3): streams into `dest` explicitly instead of
+// "whatever isn't running". The dev installer uses this to pin its target to
+// the dev slot (app1) regardless of which slot is booted. `dest` must be a
+// non-running OTA app partition; the running slot is never a legal target.
+Result flashFromSdPathInto(const char* sdPath, const esp_partition_t* dest, ProgressCb onProgress, void* ctx,
+                           bool alreadyValidated = false);
+
 // Full-image integrity check that mirrors the bootloader's verification:
 // header magic, segment table walk, XOR checksum, and SHA256 trailer (when
 // hash_appended == 1). Also scans for the embedded board tag (see
