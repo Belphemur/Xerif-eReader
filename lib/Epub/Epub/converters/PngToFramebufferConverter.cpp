@@ -546,9 +546,11 @@ bool PngToFramebufferConverter::decodeFromOpen(PNG& png, GfxRenderer& renderer, 
 
   // Predecode abort fired mid-decode: drop the partial cache and report
   // failure (finalize() would zero-fill the unflushed rows into a size-valid
-  // but wrong cache).
+  // but wrong cache). Unconditional abort: the draw callback cleared
+  // ctx.caching BEFORE unwinding, so the flag no longer says "a cache file
+  // exists" — abort() itself is a no-op when nothing was begun.
   if (ctx.aborted) {
-    if (ctx.caching) ctx.cache.abort();
+    ctx.cache.abort();
     return false;
   }
 

@@ -311,6 +311,28 @@ TEST_F(GateProtocol, AbortAllWorkerClaimsSparesForeground) {
   ImageDecodeGate::releaseForeground(f);
 }
 
+// Decode bus (rule 4): the foreground signals pending while it holds the
+// bus, the flag clears with the release, and a wedged holder only costs the
+// bounded wait (the fake clock advances per poll).
+TEST_F(GateProtocol, ForegroundBusSignalsWhileHeldAndClearsOnRelease) {
+  EXPECT_TRUE(ImageDecodeGate::acquireForegroundBus(4));
+  EXPECT_TRUE(ImageDecodeGate::foregroundBusPending());
+  ImageDecodeGate::releaseForegroundBus();
+  EXPECT_FALSE(ImageDecodeGate::foregroundBusPending());
+  // The bus is free again for the worker's poll.
+  EXPECT_TRUE(ImageDecodeGate::tryAcquireDecodeBus());
+  ImageDecodeGate::releaseDecodeBus();
+}
+
+TEST_F(GateProtocol, ForegroundBusTimesOutOnWedgedHolder) {
+  ASSERT_TRUE(ImageDecodeGate::tryAcquireDecodeBus());
+  EXPECT_FALSE(ImageDecodeGate::acquireForegroundBus(4));
+  EXPECT_FALSE(ImageDecodeGate::foregroundBusPending());  // cleared on timeout
+  ImageDecodeGate::releaseDecodeBus();
+  EXPECT_TRUE(ImageDecodeGate::tryAcquireDecodeBus());
+  ImageDecodeGate::releaseDecodeBus();
+}
+
 }  // namespace
 
 uint32_t g_fakeMillis = 0;

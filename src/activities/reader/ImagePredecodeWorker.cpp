@@ -19,6 +19,10 @@ bool ImagePredecodeWorker::reserve() {
 
   queueStorage_ = static_cast<uint8_t*>(
       heap_caps_aligned_alloc(4, kQueueCapacity * sizeof(ttfimg::ImageSpec), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  // Fresh ring, always: a re-reserve after cancel() must not inherit the
+  // previous book's cursor (the storage itself is new, uninitialized memory).
+  queueHead_ = 0;
+  queueCount_ = 0;
   if (queueStorage_ == nullptr) {
     LOG_ERR("IPR", "Queue alloc failed (%u B) — predecode disabled",
             static_cast<unsigned>(kQueueCapacity * sizeof(ttfimg::ImageSpec)));
@@ -141,17 +145,18 @@ bool ImagePredecodeWorker::enqueue(const ttfimg::ImageSpec& spec) {
   // record was captured under an older generation (layout changed while
   // queued), refresh it in place with the authoritative sighting — dropping
   // the new sighting would leave a record the dequeue discards as stale.
+  bool refreshed = false;
   for (size_t i = 0; i < queueCount_; ++i) {
     const size_t slot = (queueHead_ + i) % kQueueCapacity;
     ttfimg::ImageSpec& other = *reinterpret_cast<ttfimg::ImageSpec*>(queueStorage_ + slot * sizeof(ttfimg::ImageSpec));
     if (strncmp(other.href, spec.href, ttfimg::ImageSpec::kHrefCap) == 0 && other.x == spec.x && other.y == spec.y &&
         other.w == spec.w && other.h == spec.h) {
       other = spec;
-      xSemaphoreGive(queueMux_);
-      return true;
+      refreshed = true;
+      break;
     }
   }
-  if (queueCount_ == kQueueCapacity) {
+  if (!refreshed && queueCount_ == kQueueCapacity) {
     // Full: drop the oldest record (§5.2 reading order rolls forward). The
     // ring holds only the current + next spine, so overflow means a
     // pathologically image-heavy pair of chapters; the dropped images decode
@@ -162,11 +167,16 @@ bool ImagePredecodeWorker::enqueue(const ttfimg::ImageSpec& spec) {
     // so the token count stays equal to queueCount_.
     xSemaphoreTake(queueSem_, 0);
   }
-  pushJob(spec);
-  // Give inside the locked section: a queued job and its dequeue token are
-  // published atomically, so overflow accounting above stays exact.
+  if (!refreshed) {
+    pushJob(spec);
+    // Give inside the locked section: a queued job and its dequeue token are
+    // published atomically, so overflow accounting above stays exact.
+    xSemaphoreGive(queueSem_);
+  }
   xSemaphoreGive(queueMux_);
-  xSemaphoreGive(queueSem_);
+  // Spawn attempt runs for BOTH paths (fresh push and refresh-in-place):
+  // a repeat sighting must retry a spawn a ReapBlocked deferral skipped,
+  // or a queued job could wait behind a worker that exited unnoticed.
   // Spawn only when no task is running. Non-blocking: a previous task still
   // exiting (or not yet reaped) leaves the job queued; the next enqueue (the
   // next build tick's sighting) retries the spawn.
@@ -233,7 +243,11 @@ void ImagePredecodeWorker::deferJob(const ttfimg::ImageSpec& spec) {
 
 bool ImagePredecodeWorker::abortTrampoline(void* ctx) {
   const auto* abort = static_cast<const AbortContext*>(ctx);
-  return ImageDecodeGate::workerAbortRequested(abort->hash);
+  // Two yield conditions, both checked at band boundaries only: the claim's
+  // own abort (foreground took the same image / teardown), and the decode
+  // bus request — the foreground needs the shared book surfaces (source
+  // file handle, Epub ZIP extraction cache) and wins over a background job.
+  return ImageDecodeGate::workerAbortRequested(abort->hash) || ImageDecodeGate::foregroundBusPending();
 }
 
 void ImagePredecodeWorker::processJob(const ttfimg::ImageSpec& spec) {
@@ -282,10 +296,26 @@ void ImagePredecodeWorker::processJob(const ttfimg::ImageSpec& spec) {
   // would zero-fill the right side of landscape placements).
   scratchRenderer_.setOrientation(static_cast<GfxRenderer::Orientation>(spec.orientation));
 
+  // Decode-bus (§5.7 rule 4): the whole decode reads the SHARED book
+  // surfaces — the SdCardBookSource's seek+read window and, for GIF/BMP, the
+  // reader's Epub ZIP extraction cache. Per-path claims cannot serialize
+  // those across jobs, so the worker holds the bus for the whole decode and
+  // yields it at band boundaries when the foreground requests it.
+  while (!ImageDecodeGate::tryAcquireDecodeBus()) {
+    if (cancel_.load(std::memory_order_acquire)) return;
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+  // Arena mark/release: probe + row-decode scratch is per-job scratch, like
+  // every other engine caller — without the mark the bump arena fills after
+  // a handful of jobs and every later decode fails into the foreground.
+  const size_t arenaMark = decodeArena_->mark();
   AbortContext abortCtx{hash};
   const ttfimg::DecodeResult res =
       ttfimg::decodeAndCache(spec, cachePath, *source_, *zip_, *decodeArena_, epub_, &scratchRenderer_, qualityTone,
-                             /*caching=*/true, &ImagePredecodeWorker::abortTrampoline, &abortCtx);
+                             /*caching=*/true, &ImagePredecodeWorker::abortTrampoline, &abortCtx,
+                             /*paintToTarget=*/false);
+  decodeArena_->release(arenaMark);
+  ImageDecodeGate::releaseDecodeBus();
   // An aborted or failed decode never leaves a file (the engine drops the
   // partial cache on any failure path); "Ok" is a complete, valid cache the
   // foreground's next pass blits. No render-path failure bookkeeping here.
@@ -314,7 +344,18 @@ void ImagePredecodeWorker::run() {
         if (empty) running_.store(false, std::memory_order_release);
         xSemaphoreGive(queueMux_);
       }
-      if (empty) break;
+      if (empty) {
+        // An enqueue can land after the empty decision: it publishes the job
+        // under the ring mutex, then reads running_ (now false) and tries to
+        // spawn — a spawn spawnable() refuses while THIS task has not yet
+        // given exitedSem_. Re-peek the token after a settle delay so such a
+        // late push is consumed here instead of waiting for the next
+        // sighting (a refresh sighting carries no token, so it would not
+        // wake this task otherwise).
+        vTaskDelay(pdMS_TO_TICKS(2));
+        if (uxSemaphoreGetCount(queueSem_) > 0) continue;
+        break;
+      }
       continue;
     }
     if (cancel_.load(std::memory_order_acquire)) break;
@@ -401,6 +442,10 @@ bool ImagePredecodeWorker::cancel() {
     taskStack_ = nullptr;
   }
   taskCreated_ = false;
+  // The ring cursors die with the storage they indexed (re-reserve gets a
+  // fresh, uninitialized block — stale indices would read garbage specs).
+  queueHead_ = 0;
+  queueCount_ = 0;
   if (scratchFb_ != nullptr) {
     heap_caps_free(scratchFb_);
     scratchFb_ = nullptr;

@@ -80,13 +80,19 @@ enum class DecodeResult : uint8_t {
   Failed = 3,  // transient memory/storage failure — retry next pass
 };
 
-// Tone-cache production. `paint` may be nullptr: worker JPEG/PNG decodes
-// write rows cache-only (no scratch render); GIF/BMP need the renderer.
-// `qualityTone` picks the bake; abortPoll returns true at row boundaries.
+// Tone-cache production. `paint` is the decode's render target; with
+// `paintToTarget` false (worker cache-only jobs) the JPEG/PNG and BMP paths
+// skip the placement writes and only produce the cache — the GIF converter
+// structurally requires a renderer, so `paint` must still be a live one
+// there. `qualityTone` picks the bake; abortPoll returns true at row
+// boundaries. When `caching` is true the decode streams to
+// "<cachePath>.t" and publishes it onto `cachePath` with
+// Storage::replaceFile on success — an interrupted decode never leaves a
+// torn final cache.
 DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freeink::book::BookSource& source,
                             const freeink::book::ZipCatalog& zip, freeink::book::Arena& scratch, Epub* epub,
                             GfxRenderer* paint, bool qualityTone, bool caching, bool (*abortPoll)(void* ctx),
-                            void* abortCtx);
+                            void* abortCtx, bool paintToTarget = true);
 
 // Full decode gates for a worker job (the #292 heap-gate precedents).
 bool decodeGatesOk();

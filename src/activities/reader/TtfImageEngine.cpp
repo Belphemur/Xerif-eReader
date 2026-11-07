@@ -90,6 +90,20 @@ using freeink::book::ImageInfo;
 using freeink::book::PageImage;
 using freeink::book::ZipEntry;
 
+namespace {
+
+// Publish a completed ".t" decode stream onto the final cache name. On a
+// failed publish nothing valid remains: the final name keeps its previous
+// content and the temp is dropped so the next attempt re-decodes.
+bool publishResult(const char* finalPath, const char* tmpPath, const bool publishing) {
+  if (!publishing) return true;
+  if (Storage.replaceFile(tmpPath, finalPath)) return true;
+  Storage.remove(tmpPath);
+  return false;
+}
+
+}  // namespace
+
 // --- BMP row decode (over the PSRAM item buffer; design §5.5 'app BMP path') ---
 
 namespace {
@@ -149,8 +163,15 @@ struct BmpSource {
       // BI_RGB only — RLE/BITFIELDS forms are refused (blank reserved space).
       if (compression != 0) return false;
       if (bpp != 1 && bpp != 4 && bpp != 8 && bpp != 24 && bpp != 32) return false;
-      paletteCount = bpp <= 8 ? (clrUsed != 0 && clrUsed < 256 ? static_cast<uint16_t>(clrUsed) : 256) : 0;
-      if (bpp == 1 && clrUsed == 0) paletteCount = 2;
+      // clrUsed == 0 means "format default", not 256: monochrome 2, 4-bit 16,
+      // 8-bit 256 (BITMAPINFOHEADER spec). Reading 256 entries into a 16-entry
+      // palette consumes pixel bytes and rejects valid images.
+      if (bpp <= 8) {
+        const uint16_t defaultEntries = bpp == 1 ? 2 : (bpp == 4 ? 16 : 256);
+        paletteCount = clrUsed == 0 ? defaultEntries : (clrUsed > 256 ? 256 : static_cast<uint16_t>(clrUsed));
+      } else {
+        paletteCount = 0;
+      }
       if (!loadInfoPalette(dibSize)) return false;
     } else {
       return false;
@@ -229,7 +250,7 @@ struct BmpSource {
 // Floyd–Steinberg tone bake, cache rows + paint through `paint`.
 DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const size_t size, GfxRenderer* paint,
                            const char* cachePath, const bool caching) {
-  if (paint == nullptr) return DecodeResult::Failed;
+  if (paint == nullptr && !caching) return DecodeResult::Failed;  // nothing to produce
   BmpSource src;
   src.file.attach(data, size);
   if (!src.parse()) {
@@ -304,6 +325,12 @@ DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const siz
             for (int x = x0; x < x1; ++x) sum += grayRow[x];
             sums[dstX] += sum / (x1 - x0);
             ++counts[dstX];
+          } else {
+            // Vertical-only shrink (areaScale turned on by the height axis)
+            // leaves an empty box span here — nearest-neighbor the column
+            // instead of letting counts stay 0 (which bakes black).
+            sums[dstX] += grayRow[x0 < srcW ? x0 : srcW - 1];
+            ++counts[dstX];
           }
         }
       } else {
@@ -315,11 +342,13 @@ DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const siz
         }
         bake.nextRow();
         if (writerActive && !writer.writeRow(toneRow)) return DecodeResult::Failed;
-        DirectPixelWriter pw;
-        pw.init(*paint);
-        pw.beginRow(spec.y + dstY);
-        for (int col = 0; col < dstW; ++col) {
-          pw.writePixel(spec.x + col, toneRow[col]);
+        if (paint != nullptr) {
+          DirectPixelWriter pw;
+          pw.init(*paint);
+          pw.beginRow(spec.y + dstY);
+          for (int col = 0; col < dstW; ++col) {
+            pw.writePixel(spec.x + col, toneRow[col]);
+          }
         }
         continue;
       }
@@ -331,11 +360,13 @@ DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const siz
     }
     bake.nextRow();
     if (writerActive && !writer.writeRow(toneRow)) return DecodeResult::Failed;
-    DirectPixelWriter pw;
-    pw.init(*paint);
-    pw.beginRow(spec.y + dstY);
-    for (int col = 0; col < dstW; ++col) {
-      pw.writePixel(spec.x + col, toneRow[col]);
+    if (paint != nullptr) {
+      DirectPixelWriter pw;
+      pw.init(*paint);
+      pw.beginRow(spec.y + dstY);
+      for (int col = 0; col < dstW; ++col) {
+        pw.writePixel(spec.x + col, toneRow[col]);
+      }
     }
   }
   if (!writerActive || writer.finalize()) return DecodeResult::Ok;
@@ -391,9 +422,20 @@ bool blitFromCache(GfxRenderer& renderer, const ImageSpec& spec, const char* dir
 DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freeink::book::BookSource& source,
                             const freeink::book::ZipCatalog& zip, freeink::book::Arena& scratch, Epub* epub,
                             GfxRenderer* paint, const bool qualityTone, const bool caching,
-                            bool (*abortPoll)(void* ctx), void* abortCtx) {
+                            bool (*abortPoll)(void* ctx), void* abortCtx, const bool paintToTarget) {
   const ZipEntry* entry = zip.find(spec.href);
   if (entry == nullptr) return DecodeResult::Skip;
+
+  // Atomic publish: every writer streams to "<cachePath>.t" and the engine
+  // renames it onto the final name only after a complete, closed decode. An
+  // interrupted decode (power loss, abort, write failure) leaves the previous
+  // final cache untouched and the .t dropped.
+  char tmpPath[280];
+  const bool publishing = caching;
+  if (publishing && snprintf(tmpPath, sizeof(tmpPath), "%s.t", cachePath) >= static_cast<int>(sizeof(tmpPath))) {
+    return DecodeResult::Failed;
+  }
+  const char* const writePath = publishing ? tmpPath : cachePath;
 
   ImageInfo info;
   const BookStatus probe = probeImage(source, *entry, scratch, &info);
@@ -415,9 +457,10 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
   if (info.kind == ImageInfo::Kind::Png || info.kind == ImageInfo::Kind::Jpeg) {
     // Quality decode (§5.3 corrected): SDK gray rows — area-averaged exactly
     // as the foreground fallback's SDK stack — baked to 4-level tone while
-    // appending the cache, and painted through the target row by row.
+    // appending the cache, and painted through the target row by row. A
+    // cache-only job (worker) skips the placement writes entirely.
     ttfimg::ToneCacheWriter writer;
-    if (caching && !writer.begin(cachePath, spec.w, spec.h)) return DecodeResult::Failed;
+    if (caching && !writer.begin(writePath, spec.w, spec.h)) return DecodeResult::Failed;
     ttfimg::ToneCacheWriter* writerPtr = caching ? &writer : nullptr;
 
     ttfimg::FloydSteinberg4 bake(spec.w);
@@ -435,7 +478,7 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
 
     RowBakeCtx ctx;
     ctx.cache = writerPtr;
-    ctx.paint = paint;
+    ctx.paint = paintToTarget ? paint : nullptr;
     ctx.bake = &bake;
     ctx.toneRow = toneRow;
     ctx.x = spec.x;
@@ -446,8 +489,9 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
 
     const BookStatus st = freeink::book::ImageRenderer::render(source, zip, sdkImage, scratch, &rowBakeFn, &ctx);
     if (st == BookStatus::Ok && !ctx.aborted) {
-      if (writerPtr == nullptr || writerPtr->finalize()) return DecodeResult::Ok;
-      return DecodeResult::Failed;
+      if (writerPtr != nullptr && !writerPtr->finalize()) return DecodeResult::Failed;
+      if (!publishResult(cachePath, writePath, publishing)) return DecodeResult::Failed;
+      return DecodeResult::Ok;
     }
     if (writerPtr != nullptr) writerPtr->abort();
     return ctx.aborted ? DecodeResult::Busy
@@ -479,7 +523,7 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
     config.performanceMode = false;
     config.useExactDimensions = true;
     if (caching) {
-      config.cachePath = cachePath;
+      config.cachePath = writePath;
     }
     config.abortPoll = abortPoll;
     config.abortCtx = abortCtx;
@@ -487,16 +531,22 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
 
     bool decoded = false;
     if (info.kind == ImageInfo::Kind::Gif) {
-      ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(spec.href);
+      // Select the converter by the SNIFFED kind, not the href: ImageProbe
+      // identified this GIF from its bytes, so a mismatched or extensionless
+      // href must still reach the GIF converter (it would otherwise get no
+      // decoder and stay blank).
+      ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(".gif");
       decoded = decoder != nullptr && decoder->decodeToFramebuffer(image.get(), imageSize, *paint, config);
     } else {
-      const DecodeResult bmpRes =
-          decodeBmpRows(spec, image.get(), imageSize, paint, caching ? cachePath : nullptr, caching);
+      const DecodeResult bmpRes = decodeBmpRows(spec, image.get(), imageSize, paintToTarget ? paint : nullptr,
+                                                caching ? writePath : nullptr, caching);
       // Lossless BMP: leave rows EMPTY in the cache on decode failure so a
       // later view re-decodes rather than trusting a torn cache.
       decoded = bmpRes == DecodeResult::Ok;
     }
-    return decoded ? DecodeResult::Ok : DecodeResult::Failed;
+    if (!decoded) return DecodeResult::Failed;
+    if (!publishResult(cachePath, writePath, publishing)) return DecodeResult::Failed;
+    return DecodeResult::Ok;
   }
 
   return DecodeResult::Skip;  // Kind::Unknown — not decodable (SVG/WebP)

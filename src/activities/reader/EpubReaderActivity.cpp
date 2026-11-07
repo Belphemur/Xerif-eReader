@@ -312,6 +312,12 @@ EpubReaderActivity::~EpubReaderActivity() {
 #endif
   // ActivityManager destroys activities with its RenderLock already held;
   // taking another here self-deadlocks (renderingMutex is non-recursive).
+  // Belt-and-braces against a teardown path that skipped onExit(): the
+  // worker dereferences epub_/source_ raw, so it must die before ttf_/epub
+  // go. No-op when onExit already stopped it.
+#if defined(CROSSPOINT_TTF_READER)
+  stopImagePredecode();
+#endif
   settleOverlayRefresh();
   discardOverlayPage();  // free the overlay's page snapshot if one is held
   // A radio still stopped for this book's build may start again in the next one.
@@ -2437,6 +2443,12 @@ unsigned long EpubReaderActivity::confirmLongPressThreshold() const {
 }
 
 bool EpubReaderActivity::launchKOReaderSync() {
+#if defined(CROSSPOINT_TTF_READER)
+  // Stop the image worker BEFORE any path below can release epub: the sync
+  // flow resets the book mid-session and the worker dereferences it through
+  // its raw copy (decodeAndCache → extractItemToPsram). Bounded join.
+  stopImagePredecode();
+#endif
   flushReaderSession();
 
   // Without a KOReader server the sync activity only brings the device online
@@ -3756,6 +3768,21 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
 
 void EpubReaderActivity::renderBookTtf() {
   if (!epub || !ttf_) return;
+#if defined(CROSSPOINT_TTF_READER) && defined(BOARD_HAS_PSRAM)
+  // Foreground-activity pause (§5.7 rule 1): the image worker checks this
+  // between jobs, so a page render + display holds the bus against
+  // background SD reads for the whole pass. RAII so every early return
+  // re-arms the worker.
+  struct ForegroundBusy {
+    ImagePredecodeWorker* w;
+    explicit ForegroundBusy(ImagePredecodeWorker* p) : w(p) {
+      if (w != nullptr) w->setForegroundBusy(true);
+    }
+    ~ForegroundBusy() {
+      if (w != nullptr) w->setForegroundBusy(false);
+    }
+  } fgBusy{imagePredecode_.get()};
+#endif
 #if CROSSPOINT_TTF_UI_FALLBACK
   // makeLayoutParams() below can reload the shared font loader on this render
   // (first render after boot: the session's first selectFamily() dirties it),
@@ -4936,15 +4963,63 @@ void EpubReaderActivity::paintTtfPage(const freeink::book::Page& page, void* fon
   // the prefix that has appeared since. Scratch mark discipline keeps the
   // nested readPage() reads below the caller's live page mark.
 #if defined(CROSSPOINT_TTF_READER) && defined(BOARD_HAS_PSRAM)
+  // Budgeted full-spine sighting (§5.2): the first paint after a cache
+  // (re)open or a chapter switch walks the current + next spine's page
+  // records, but only kSightPagesPerPaint of them per pass — a full spine
+  // is hundreds of synchronous SD blob reads on the loop task, exactly the
+  // post-paint input stall this PR removes. The cursor resumes on the next
+  // paint until both spines are sighted; the worker's enqueue dedupe makes
+  // the overlap harmless.
   if (ttf_->cacheReady() && imagePredecode_ != nullptr && imagePredecodeBegun_ &&
       (ttfImagesSightedSpine_ != currentSpineIndex || ttfImagesSightedGen_ != ttfGeneration)) {
-    ttfImagesSightedSpine_ = static_cast<uint16_t>(currentSpineIndex);
-    ttfImagesSightedGen_ = ttfGeneration;
-    const uint16_t pageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
-    sightTtfSpineImages(static_cast<uint16_t>(currentSpineIndex), 0, pageCount);
+    if (ttfSightCursorSpine_ != currentSpineIndex || ttfSightCursorGen_ != ttfGeneration) {
+      ttfSightCursorSpine_ = static_cast<uint16_t>(currentSpineIndex);
+      ttfSightCursorGen_ = ttfGeneration;
+      ttfSightCursorPage_ = 0;
+      ttfSightCursorNext_ = false;
+    }
+    const uint16_t curSpine = static_cast<uint16_t>(currentSpineIndex);
     const uint16_t nextSpine = static_cast<uint16_t>(currentSpineIndex + 1);
-    if (ttf_->prefetchFor(nextSpine)) {
-      sightTtfSpineImages(nextSpine, 0, static_cast<uint16_t>(ttf_->prefetchPageCount()));
+    uint16_t budget = kSightPagesPerPaint;
+    bool done = false;
+    while (budget > 0) {
+      if (!ttfSightCursorNext_) {
+        const uint16_t pageCount = ttf_->availablePageCount(curSpine);
+        if (ttfSightCursorPage_ >= pageCount) {
+          if (!ttf_->prefetchFor(nextSpine)) {
+            done = true;  // no prefetch reader for the next spine: on-demand as today
+            break;
+          }
+          ttfSightCursorNext_ = true;
+          ttfSightCursorPage_ = 0;
+          continue;
+        }
+        uint16_t take = pageCount - ttfSightCursorPage_;
+        if (take > budget) take = budget;
+        sightTtfSpineImages(curSpine, ttfSightCursorPage_, static_cast<uint16_t>(ttfSightCursorPage_ + take));
+        ttfSightCursorPage_ = static_cast<uint16_t>(ttfSightCursorPage_ + take);
+        budget = static_cast<uint16_t>(budget - take);
+        continue;
+      }
+      // Next-spine phase; the prefetch reader must still be alive.
+      if (!ttf_->prefetchFor(nextSpine)) {
+        done = true;  // reader dropped mid-pass: sighted what ran, rest on-demand
+        break;
+      }
+      const uint16_t nextCount = static_cast<uint16_t>(ttf_->prefetchPageCount());
+      if (ttfSightCursorPage_ >= nextCount) {
+        done = true;
+        break;
+      }
+      uint16_t take = nextCount - ttfSightCursorPage_;
+      if (take > budget) take = budget;
+      sightTtfSpineImages(nextSpine, ttfSightCursorPage_, static_cast<uint16_t>(ttfSightCursorPage_ + take));
+      ttfSightCursorPage_ = static_cast<uint16_t>(ttfSightCursorPage_ + take);
+      budget = static_cast<uint16_t>(budget - take);
+    }
+    if (done) {
+      ttfImagesSightedSpine_ = curSpine;
+      ttfImagesSightedGen_ = ttfGeneration;
     }
   }
 #endif
@@ -4983,6 +5058,10 @@ void EpubReaderActivity::stopImagePredecode() {
   imagePredecodeBegun_ = false;
   ttfImagesSightedSpine_ = 0xFFFF;
   ttfImagesSightedGen_ = 0;
+  ttfSightCursorSpine_ = 0xFFFF;
+  ttfSightCursorGen_ = 0;
+  ttfSightCursorPage_ = 0;
+  ttfSightCursorNext_ = false;
 }
 
 // Sight image records from a spine's .fibp page cache into the worker
@@ -4996,6 +5075,9 @@ void EpubReaderActivity::sightTtfSpineImages(const uint16_t spineIndex, const ui
 #if defined(CROSSPOINT_TTF_READER) && defined(BOARD_HAS_PSRAM)
   if (imagePredecode_ == nullptr || !imagePredecodeBegun_ || ttf_ == nullptr) return;
   if (SETTINGS.imageRendering != CrossPointSettings::IMAGES_DISPLAY) return;
+  // Quality off writes no tone caches at all: the whole pass would only
+  // spend SD reads on jobs decodeAndCache skips at the kind check.
+  if (SETTINGS.imageDecodeQuality == 0) return;
   if (endPageExclusive <= firstPage) return;
 
   const uint32_t generation = ttfGeneration;

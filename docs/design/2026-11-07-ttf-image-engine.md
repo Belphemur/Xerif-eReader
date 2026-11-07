@@ -263,3 +263,75 @@ language of §5.3 was tightened so JPEG/PNG go through the SDK
 `ImageRenderer` in the worker (required for §3 G3 parity); §7.4
 re-worded to match. Revert-switch decision (§7.4) unchanged. No other
 scope change.
+
+## 11. Addendum — 2026-11-08, review-round corrections (round 26)
+
+Findings from the round-26 review that changed behavior or sharpened the
+design; each item names the mechanism it corrects.
+
+1. **Decode bus (§5.7 rule 4, new).** Rule 3's "concurrent decodes are safe
+   by construction" was wrong about the surfaces a decode touches beyond its
+   own cache path: `SdCardBookSource::readAt` seeks then reads with only
+   per-call HAL locking, so a worker decode (core 0) and a foreground
+   decode or layout read (loop task) can interleave seek/read and consume
+   each other's bytes; GIF/BMP extraction additionally shares the reader's
+   `Epub` ZIP extraction cache. Fix is two layers:
+   `SdCardBookSource::readAt` now holds one static mutex across the
+   seek+read pair (atomicity for every reader of the source, including
+   layout builds that never enter the gate), and `ImageDecodeGate` gained a
+   decode bus (rule 4) held for the whole `decodeAndCache`: the worker
+   takes it in a cancellable poll; the foreground requests it
+   (`foregroundBusPending` — the worker's abort hook yields at the next
+   band boundary) and takes it with a bounded 500 ms wait, on timeout the
+   placement stays blank for that pass exactly like a gate timeout. The
+   §5.7 concern about blocking the loop task during index-time probes does
+   not apply: the bus wraps only decode calls, never the build-path probes.
+2. **Budgeted full-spine sighting (§5.2).** The first paint after a cache
+   (re)open walked the entire current + next spine synchronously on the
+   loop task — hundreds of `readPage` blob reads after the paint and before
+   input. The walk is now a cursor over paints (`kSightPagesPerPaint = 12`
+   page records per pass) that completes over subsequent renders; the
+   once-per-(spine, generation) latch moves to cursor completion.
+3. **Atomic cache publish.** Every decode now streams to
+   `<cachePath>.t` inside the book's ficache dir and publishes with
+   `Storage::replaceFile` on success (the #178 atomic-write precedent). An
+   interrupted or aborted decode leaves the previous final cache intact;
+   the `.t` leftover is dropped by the failure paths and by the book cache
+   sweep. Names stay within the SdCardCacheStorage 64-char flat-name cap.
+4. **Cache identity width.** `cacheNameFor` carries the full 64-bit FNV-1a
+   (was the low 32 bits): with the dims-only header check, a truncated
+   identity could alias two same-sized same-generation records onto one
+   file.
+5. **Worker decode scratch (§5.1).** `processJob` now brackets
+   `decodeAndCache` with `decodeArena_->mark()` / `release()` — the probe
+   and row-decode scratch is per-job, and without the mark the 32 KB bump
+   arena filled after a handful of jobs and every later worker decode
+   failed into the foreground.
+6. **Cache-only worker decodes.** `decodeAndCache` takes `paintToTarget`
+   (default true): the worker passes false, so JPEG/PNG and BMP decodes
+   skip the placement writes into the scratch framebuffer and only produce
+   the cache; the GIF converter structurally requires a renderer and still
+   paints the scratch (dropped).
+7. **Worker lifecycle.** `reserve()` zeroes the ring cursors (a re-reserve
+   after `cancel()` handed a fresh, uninitialized block); the idle-exit
+   path re-peeks the queue token after a settle delay and the enqueue
+   refresh path falls through to the spawn attempt, so a repeat sighting
+   retries a spawn that a reap-blocked deferral skipped instead of leaving
+   a queued job workerless.
+8. **Foreground-busy wiring.** `renderBookTtf` holds
+   `setForegroundBusy(true)` for the whole render+display pass via RAII —
+   the worker pauses between jobs (never mid-decode) while the reader
+   renders, instead of the pause never arming.
+9. **Converter/engine fixes pinned by review:** animated-GIF decodes no
+   longer stringify a null path in the animation warning (memory entry
+   point); the GIF quality bake nearest-neighbor-samples empty box spans
+   instead of baking white columns on horizontal enlargement; the BMP
+   area-scale path does the same instead of baking black columns on
+   mixed-axis resizes; 4-bit BMPs with `clrUsed == 0` default to a
+   16-entry palette (was 256, reading into pixel data); the GIF converter
+   is selected by the sniffed kind, not the href, so misnamed or
+   extensionless GIFs decode; the PNG abort path drops the partial cache
+   unconditionally (the draw callback had already cleared `caching` before
+   the unwind); a cache blit that fails after validation falls through to
+   the foreground decode; and image sighting is skipped entirely when the
+   decode-quality revert switch is off (no jobs, no SD probes).

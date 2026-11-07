@@ -16,6 +16,13 @@ struct ClaimEntry {
 ClaimEntry entries[ImageDecodeGate::kMaxEntries];
 std::mutex registryMux;
 
+// rule 4 decode bus. The mutex is try-lock only on the caller side: both
+// entrants poll, so no holder can be blocked indefinitely behind another
+// task's priority. The pending flag is the worker's band-boundary yield
+// signal (checked inside its abort hook, outside this mutex).
+std::mutex decodeBusMux;
+std::atomic<bool> foregroundBusFlag{false};
+
 ClaimEntry* findEntry(uint64_t hash) {
   for (auto& entry : entries) {
     if (entry.owner != Owner::Free && entry.hash == hash) return &entry;
@@ -119,6 +126,30 @@ void ImageDecodeGate::abortAllWorkerClaims() {
   }
 }
 
+bool ImageDecodeGate::tryAcquireDecodeBus() { return decodeBusMux.try_lock(); }
+
+void ImageDecodeGate::releaseDecodeBus() { decodeBusMux.unlock(); }
+
+bool ImageDecodeGate::foregroundBusPending() { return foregroundBusFlag.load(std::memory_order_acquire); }
+
+bool ImageDecodeGate::acquireForegroundBus(const uint32_t maxWaitMs) {
+  foregroundBusFlag.store(true, std::memory_order_release);
+  const uint32_t deadline = millis() + maxWaitMs;
+  for (;;) {
+    if (decodeBusMux.try_lock()) return true;
+    if (static_cast<int32_t>(millis() - deadline) >= 0) {
+      foregroundBusFlag.store(false, std::memory_order_release);
+      return false;
+    }
+    delay(kForegroundPollMs);
+  }
+}
+
+void ImageDecodeGate::releaseForegroundBus() {
+  decodeBusMux.unlock();
+  foregroundBusFlag.store(false, std::memory_order_release);
+}
+
 void ImageDecodeGate::resetForTest() {
   std::lock_guard<std::mutex> lock(registryMux);
   for (auto& entry : entries) {
@@ -126,4 +157,5 @@ void ImageDecodeGate::resetForTest() {
     entry.owner = Owner::Free;
     entry.abort = false;
   }
+  foregroundBusFlag.store(false, std::memory_order_release);
 }

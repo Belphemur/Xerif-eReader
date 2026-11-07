@@ -268,9 +268,16 @@ class EpubReaderActivity final : public ReaderActivity {
   ImagePredecodeWorkerPtr imagePredecode_;
   bool imagePredecodeBegun_ = false;
   // Sighting bookkeeping: one pass per (spine, generation); the worker's
-  // enqueue dedupe makes re-sight cheap.
+  // enqueue dedupe makes re-sight cheap. The cursor spreads the full-spine
+  // walk over paints (kSightPagesPerPaint page records per pass) so the
+  // loop task never pays hundreds of SD blob reads in one paint.
+  static constexpr uint16_t kSightPagesPerPaint = 12;
   uint16_t ttfImagesSightedSpine_ = 0xFFFF;
   uint32_t ttfImagesSightedGen_ = 0;
+  uint16_t ttfSightCursorSpine_ = 0xFFFF;
+  uint32_t ttfSightCursorGen_ = 0;
+  uint16_t ttfSightCursorPage_ = 0;
+  bool ttfSightCursorNext_ = false;
   char fibpFamily_[48] = {};  // family the worker's faces were built for
   uint32_t fibpNotifiedGen_ = 0;
   bool fibpDeferred_ = false;           // a build is delegated to the worker

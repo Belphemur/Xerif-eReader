@@ -55,10 +55,12 @@ void paintTtfPageImages(const freeink::book::Page& page, freeink::book::TtfBookR
     spec.h = static_cast<int16_t>(img.height);
     spec.orientation = static_cast<uint8_t>(renderer.getOrientation());
 
-    if (ttfimg::hasValidCache(spec, dir, qualityTone)) {
-      ttfimg::blitFromCache(renderer, spec, dir, qualityTone);
+    if (ttfimg::hasValidCache(spec, dir, qualityTone) && ttfimg::blitFromCache(renderer, spec, dir, qualityTone)) {
       continue;
     }
+    // A cache hit that failed to blit (unreadable file, torn payload) falls
+    // through to the foreground decode: the same path a cache miss takes,
+    // repainting the placement area fully.
 
     // First-write-cache (§5.4): the foreground decode populates the same
     // tone cache the worker would have — single-writer gate first (§5.7
@@ -68,10 +70,18 @@ void paintTtfPageImages(const freeink::book::Page& page, freeink::book::TtfBookR
     if (!ttfimg::cacheNameFor(spec, dir, qualityTone, cachePath, sizeof(cachePath))) continue;
     const uint64_t hash = ImageDecodeGate::pathHash(cachePath);
     if (!ImageDecodeGate::acquireForeground(hash)) continue;
+    // Decode bus: the worker yields its in-flight decode at the next band
+    // boundary (the per-image claim above already marked it); the bounded
+    // wait covers the band unwind. On timeout the space stays blank this
+    // pass and the next pass retries — never a stall on the loop task.
+    if (!ImageDecodeGate::acquireForegroundBus(500)) continue;
     {
       struct GateGuard {
         uint64_t hash;
-        ~GateGuard() { ImageDecodeGate::releaseForeground(hash); }
+        ~GateGuard() {
+          ImageDecodeGate::releaseForegroundBus();
+          ImageDecodeGate::releaseForeground(hash);
+        }
       } guard{hash};
       const size_t scratchMark = ttf.scratch().mark();
       const ttfimg::DecodeResult res =

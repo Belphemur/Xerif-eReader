@@ -100,8 +100,11 @@ bool cacheNameFor(const ImageSpec& spec, const char* dir, const bool qualityTone
     hash ^= static_cast<uint64_t>(v);
     hash *= 1099511628211ull;
   }
-  const int n = snprintf(out, cap, "%s/i%c%08x-%08x.pxc", dir, qualityTone ? 'q' : 'l',
-                         static_cast<unsigned>(spec.generation), static_cast<unsigned>(hash & 0xFFFFFFFFull));
+  // Full 64-bit hash in the name: a truncated identity would let two records
+  // of the same dimensions and generation share one file, and the header
+  // check (dims only) would paint one image's pixels under the other's key.
+  const int n = snprintf(out, cap, "%s/i%c%08x-%016llx.pxc", dir, qualityTone ? 'q' : 'l',
+                         static_cast<unsigned>(spec.generation), static_cast<unsigned long long>(hash));
   return n > 0 && static_cast<size_t>(n) < cap;
 }
 

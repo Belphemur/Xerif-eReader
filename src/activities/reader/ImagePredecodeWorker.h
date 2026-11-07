@@ -40,6 +40,7 @@ struct ImageSpec;
 #include <task.h>
 
 #include <atomic>
+#include <memory>
 #include <new>
 
 #include "TtfImageEngine.h"

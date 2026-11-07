@@ -137,7 +137,14 @@ void qRenderCanvasRow(const uint8_t* grayRow, const int srcY, GifContext& ctx) {
       for (int dstX = 0; dstX < ctx.dstWidth; ++dstX) {
         const int x0 = dstX * ctx.srcWidth / ctx.dstWidth;
         const int x1 = (dstX + 1) * ctx.srcWidth / ctx.dstWidth;
-        if (x1 <= x0) continue;
+        if (x1 <= x0) {
+          // Horizontally enlarged: the box span is empty. Nearest-neighbor
+          // the column instead of leaving qCounts at 0, which qFlushRow
+          // bakes as white.
+          ctx.qSums[dstX] = grayRow[x0 < ctx.srcWidth ? x0 : ctx.srcWidth - 1];
+          ctx.qCounts[dstX] = 1;
+          continue;
+        }
         uint32_t sum = 0;
         for (int x = x0; x < x1; ++x) sum += grayRow[x];
         ctx.qSums[dstX] = sum / (x1 - x0);
@@ -163,7 +170,14 @@ void qRenderCanvasRow(const uint8_t* grayRow, const int srcY, GifContext& ctx) {
   for (int dstX = 0; dstX < ctx.dstWidth; ++dstX) {
     const int x0 = dstX * ctx.srcWidth / ctx.dstWidth;
     const int x1 = (dstX + 1) * ctx.srcWidth / ctx.dstWidth;
-    if (x1 <= x0) continue;
+    if (x1 <= x0) {
+      // Mixed-axis resize (vertical shrink, horizontal enlargement): the box
+      // span is empty here — nearest-neighbor the column so qCounts stays
+      // populated and the bake neither skips nor whitens it.
+      ctx.qSums[dstX] += grayRow[x0 < ctx.srcWidth ? x0 : ctx.srcWidth - 1];
+      ++ctx.qCounts[dstX];
+      continue;
+    }
     uint32_t sum = 0;
     for (int x = x0; x < x1; ++x) sum += grayRow[x];
     ctx.qSums[dstX] += sum / (x1 - x0);
@@ -547,7 +561,9 @@ bool GifToFramebufferConverter::decodeGifSource(const char* imagePath, uint8_t* 
   }
 
   if (frameState > 0) {
-    warnUnsupportedFeature("animation (using first frame only)", imagePath);
+    // `label` (never the raw imagePath): the memory entry point passes a
+    // null imagePath and the warning stringifies its argument.
+    warnUnsupportedFeature("animation (using first frame only)", label);
   }
 
   if (ctx.caching && !ctx.cache.finalize()) {
