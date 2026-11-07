@@ -138,8 +138,11 @@ struct PoolAllocator {
     using other = PoolAllocator<U>;
   };
 
-  T* allocate(std::size_t n) noexcept { return static_cast<T*>(poolMalloc(n * sizeof(T))); }
-  void deallocate(T* p, std::size_t /*n*/) noexcept { poolFree(p); }
+  // Static members are permitted by the allocator requirements (containers
+  // reach them through allocator_traits, which handles both forms); stateless
+  // over the shared pool, so nothing needs the instance.
+  static T* allocate(std::size_t n) noexcept { return static_cast<T*>(poolMalloc(n * sizeof(T))); }
+  static void deallocate(T* p, std::size_t /*n*/) noexcept { poolFree(p); }
 
   // Stateless over one shared pool: all instances compare equal.
   template <typename U>

@@ -53,7 +53,8 @@ class ZipFileCacheTest : public ::testing::Test {
  protected:
   void SetUp() override {
     const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
-    tmpDir_ = fs::temp_directory_path() / ("zip_file_cache_" + std::string(info->name()) + "_" + std::to_string(::getpid()));
+    tmpDir_ =
+        fs::temp_directory_path() / ("zip_file_cache_" + std::string(info->name()) + "_" + std::to_string(::getpid()));
     fs::remove_all(tmpDir_);
     fs::create_directories(tmpDir_);
   }
