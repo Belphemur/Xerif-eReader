@@ -14,6 +14,7 @@
 // the C3 floor keeps today's on-demand decode exactly (§5.1).
 
 #include <cstdint>
+#include <memory>
 
 class Epub;
 class GfxRenderer;
