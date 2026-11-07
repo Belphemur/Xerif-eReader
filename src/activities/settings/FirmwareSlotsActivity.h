@@ -27,6 +27,7 @@ class FirmwareSlotsActivity final : public UiListActivity {
   void buildScreen(UiScreen& screen) override;
   void activateIndex(int index) override;
   void render(RenderLock&& lock) override;
+  bool handleCustomInput() override;
   const char* headerTitle() const override;
 
   const esp_partition_t* slotPartition(int index) const;

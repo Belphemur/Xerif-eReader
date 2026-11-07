@@ -68,12 +68,23 @@ void FirmwareSlotsActivity::render(RenderLock&& lock) {
   UiListActivity::render(std::move(lock));
 }
 
+bool FirmwareSlotsActivity::handleCustomInput() {
+  // The confirm popup must see input before the list underneath (same pattern
+  // as OpdsServerListActivity), otherwise Confirm re-opens the popup and the
+  // boot callback never fires.
+  return bootPopup.handleInput(mappedInput, [this] { requestUpdate(); });
+}
+
 void FirmwareSlotsActivity::bootSlot(const int index) {
   const esp_partition_t* dest = slotPartition(index);
-  if (!dest) {
-    // No second OTA slot (single-slot boards): the dev row shows empty and
-    // must not offer a boot action.
-    LOG_ERR("SLOTS", "boot requested for missing slot %d", index);
+  ota_slots::SlotInfo info;
+  // Re-checked here (not just when the list was built): the slot's contents
+  // may have changed since onEnter, and otadata must not point at erased
+  // flash with no valid app image.
+  if (!dest || !ota_slots::readSlotInfo(dest, info)) {
+    // No second OTA slot (single-slot boards) or no bootable image: the row
+    // shows empty and must not offer a boot action.
+    LOG_ERR("SLOTS", "boot requested for missing/empty slot %d", index);
     return;
   }
   LOG_INF("SLOTS", "switching boot target to %s", dest->label);
@@ -93,7 +104,15 @@ void FirmwareSlotsActivity::activateIndex(const int index) {
   app.clearTapFlash();
   nav.selected = index;
 
-  if (!slotPartition(index)) return;
+  const esp_partition_t* dest = slotPartition(index);
+  ota_slots::SlotInfo info;
+  // No partition, no valid image, or already booted: no boot action. The row
+  // value already says "empty" or "running" — booting an erased slot would
+  // drop the device into the bootloader's fallback, and rebooting the running
+  // slot accomplishes nothing.
+  if (!dest || !ota_slots::readSlotInfo(dest, info) || ota_slots::sameSlot(dest, ota_slots::runningSlot())) {
+    return;
+  }
 
   // Confirm before the sticky otadata flip: a misclick on a 2-row list must
   // not reboot the device.

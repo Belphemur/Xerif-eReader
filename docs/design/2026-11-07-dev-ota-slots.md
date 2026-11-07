@@ -52,16 +52,23 @@ byte-identical (§7 gating).
 
 ## 4. CI dev channel (dev builds only)
 
-- New `.github/workflows/dev-build.yml`: `on: push: develop` with a
-  `concurrency` group and `cancel-in-progress` (same semantics as `ci.yml`).
-- Builds **x4pro only**, applies the same `patch_firmware_image.py` step the
-  release workflow uses, and stamps the version with the short SHA.
+- New `.github/workflows/dev-build.yml`: `on: push: develop` plus manual
+  dispatch. The publish job is gated to `develop` (a dispatch on another ref
+  never publishes), and the workflow concurrency group does **not** cancel
+  in-progress runs — a newer push can never kill a run that is publishing.
+- Builds **x4pro only**, publishes the pio build output as-is (identical to
+  the release flow's asset staging; the design originally named a
+  `patch_firmware_image.py` step that this repository does not ship), and
+  stamps the version with the short SHA.
 - Publishes to a public rolling prerelease tagged `dev`:
   - assets named `xerif-dev-<sha>-x4pro.bin`,
   - a regenerated `manifest.json` listing the **newest 3** versions (name,
-    URL, SHA-256, build date),
-  - pruning of older bins (GitHub release assets are replaced by delete +
-    recreate of the release each run).
+    URL, SHA-256, build date); a retained entry is kept only when its binary
+    is still present, so no manifest URL can 404,
+  - in-place publication: the release is created only when missing, assets
+    are uploaded with `--clobber`, and assets outside the newest-3 window
+    are pruned after the new manifest lands. The release is never deleted,
+    so a failed or cancelled run cannot wipe the channel.
 - Manifests are **unsigned** — SHA-256 pinned only, matching the existing
   unsigned-manifest fallback in `OtaUpdater` (`OtaUpdater.cpp:107`). Dev builds
   are not release artifacts; the device rejects any download whose SHA-256
@@ -95,11 +102,19 @@ byte-identical (§7 gating).
 |---|---|---|
 | Slot chooser activity | ✅ | ✅ |
 | Release OTA (signed manifest) | ✅ unchanged | ✅ |
-| Dev channel UI / manifest fetch / install | ❌ compiled out | ✅ |
+| Dev-channel settings entry | ❌ gated (`CROSSPOINT_DEV_OTA`) | ✅ |
+| Install machinery + boot hook (resume path) | ✅ compiled in, dormant | ✅ |
 | `dev-build.yml` publishing | n/a (CI only, on develop) | — |
 
-The dev-channel code is behind a compile-time flag on the dev build
-environment, so release firmware ships byte-identical behavior to today.
+Only the dev-channel **settings entry** is behind `CROSSPOINT_DEV_OTA`. The
+install machinery and the boot hook compile into every build — including
+release envs — because the running-dev dance's completion pass runs in
+whichever slot boots next (§5), and that slot is normally a release build
+with the entry gated out. In release builds the machinery is dormant:
+nothing ever arms the pending-install flag, so the boot hook costs one NVS
+read on the first loop pass and the release OTA path is unchanged. (As-built
+deviation, owner-reviewed 2026-11-07: an earlier draft of this section said
+"compiled out".)
 
 Documented quirk (standard 2-slot OTA): a release OTA while booted from stable
 lands in the non-running slot and therefore overwrites the dev slot. The dev
@@ -171,6 +186,8 @@ path #4 is for.
 - `pio run -e x4pro` (and default env) green with the feature compiled in;
   release env compiles with zero dev-channel code paths.
 - Host unit tests for the manifest parser and the slot-descriptor reader.
+- Release env compiles with the dev-channel settings entry gated out; the
+  compiled-in install machinery stays dormant (§7).
 - `bin/clang-format-fix` clean.
 - On-device soak (owner): chooser switch stable↔dev, dev install single-pass
   and via the dance, power-off during install, Power+Next hatch (after the

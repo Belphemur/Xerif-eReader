@@ -109,6 +109,14 @@ Error installFromManifestEntry(const OtaDevVersionEntry& entry, ProgressCallback
     return Error::SHA_MISMATCH;
   }
 
+  // The SDK file-write API does not create parent directories: a fresh SD
+  // card has no /.crosspoint yet and the staging open would fail before any
+  // byte is fetched. ensureDirectoryExists() creates missing parents.
+  if (!Storage.ensureDirectoryExists("/.crosspoint")) {
+    LOG_ERR("DEVOTA", "cannot create staging directory");
+    return Error::HTTP_ERROR;
+  }
+
   // 0→100% over the download (writing=false), then the flash run maps onto
   // the same range again with writing=true; the UI labels the two phases.
   size_t dlLastPct = 101;
@@ -134,10 +142,11 @@ Error installFromManifestEntry(const OtaDevVersionEntry& entry, ProgressCallback
     return Error::SHA_MISMATCH;
   }
 
-  // Full image validation (magic, segments, checksum, SHA trailer, board tag)
-  // against the dev slot's size, then the shared raw-write path. The write
-  // progress reuses the same percent-edge callback with writing=true so the
-  // UI can label the phase.
+  // alreadyValidated=false: the manifest SHA-256 pinned the downloaded bytes,
+  // but the flasher still runs the full structural image check (magic,
+  // segments, checksum, SHA trailer, board tag) against the dev slot's size
+  // before writing. The write progress reuses the same percent-edge callback
+  // with writing=true so the UI can label the phase.
   struct FlashCtx {
     ProgressCallback cb;
     void* ctx;
@@ -155,7 +164,7 @@ Error installFromManifestEntry(const OtaDevVersionEntry& entry, ProgressCallback
   };
 
   const firmware_flash::Result flash = firmware_flash::flashFromSdPathInto(STAGING_PATH, dev, wrappedProgress, &fctx,
-                                                                           /*alreadyValidated=*/true);
+                                                                           /*alreadyValidated=*/false);
   Storage.remove(STAGING_PATH);
   if (flash != firmware_flash::Result::OK) {
     LOG_ERR("DEVOTA", "Flash failed: %s", firmware_flash::resultName(flash));

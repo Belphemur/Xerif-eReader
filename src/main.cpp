@@ -177,6 +177,11 @@ enum class BootResume : uint8_t {
 // device back up against the user's sleep gesture. Never cleared:
 // startDeepSleep() does not return, so a set latch only ends at the wakeup reset.
 static bool deepSleepInProgress = false;
+// Boot-route classification captured in setup() and consumed by bootFinalize()
+// (top of the first loop pass): a pending dev-install resume must not displace
+// the recovery-firmware picker or the crash-report screen.
+static bool bootRecoveryFirmwareMode = false;
+static bool bootRebootedFromPanic = false;
 
 // Latched true before enterPowerOff() tears down the current activity: WiFi
 // activities call silentRestart() in onExit() to clear heap fragmentation,
@@ -926,7 +931,7 @@ void setup() {
   logMemAt("boot");
   // checkPanic() clears the watchdog capture marker after a successful SD
   // dump, so retain the boot classification for the later activity route.
-  const bool rebootedFromPanic = HalSystem::isRebootFromPanic();
+  bootRebootedFromPanic = HalSystem::isRebootFromPanic();
 
   // Read-and-clear so a panic later in setup() doesn't loop into silent reboot.
   // Bound the target range too — RTC_NOINIT memory is uninitialized on cold boot.
@@ -993,8 +998,8 @@ void setup() {
   const auto recoveryButton = (BoardConfig::isX4Pro() || BoardConfig::isX4Classic()) ? MappedInputManager::Button::Down
                                                                                      : MappedInputManager::Button::Up;
   // The Picco has no second app slot to flash into (partitions_picco.csv).
-  const bool recoveryFirmwareMode = wakeupReason == HalGPIO::WakeupReason::PowerButton && !BoardConfig::isPaperMono() &&
-                                    !BoardConfig::isPicco() && mappedInputManager.isPressed(recoveryButton);
+  bootRecoveryFirmwareMode = wakeupReason == HalGPIO::WakeupReason::PowerButton && !BoardConfig::isPaperMono() &&
+                             !BoardConfig::isPicco() && mappedInputManager.isPressed(recoveryButton);
 
   halTiltSensor.begin();
   halClock.begin();
@@ -1036,7 +1041,7 @@ void setup() {
   const bool isSleepWake = wakeupReason == HalGPIO::WakeupReason::PowerButton;
   const bool isPersistedSleepWake = isSleepWake && !APP_STATE.showBootScreen;
 
-  if (recoveryFirmwareMode) {
+  if (bootRecoveryFirmwareMode) {
     LOG_INF("MAIN", "Recovery firmware mode (%s + POWER held at boot)",
             (BoardConfig::isX4Pro() || BoardConfig::isX4Classic()) ? "DOWN" : "UP");
   }
@@ -1222,11 +1227,11 @@ void setup() {
   // Output polarity is resolved per render by ActivityManager (night mode
   // inverts only the reading surfaces), so nothing to restore here.
 
-  if (recoveryFirmwareMode) {
+  if (bootRecoveryFirmwareMode) {
     // Skip normal home/reader routing: jump straight into the SD firmware picker.
     activityManager.replaceActivity(
         std::make_unique<SdFirmwareUpdateActivity>(renderer, mappedInputManager, /*recoveryMode=*/true));
-  } else if (rebootedFromPanic) {
+  } else if (bootRebootedFromPanic) {
     // If we rebooted from a panic, go to crash report screen to show the panic info
     activityManager.goToCrashReport();
   } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_READER &&
@@ -1329,9 +1334,18 @@ static void bootFinalize() {
       LOG_INF("MAIN", "stale pending dev install; clearing");
       dev_ota::pendingInstallClear();
     } else if (slot != nullptr) {
-      LOG_INF("MAIN", "resuming pending dev install (%s)", pendingVersion);
-      activityManager.replaceActivity(std::make_unique<DevOtaActivity>(renderer, mappedInputManager,
-                                                                       /*autoResume=*/true));
+      if (bootRecoveryFirmwareMode || bootRebootedFromPanic) {
+        // Recovery picker and crash-report routes outrank the resume; the
+        // flag stays armed so the next clean boot can still finish the
+        // install, and a crash during a retry shows the report instead of
+        // re-entering the installer on every boot.
+        LOG_INF("MAIN", "pending dev install deferred (recovery=%d panic=%d)", bootRecoveryFirmwareMode ? 1 : 0,
+                bootRebootedFromPanic ? 1 : 0);
+      } else {
+        LOG_INF("MAIN", "resuming pending dev install (%s)", pendingVersion);
+        activityManager.replaceActivity(std::make_unique<DevOtaActivity>(renderer, mappedInputManager,
+                                                                         /*autoResume=*/true));
+      }
     }
   }
 }

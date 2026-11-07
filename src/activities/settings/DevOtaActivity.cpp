@@ -38,6 +38,45 @@ bool devNameLabel(const char* name, char* out, size_t cap) {
   return true;
 }
 
+// The dance's completion pass runs in the stable slot, so that image must
+// contain the bootFinalize() resume hook (main.cpp). The hook first ships in
+// the release that carries the dev-OTA design — an older stable image boots
+// normally and never consumes the flag, leaving the device on a stable slot
+// with no slot chooser. Refusing the dance here is the fail-safe direction.
+constexpr char kMinResumeStableVersion[] = "2.15.0";
+
+// Leading N.N.N comparison, version >= min ("v" prefix and per-board suffixes
+// ignored, same convention as otaIsVersionNewer). False when either side does
+// not parse.
+bool versionAtLeast(const char* version, const char* minVersion) {
+  if (!version || !minVersion) return false;
+  if (*version == 'v' || *version == 'V') ++version;
+  if (*minVersion == 'v' || *minVersion == 'V') ++minVersion;
+  int v[3] = {0, 0, 0};
+  int m[3] = {0, 0, 0};
+  if (sscanf(version, "%d.%d.%d", &v[0], &v[1], &v[2]) != 3) return false;
+  if (sscanf(minVersion, "%d.%d.%d", &m[0], &m[1], &m[2]) != 3) return false;
+  for (int i = 0; i < 3; ++i) {
+    if (v[i] != m[i]) return v[i] > m[i];
+  }
+  return true;
+}
+
+// Compact an ISO-8601 build date ("2026-11-07T14:03:45+00:00") down to
+// "11-07 14:03" so the timestamp fits beside the row label. False when the
+// field is not the shape the manifest generator emits; the caller then shows
+// no date rather than an overflowing one.
+bool compactDevDate(const char* iso, char* out, size_t cap) {
+  if (!iso || strlen(iso) < 16) return false;
+  const auto digit = [](char c) { return c >= '0' && c <= '9'; };
+  if (iso[4] != '-' || iso[7] != '-' || iso[10] != 'T' || iso[13] != ':') return false;
+  for (const int i : {5, 6, 8, 9, 11, 12, 14, 15}) {
+    if (!digit(iso[i])) return false;
+  }
+  snprintf(out, cap, "%.2s-%.2s %.2s:%.2s", iso + 5, iso + 8, iso + 11, iso + 14);
+  return true;
+}
+
 const char* describeDevError(const dev_ota::Error err) {
   switch (err) {
     case dev_ota::Error::SHA_MISMATCH:
@@ -54,6 +93,13 @@ const char* describeDevError(const dev_ota::Error err) {
 
 void DevOtaActivity::onEnter() {
   Activity::onEnter();
+
+  if (autoResume) {
+    // The dance's boot hook records the requested asset name in NVS but does
+    // not carry it through the constructor; read it back so fetchManifest()
+    // can resume the exact version instead of falling back to the newest.
+    dev_ota::pendingInstallGet(pendingVersion, sizeof(pendingVersion));
+  }
 
   // Same WiFi handshake as OtaUpdateActivity: launch the selection
   // subactivity; with saved credentials it auto-connects — the boot-hook
@@ -148,7 +194,8 @@ void DevOtaActivity::promptInstall(const int index) {
     snprintf(label, sizeof(label), "%s", entries.items[index].name);
   }
   const char* options[] = {tr(STR_CANCEL), tr(STR_INSTALL)};
-  confirmPopup.show(tr(STR_DEV_INSTALL_PROMPT), label, options, 2, 1, [this, index](const int idx) {
+  // Default is Cancel: a stray confirm press must never land on Install.
+  confirmPopup.show(tr(STR_DEV_INSTALL_PROMPT), label, options, 2, 0, [this, index](const int idx) {
     if (idx == 1) {
       beginInstall(index);
     } else {
@@ -171,6 +218,21 @@ void DevOtaActivity::beginInstall(const int index) {
   // so record the request and reboot into stable; the boot hook finishes the
   // install from there (two reboots total).
   if (ota_slots::sameSlot(ota_slots::runningSlot(), ota_slots::devSlot())) {
+    // The completion pass runs in the stable slot: refuse the dance unless
+    // that image can consume the pending-install flag (see
+    // kMinResumeStableVersion).
+    ota_slots::SlotInfo stableInfo;
+    if (!ota_slots::readSlotInfo(ota_slots::stableSlot(), stableInfo) ||
+        !versionAtLeast(stableInfo.version, kMinResumeStableVersion)) {
+      LOG_ERR("DEVOTA", "stable slot ('%s') predates the resume hook; refusing the dance", stableInfo.version);
+      {
+        RenderLock lock(*this);
+        failedDetail = tr(STR_DEV_STABLE_TOO_OLD);
+        state = FAILED;
+      }
+      requestUpdate();
+      return;
+    }
     if (!dev_ota::pendingInstallSet(entries.items[index].name) || !ota_boot::switchTo(ota_slots::stableSlot())) {
       // Either failure leaves the device on the dev slot with at most a stale
       // flag; clear it so no boot hook fires on a request nobody can see.
@@ -198,6 +260,12 @@ void DevOtaActivity::runInstall() {
     const uint16_t batteryPct = powerManager.getBatteryPercentage();
     if (batteryPct < DEV_OTA_MIN_BATTERY_PCT) {
       LOG_ERR("DEVOTA", "Battery too low (%u%%) to install", batteryPct);
+      if (autoResume) {
+        // A resumed install that fails here must not leave the flag armed:
+        // every boot would reconnect WiFi and fail again until the battery
+        // recovers (the same no-retry-loop rule as the WiFi-failure path).
+        dev_ota::pendingInstallClear();
+      }
       {
         RenderLock lock(*this);
         failedDetail = tr(STR_OTA_LOW_BATTERY);
@@ -276,7 +344,11 @@ void DevOtaActivity::loop() {
     } else if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
       selectedIndex = (selectedIndex + 1) % entries.count;
       requestUpdate();
-    } else if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+    } else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      // wasReleased, matching OptionPopup::handleButtons' confirm edge: the
+      // popup also acts on the RELEASE, so opening on wasPressed would let
+      // that same press's release fire the default option — one tap would
+      // install without a deliberate confirmation.
       promptInstall(selectedIndex);
     } else if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
       finish();
@@ -330,7 +402,15 @@ void DevOtaActivity::render(RenderLock&&) {
         renderer.drawRect(side - 4, y - 2, pageWidth - (side - 4) * 2, height + 4);
       }
       renderer.drawText(UI_10_FONT_ID, side, y, label);
-      renderer.drawText(UI_10_FONT_ID, pageWidth - side - 70, y, entries.items[i].date);
+      char compact[16];
+      if (compactDevDate(entries.items[i].date, compact, sizeof(compact))) {
+        const int dateX = pageWidth - side - renderer.getTextWidth(UI_10_FONT_ID, compact);
+        // Right-align the compact timestamp; drop it rather than overprint
+        // the label on a narrow screen.
+        if (dateX > side + renderer.getTextWidth(UI_10_FONT_ID, label) + 4) {
+          renderer.drawText(UI_10_FONT_ID, dateX, y, compact);
+        }
+      }
       y += height + metrics.verticalSpacing;
     }
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_CONFIRM), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
