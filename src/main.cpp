@@ -18,6 +18,12 @@
 #include <HalTiltSensor.h>
 #include <I18n.h>
 #include <Logging.h>
+// The recovery hatch repoints otadata at slot 0 — an ESP32 boot-ROM concept
+// with no simulator counterpart, and the sim env's lib_deps carry no
+// RecoveryBoot include path (platformio.ini [env:simulator]).
+#if !defined(SIMULATOR)
+#include <RecoveryBoot.h>
+#endif
 #include <SPI.h>
 #include <TrustedTime.h>
 #include <WiFi.h>
@@ -892,6 +898,16 @@ SET_LOOP_TASK_STACK_SIZE(49152)
 
 void setup() {
   BoardConfig::holdPowerRails();
+
+  // ADR 2026-11-07 §14: the SDK recovery hatch — hold the board combo
+  // (Power + Next on the X4 Pro, Back + Up on ADC-ladder boards) at reset and
+  // the bootloader is repointed at the stable slot before any subsystem can
+  // interfere. Self-contained: constructs its own InputManager, no-ops unless
+  // the combo is held, slot 0 holds a valid image, and we are not slot 0.
+  // Simulator builds have no bootloader slot table to repoint (see include).
+#if !defined(SIMULATOR)
+  freeink::recovery::checkBootCombo();
+#endif
 
 #ifdef ENABLE_SERIAL_LOG
 #ifdef CROSSPOINT_WAIT_FOR_USB_SERIAL
