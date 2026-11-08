@@ -1,10 +1,20 @@
-# Dev firmware channel (design docs/design/2026-11-07-dev-ota-slots.md §4).
+# Dev firmware channel (design docs/design/2026-11-07-dev-ota-slots.md §4/§13).
 #
-# Every merge to develop builds the x4pro image and republishes the rolling
-# `dev` prerelease: the newest 3 `xerif-dev-<sha>-x4pro.bin` assets plus a
-# regenerated manifest.json (name/url/sha256/date, newest first). The device
-# fetches this release, parses the manifest, and installs a build into the dev
-# slot (app1) after verifying the SHA-256 (unsigned manifest, SHA-pinned only).
+# No build happens here (§13): ci.yml already built the x4pro image for the
+# triggering develop commit and uploaded it as the `firmware-x4pro.bin`
+# artifact (7-day retention). This lane consumes that artifact — the
+# pr-firmware-links.yml pattern: CI builds once, publish lanes are thin
+# consumers — and republishes the rolling `dev` prerelease: the newest
+# 3 `xerif-dev-<sha>-x4pro.bin` assets plus a regenerated manifest.json
+# (name/url/sha256/date, newest first). The device fetches this release,
+# parses the manifest, and installs a build into the dev slot (app1) after
+# verifying the SHA-256 (unsigned manifest, SHA-pinned only).
+#
+# The checkout is pinned to `github.event.workflow_run.head_sha` so the stamp
+# and the manifest date derive from the triggering commit, not the current
+# default-branch HEAD. The stamp (`--version`) and the `--validate` publish
+# gate run on the downloaded artifact BEFORE the manifest step hashes it, so
+# the manifest hash matches the published, stamped asset.
 #
 # Note on patching: the design doc names a `patch_firmware_image.py` step;
 # `scripts/patch_dev_version.py` implements it for the dev channel only — the
@@ -19,9 +29,11 @@
 name: Dev build
 
 on:
-  push:
-    branches: [develop]
-  workflow_dispatch:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
 
 concurrency:
   # Repo-wide publication lane shared with the PR publish lane
@@ -35,72 +47,56 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write  # republishes the rolling `dev` prerelease
-
-env:
-  UV_CONSTRAINT: ${{ github.workspace }}/.github/pio-constraints.txt
-  PIP_CONSTRAINT: ${{ github.workspace }}/.github/pio-constraints.txt
+  actions: read   # downloads the CI run's `firmware-x4pro.bin` artifact
+  contents: write # republishes the rolling `dev` prerelease
 
 jobs:
   build-and-publish:
-    name: Build + publish dev channel
-    # Publication is develop-only: a manual dispatch on another ref must not
-    # publish its firmware as the newest dev build.
-    if: github.ref == 'refs/heads/develop'
+    name: Publish dev channel from the CI artifact
+    # The D6 develop-only publication lane: a CI run on any other branch, or a
+    # failed CI run, is a no-op — a dev build is only published from a
+    # CI-green develop commit (design docs/design/2026-11-07-dev-ota-slots.md
+    # §13).
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'develop'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
-          submodules: recursive
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
           fetch-depth: 0
 
       - uses: actions/setup-python@v7
         with:
           python-version: '3.14'
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.3.3
-        with:
-          version: "latest"
-          enable-cache: false
-
-      - name: Install PlatformIO Core
-        run: |
-          uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.2.0.zip
-          uv pip install --system -U "littlefs-python>=0.16.0" "fatfs-ng>=0.1.14" "pyyaml>=6.0.2" \
-            "rich-click>=1.8.6" "zopfli>=0.2.2" "intelhex>=2.3.0" "rich>=14.0.0" "urllib3<2" \
-            "cryptography>=45.0.3" "certifi>=2025.8.3" "ecdsa>=0.19.1" "bitstring>=4.3.1" \
-            "reedsolo>=1.5.3,<1.8" "esp-idf-size>=2.0.0" "esp-coredump>=1.14.0"
-
-      - name: Cache PlatformIO packages
-        uses: actions/cache@v6
-        with:
-          path: ~/.platformio
-          key: pio-v3-${{ runner.os }}-x4pro-${{ hashFiles('platformio.ini', 'scripts/patch_pioarduino_cache.py') }}
-          restore-keys: |
-            pio-v3-${{ runner.os }}-x4pro-
-
-      - name: Pin pioarduino core inside the platform penv
+      - name: Download the x4pro firmware artifact from the CI run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          pio pkg install -e x4pro
-          uv pip install --python ~/.platformio/penv/bin/python "pioarduino==6.2.0"
-          ~/.platformio/penv/bin/pio --version
-
-      - name: Build x4pro dev firmware
-        run: |
-          set -euo pipefail
-          pio run -e x4pro | tee pio.log
+          if ! gh run download "${{ github.event.workflow_run.id }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name firmware-x4pro.bin \
+            --dir artifact
+          then
+            echo "CI artifact 'firmware-x4pro.bin' not found for run" \
+              "${{ github.event.workflow_run.id }}" \
+              "(retention expired or the CI matrix no longer uploads it); aborting" >&2
+            exit 1
+          fi
 
       - name: Stage dev asset + carry over previous builds
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DEV_SHA: ${{ github.sha }}
+          DEV_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
           mkdir -p dist carry
           asset="xerif-dev-${DEV_SHA}-x4pro.bin"
-          cp .pio/build/x4pro/firmware.bin "dist/${asset}"
+          mv artifact/firmware.bin "dist/${asset}"
 
           # Stamp the dev version into the image's esp_app_desc_t (design
           # docs/design/2026-11-07-dev-ota-slots.md §12): the prebuilt Arduino
@@ -144,7 +140,7 @@ jobs:
       - name: Regenerate manifest.json (newest 3 dev + newest 6 PR entries)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DEV_SHA: ${{ github.sha }}
+          DEV_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
           # Shared generator (.github/workflows/generate_dev_manifest.py): the
