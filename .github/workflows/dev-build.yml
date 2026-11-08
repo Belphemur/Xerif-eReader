@@ -117,6 +117,11 @@ jobs:
             --image "dist/${asset}" \
             --version "${base_version}"
           python3 scripts/patch_dev_version.py --image "dist/${asset}" --verify
+          # Regression gate: the stamped asset must pass the FULL verifier
+          # (XOR checksum byte + appended digest) before it may reach the
+          # release — a bad image here aborts the run instead of shipping
+          # something the device rejects as invalid.
+          python3 scripts/patch_dev_version.py --image "dist/${asset}" --validate
 
           # Carry over the previous builds from the current `dev` release. The
           # existing manifest is the authoritative newest-first list — its top

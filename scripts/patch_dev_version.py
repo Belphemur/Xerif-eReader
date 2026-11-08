@@ -17,12 +17,13 @@ branch component is dropped (<base>-dev-<sha>); if it still does not fit, the
 base is truncated on the right. The -dev-<sha> tail is never cut so builds
 stay distinguishable.
 
-Patching the descriptor bytes invalidates the image's appended SHA-256 digest
-(esp_image_header_t.hash_appended at 0x17): the bootloader/install path
-verifies sha256(image[:-32]) against the final 32 bytes, so the stamp
-recomputes and rewrites that digest whenever the header flag says one is
-appended. Idempotent: a repeated stamp recomputes the digest from the current
-content.
+Patching the descriptor bytes invalidates two image-integrity values that
+downstream verifiers check (freeink-sdk RecoveryBoot/FirmwareFlasher, the
+bootloader): the appended SHA-256 digest (esp_image_header_t.hash_appended at
+0x17 — sha256(image[:-32]) vs the final 32 bytes) AND the ESP-image XOR
+checksum byte (seed 0xEF over all segment data, stored at the last byte of the
+16-byte alignment padding after the final segment). The stamp recomputes both.
+Idempotent: a repeated stamp recomputes both from the current content.
 
 Dev-channel builds only — release flows never call this and keep their
 signed-release descriptors untouched.
@@ -40,6 +41,44 @@ MAGIC = 0xABCD5432
 MIN_IMAGE_SIZE = VERSION_OFFSET + VERSION_FIELD_SIZE  # 0x50
 HASH_APPENDED_OFFSET = 0x17
 DEV_MARK = "-dev-"
+# ESP app-image layout: 24-byte image header, then segCount 8-byte segment
+# headers, each followed by its data. The XOR checksum byte sits at the last
+# byte of the 16-byte alignment padding after the final segment. These mirror
+# freeink-sdk RecoveryBoot/FirmwareFlasher.cpp exactly.
+IMAGE_HEADER_SIZE = 24
+SEG_HEADER_SIZE = 8
+CHECKSUM_SEED = 0xEF
+
+
+def recompute_checksum(data: bytes) -> bytes:
+    """Refresh the ESP-image XOR checksum byte after descriptor bytes changed.
+
+    Mirrors the verifier: seed 0xEF, XOR over every byte of every segment's
+    data (headers excluded), result stored at padEnd-1 where padEnd is the
+    16-byte-aligned offset after the final segment. Fails closed on a
+    malformed segment table instead of writing a wrong checksum.
+    """
+    seg_count = data[1]
+    if seg_count == 0:
+        fail("image declares 0 segments; cannot recompute the XOR checksum")
+    pos = IMAGE_HEADER_SIZE
+    xor = CHECKSUM_SEED
+    for i in range(seg_count):
+        if pos + SEG_HEADER_SIZE > len(data):
+            fail(f"segment {i} header overruns EOF while recomputing the checksum")
+        (data_len,) = struct.unpack_from("<I", data, pos + 4)
+        pos += SEG_HEADER_SIZE
+        if pos + data_len > len(data):
+            fail(f"segment {i} data overruns EOF while recomputing the checksum")
+        for b in data[pos:pos + data_len]:
+            xor ^= b
+        pos += data_len
+    pad_end = (pos + 16) & ~15
+    if pad_end > len(data):
+        fail(f"checksum padding runs past EOF (padEnd {pad_end} > {len(data)} bytes)")
+    out = bytearray(data)
+    out[pad_end - 1] = xor & 0xFF
+    return bytes(out)
 
 
 def fail(message: str) -> "NoReturn":  # noqa: F821
@@ -102,6 +141,7 @@ def stamp(image: str, version: str) -> None:
     field = fit_version(version)
     data = load_image(image)
     data = data[:VERSION_OFFSET] + field + data[MIN_IMAGE_SIZE:]
+    data = recompute_checksum(data)
     if data[HASH_APPENDED_OFFSET] == 0x01:
         data = data[:-32] + hashlib.sha256(data[:-32]).digest()
     elif data[-32:] != hashlib.sha256(data[:-32]).digest():
@@ -115,6 +155,42 @@ def stamp(image: str, version: str) -> None:
         fail(f"cannot write {image}: {e}")
 
 
+def validate(image: str) -> None:
+    """Run the full verifier against the image, exiting non-zero on failure.
+
+    Mirrors freeink-sdk RecoveryBoot/FirmwareFlasher.cpp and the bootloader:
+    magic + segment table walk, the padEnd/size rule, the XOR checksum byte,
+    and (when hash_appended) the appended SHA-256. CI runs this on every
+    stamped dev asset before it may reach the release.
+    """
+    data = load_image(image)
+    seg_count = data[1]
+    if seg_count == 0:
+        fail(f"{image} declares 0 segments")
+    pos = IMAGE_HEADER_SIZE
+    xor = CHECKSUM_SEED
+    for i in range(seg_count):
+        if pos + SEG_HEADER_SIZE > len(data):
+            fail(f"{image}: segment {i} header overruns EOF")
+        (data_len,) = struct.unpack_from("<I", data, pos + 4)
+        pos += SEG_HEADER_SIZE
+        if pos + data_len > len(data):
+            fail(f"{image}: segment {i} data overruns EOF")
+        for b in data[pos:pos + data_len]:
+            xor ^= b
+        pos += data_len
+    pad_end = (pos + 16) & ~15
+    hash_appended = data[HASH_APPENDED_OFFSET] == 0x01
+    if pad_end + (32 if hash_appended else 0) != len(data):
+        fail(f"{image}: size rule violated (padEnd {pad_end} + trailer vs {len(data)} bytes)")
+    if (xor & 0xFF) != data[pad_end - 1]:
+        fail(f"{image}: XOR checksum mismatch (computed {xor & 0xFF:#04x}, "
+             f"stored {data[pad_end - 1]:#04x}) — the image any verifier rejects")
+    if hash_appended and hashlib.sha256(data[:-32]).digest() != data[-32:]:
+        fail(f"{image}: appended SHA-256 digest mismatch")
+    print(f"validated {image}: checksum + digest OK")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--image", required=True, help="firmware.bin to patch in place")
@@ -122,7 +198,15 @@ def main() -> None:
                         "scripts/git_branch.py --print-dev-version")
     parser.add_argument("--verify", action="store_true",
                         help="print the image's current version field instead of stamping")
+    parser.add_argument("--validate", action="store_true",
+                        help="run the full image verification (checksum + digest) and exit non-zero on failure")
     args = parser.parse_args()
+
+    if args.validate:
+        if args.version or args.verify:
+            parser.error("--validate takes no other flags")
+        validate(args.image)
+        return
 
     if args.verify:
         if args.version:
