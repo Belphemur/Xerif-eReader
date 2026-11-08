@@ -332,7 +332,12 @@ void SdFirmwareUpdateActivity::performUpdate() {
   // Normal mode: the §16 matrix. The target slot comes from the §15 source
   // rule (basename classification); the running slot is never a write target.
   const bool runningIsStable = ota_slots::sameSlot(ota_slots::runningSlot(), ota_slots::stableSlot());
-  const bool workerAvailable = sdSwapWorkerAvailable();
+  // The worker check walks the worker slot's whole image (2 KB reads over
+  // ~5 MB) — the dance's only blocker. routeForInstall() consults it solely
+  // on the Dance route, which is only reachable when the target IS the
+  // running slot: gate the scan on that so the common direct write pays no
+  // full-slot flash scan on the blocking pre-flash path.
+  const bool workerAvailable = sdTargetIsStable == runningIsStable && sdSwapWorkerAvailable();
   const auto route = ota_install_routing::routeForInstall(runningIsStable, sdTargetIsStable, workerAvailable);
   switch (route) {
     case ota_install_routing::InstallRoute::DirectWrite: {
