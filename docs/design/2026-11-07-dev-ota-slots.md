@@ -196,3 +196,42 @@ path #4 is for.
 - On-device soak (owner): chooser switch stable↔dev, dev install single-pass
   and via the dance, power-off during install, Power+Next hatch (after the
   SDK follow-up lands).
+
+## 12. Addendum (2026-11-08): per-build dev version stamping + dev list touch sizing
+
+### Root cause (soak evidence)
+
+The dev slot always displayed "the previous firmware" after a successful
+install. `esp_app_desc_t.version` with the prebuilt Arduino core is a constant
+string baked into `libesp_app_format.a` (see `OtaSlots.h:41-43`) — identical in
+every dev build regardless of commit. `dev-build.yml` names no image-patching
+step (its header comment records the design doc's `patch_firmware_image.py`
+as never having shipped), so `platformio.ini`'s static `version =` reaches
+flash unchanged. The install works; the slot chooser cannot tell the builds
+apart.
+
+### Decision
+
+1. **CI-side stamping (dev-only).** After `pio run -e x4pro`, the
+   `dev-build.yml` staging step rewrites the 32-byte version field of the
+   image's `esp_app_desc_t` (magic `0xABCD5432` at offset 0x20, version at
+   0x30 — the exact layout `OtaSlots::readSlotInfo` reads) to
+   `<version>-dev-<shortsha>` padded with NULs. Stamping happens on the
+   `dist/` copy **before** manifest SHA-256 computation so the manifest hash
+   matches the published asset. Release builds are untouched: release flow
+   gains no step, and its descriptors stay the signed-release constant.
+2. **Dev list touch sizing.** The dev version list (`DevOtaActivity` LIST
+   state) renders 10-pt rows whose hit bands follow the drawing geometry.
+   Rows must adopt the settings menu's row geometry (its font/row height and
+   spacing) so the tap targets are finger-sized; hit bands keep reusing the
+   drawing geometry so they can never drift.
+
+### Rejected
+
+- Building with a `PROJECT_VER` injection: with the prebuilt Arduino core the
+  descriptor comes from `libesp_app_format.a` and cannot be overridden per
+  build from `platformio.ini` env — the post-build patch is the only reliable
+  hook.
+- NVS shadow copy of installed versions: violates the §3 rule of reading
+  straight from image bytes (would diverge exactly like the resume-hook
+  marker case).
