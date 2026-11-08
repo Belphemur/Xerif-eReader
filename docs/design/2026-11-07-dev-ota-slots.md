@@ -296,11 +296,13 @@ develop builds, so it must get the identical treatment:
   descriptor first (`<base>-dev-<sha>`), never the SHA tail.
 
 ### Superseded
-§12 "dev channel only" stamping scope and the generator's
-"PR entries get no version field" exception. Supersede reason: the slot
-descriptor must match About for EVERY installable image, and the manifest is
-one schema — per-entry exceptions are the DRY violation this addendum closes.
+
+§12 "dev channel only" stamping scope and the generator's "PR entries get no
+version field" exception. Supersede reason: the slot descriptor must match
+About for EVERY installable image, and the manifest is one schema —
+per-entry exceptions are the DRY violation this addendum closes.
 
 ### Rejected
-Pseudo-versions from the asset name (the device's name-fallback already
-covers manifests that predate this change; new entries are real).
+
+Pseudo-versions from the asset name: the device's name-fallback covers
+manifests that predate this change; new entries carry the real derivation.
