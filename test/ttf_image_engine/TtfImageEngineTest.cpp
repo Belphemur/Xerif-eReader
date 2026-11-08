@@ -72,9 +72,10 @@ TEST(CacheIdentity, PolicyLetterSeparatesBakes) {
   ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 10, 20, 100, 80), kDir, true, a, sizeof(a)));
   ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 10, 20, 100, 80), kDir, false, b, sizeof(b)));
   EXPECT_STRNE(a, b);
-  // 's' = the adaptive two-phase ToneBake4 (design 2026-11-08 §2, amendment
-  // 2; 'r' was the fixed-map bake); 'l' = legacy.
-  EXPECT_NE(strstr(a, "/is"), nullptr);
+  // 't' = the adaptive two-phase bake with flat-field snap, threshold-noise
+  // and stroke anchoring (design 2026-11-08-ttf-image-texture-quality.md §5
+  // as-built); 's' was the pre-texture adaptive bake; 'l' = legacy.
+  EXPECT_NE(strstr(a, "/it"), nullptr);
   EXPECT_NE(strstr(b, "/il"), nullptr);
 }
 
@@ -294,15 +295,16 @@ TEST(ToneBake4, IsPlacementIndependent) {
 }
 
 TEST(ToneBake4, DiffusionWeightScalesEveryKernelTerm) {
-  // W = 2048/2560 = 4/5: term = errVal·k/20 for k = 7|3|5|1 (§7).
+  // W = 2560/2560 = 1: term = errVal·k/16 for k = 7|3|5|1 (texture §5
+  // as-built), C truncation toward zero.
   ttfimg::ToneBake4 bake(8);
   ASSERT_TRUE(bake.ok());
-  EXPECT_EQ(bake.diffuse(20, 7), 7);  // 20·7/20
-  EXPECT_EQ(bake.diffuse(20, 3), 3);
-  EXPECT_EQ(bake.diffuse(20, 5), 5);
-  EXPECT_EQ(bake.diffuse(20, 1), 1);
-  EXPECT_EQ(bake.diffuse(-40, 7), -14);
-  EXPECT_EQ(bake.diffuse(3, 7), 1);  // 21/20 truncated
+  EXPECT_EQ(bake.diffuse(20, 7), 8);     // 140/16
+  EXPECT_EQ(bake.diffuse(20, 3), 3);     // 60/16
+  EXPECT_EQ(bake.diffuse(20, 5), 6);     // 100/16
+  EXPECT_EQ(bake.diffuse(20, 1), 1);     // 20/16
+  EXPECT_EQ(bake.diffuse(-40, 7), -17);  // -280/16 truncates toward zero
+  EXPECT_EQ(bake.diffuse(3, 7), 1);      // 21/16 truncated
 }
 
 TEST(ToneBake4, SerpentineMirrorsTheKernel) {
