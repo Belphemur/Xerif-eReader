@@ -147,6 +147,10 @@ jobs:
             ".pio/build/${{ matrix.pio_env }}/${xpoint_asset}"
           cp ".pio/build/${{ matrix.pio_env }}/firmware.bin" \
             ".pio/build/${{ matrix.pio_env }}/${xerif_asset}"
+          # Same publish gate as the dev channel: no release asset reaches the
+          # tag unless it passes the full image verifier (checksum + digest).
+          python3 scripts/patch_dev_version.py \
+            --image ".pio/build/${{ matrix.pio_env }}/${xerif_asset}" --validate
           echo "xpoint_name=$xpoint_asset" >> "$GITHUB_OUTPUT"
           echo "xerif_name=$xerif_asset" >> "$GITHUB_OUTPUT"
 

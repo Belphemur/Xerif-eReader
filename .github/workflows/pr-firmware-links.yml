@@ -222,6 +222,9 @@ jobs:
           set -euo pipefail
           asset="xerif-pr-${PR_NUMBER}-${SHORT_SHA}-x4pro.bin"
           mv artifact/firmware.bin "${asset}"
+          # Same publish gate as the dev channel: the PR asset must pass the
+          # full image verifier before it may reach the rolling release.
+          python3 scripts/patch_dev_version.py --image "${asset}" --validate
 
           if ! gh release view dev --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create dev \
