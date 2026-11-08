@@ -87,6 +87,10 @@ bool readValidCacheHeader(HalFile& cacheFile, const int expectedWidth, const int
 }
 
 bool cacheNameFor(const ImageSpec& spec, const char* dir, const bool qualityTone, char* out, const size_t cap) {
+  // Quality bake revision: bump when the bake algorithm changes so stale
+  // caches re-decode. 'q' was the plain Floyd–Steinberg4 bake (2026-11-07);
+  // 'r' is ToneBake4 (2026-11-08 §5.2).
+  constexpr char kQualityCacheRevision = 'r';
   // Identity: generation + href + placement (+ the tone policy, so the
   // quality revert switch never mixes bakes in one file).
   uint64_t hash = 14695981039346656037ull;
@@ -103,7 +107,7 @@ bool cacheNameFor(const ImageSpec& spec, const char* dir, const bool qualityTone
   // Full 64-bit hash in the name: a truncated identity would let two records
   // of the same dimensions and generation share one file, and the header
   // check (dims only) would paint one image's pixels under the other's key.
-  const int n = snprintf(out, cap, "%s/i%c%08x-%016llx.pxc", dir, qualityTone ? 'q' : 'l',
+  const int n = snprintf(out, cap, "%s/i%c%08x-%016llx.pxc", dir, qualityTone ? kQualityCacheRevision : 'l',
                          static_cast<unsigned>(spec.generation), static_cast<unsigned long long>(hash));
   return n > 0 && static_cast<size_t>(n) < cap;
 }

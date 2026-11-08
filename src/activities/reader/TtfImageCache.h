@@ -8,22 +8,130 @@
 // The decode paths (SDK row render, converters, BMP row decoder) stay in
 // TtfImageEngine.cpp — they pull the render stack.
 
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <new>
 
+#include "Epub/converters/DitherUtils.h"
 #include "TtfImageEngine.h"
 
 #if defined(CROSSPOINT_TTF_READER)
 
 namespace ttfimg {
 
+// Pure routing predicate (design 2026-11-08 §5.1): the image-page gray
+// waveform decision table. ttfAbsoluteImageGray() (QuickPageRelayout.cpp)
+// feeds it the runtime probes (X3 guard, UC8279 controller, capability); the
+// revert switch and the page's image list decide the first two terms.
+constexpr bool absoluteGrayImageRoute(const bool pageHasImages, const bool qualityTone, const bool deviceIsX3,
+                                      const bool controllerUc8279, const bool absoluteSupported) {
+  return pageHasImages && qualityTone && !deviceIsX3 && controllerUc8279 && absoluteSupported;
+}
+
 // Floyd–Steinberg error diffusion into the 4-level tone (§5.6). Error state
 // runs row-sequentially over IMAGE-LOCAL columns — never absolute panel
 // coordinates — so a completed .pxc encodes the image's tone alone and the
 // placement lives only in the cache identity (parity across worker and
 // foreground decodes, and across placements, follows from this).
+// ToneBake4 (design 2026-11-08 §5.2): the quality path's 4-level tone bake —
+// gamma 2.2 LUT, contrast 1.3 LUT, tuned Floyd–Steinberg diffusion (2048/2560
+// ≈ 0.8) and serpentine scanning. The LUTs are built once at construction
+// (the doc's "no runtime float" is the per-pixel path: pure integer LUT
+// lookups and fixed-point error diffusion); error state runs row-sequentially
+// over IMAGE-LOCAL columns — the FloydSteinberg4 invariant — so placement
+// independence and worker/foreground parity hold by construction.
+//
+// The eink-image reference applies powf(1/gamma) — a BRIGHTENING curve —
+// before dithering (its src/main.rs apply_gamma_correction), not a linear-
+// light decode; the doc §7 constant γ = 22/10 is the exponent's denominator
+// and the doc §5.2 wording is amended to match. Quantization remains
+// nearest-of-{0, 85, 170, 255} in the mapped space — thresholds move with the
+// LUTs, none are hand-picked.
+struct ToneBake4 : ToneBaker {
+  static constexpr int kGammaNum = 22;       // γ = kGammaNum/kGammaDen (§7)
+  static constexpr int kGammaDen = 10;
+  static constexpr int kContrastNum = 13;    // 1.3 (eink-image default), pivot 128
+  static constexpr int kContrastDen = 10;
+  static constexpr int kDiffusionNum = 2048;  // 0.8 in 8.8 fixed point (§7)
+  static constexpr int kDiffusionDen = 2560;
+
+  uint8_t gammaLut[256];
+  uint8_t contrastLut[256];
+  std::unique_ptr<int16_t[]> err;      // error carried into this pixel
+  std::unique_ptr<int16_t[]> errNext;  // error passed to the next row
+  const int width;
+  bool reverse = false;  // serpentine: the current row scans right-to-left
+
+  explicit ToneBake4(const int w) : width(w) {
+    for (int i = 0; i < 256; ++i) {
+      // eink-image's gamma pass: out = round(255 * (i/255)^(1/γ)).
+      const float corrected = powf(static_cast<float>(i) / 255.0f, static_cast<float>(kGammaDen) / kGammaNum);
+      int g = static_cast<int>(corrected * 255.0f + 0.5f);
+      if (g < 0) g = 0;
+      if (g > 255) g = 255;
+      gammaLut[i] = static_cast<uint8_t>(g);
+    }
+    for (int i = 0; i < 256; ++i) {
+      // eink-image's contrast pass as exact integers:
+      // ((v/255 − 1/2)·13/10 + 1/2)·255 = (26·v − 765)/20 — pivot 128 fixed,
+      // endpoints clamp to 0/255.
+      int c = (26 * i - 765) / 20;
+      if (c < 0) c = 0;
+      if (c > 255) c = 255;
+      contrastLut[i] = static_cast<uint8_t>(c);
+    }
+    if (w > 0) {
+      err.reset(new (std::nothrow) int16_t[w + 2]);
+      errNext.reset(new (std::nothrow) int16_t[w + 2]);
+      if (err && errNext) {
+        memset(err.get(), 0, (w + 2) * sizeof(int16_t));
+        memset(errNext.get(), 0, (w + 2) * sizeof(int16_t));
+      }
+    }
+  }
+  bool ok() const { return err != nullptr && errNext != nullptr; }
+
+  // Every Floyd–Steinberg term scales by kDiffusionNum/kDiffusionDen:
+  // (errVal·k·2048)/(16·2560) = errVal·k/20 for k = 7|3|5|1 (§7).
+  int16_t diffuse(const int errVal, const int k) const {
+    return static_cast<int16_t>(errVal * k * kDiffusionNum / (16 * kDiffusionDen));
+  }
+
+  // x is image-local (0-based). Returns the quantized 4-level tone.
+  uint8_t tone(const int x, const int gray) override {
+    const int v = contrastLut[gammaLut[static_cast<uint8_t>(gray)]] + err[x + 1];
+    int t = (v + 42) / 85;  // nearest of {0, 85, 170, 255} in the mapped space
+    if (t < 0) t = 0;
+    if (t > 3) t = 3;
+    const int errVal = v - t * 85;
+    if (!reverse) {
+      // Forward row: 7 right, then 3 below-left, 5 below, 1 below-right.
+      if (x + 1 < width) err[x + 2] += diffuse(errVal, 7);
+      errNext[x] += diffuse(errVal, 3);
+      errNext[x + 1] += diffuse(errVal, 5);
+      errNext[x + 2] += diffuse(errVal, 1);
+    } else {
+      // Mirrored serpentine row: 7 left, then 3 below-right, 5 below,
+      // 1 below-left.
+      if (x > 0) err[x] += diffuse(errVal, 7);
+      errNext[x + 2] += diffuse(errVal, 3);
+      errNext[x + 1] += diffuse(errVal, 5);
+      errNext[x] += diffuse(errVal, 1);
+    }
+    return static_cast<uint8_t>(t);
+  }
+  void nextRow() override {
+    if (err == nullptr || errNext == nullptr) return;
+    memcpy(err.get(), errNext.get(), (width + 2) * sizeof(int16_t));
+    memset(errNext.get(), 0, (width + 2) * sizeof(int16_t));
+    reverse = !reverse;
+  }
+};
+
+// Retained verbatim for A/B on device and as the revert switch's reference
+// bake (design 2026-11-08 §5.2); the quality decodes use ToneBake4.
 struct FloydSteinberg4 {
   std::unique_ptr<int16_t[]> err;      // error carried into this pixel
   std::unique_ptr<int16_t[]> errNext;  // error passed to the next row

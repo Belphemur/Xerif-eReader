@@ -183,14 +183,39 @@ the GIF/BMP converter paths) with a `ToneBake4` that layers, in order:
    (preserving the placement-independence invariant of the 2026-11-07
    design).
 
-Quantization remains nearest-of-{0, 85, 170, 255} in the *linear* space —
-the thresholds move from the sRGB-uniform 85-step to the gamma-corrected
-equivalents via the LUT, so no new thresholds are hand-picked.
+As-built amendment 2026-11-08 (implementation run):
+
+- **Gamma direction.** The cited reference implements the LUT as
+  `round(255·(i/255)^(1/γ))` — a BRIGHTENING curve (eink-image
+  `src/main.rs apply_gamma_correction`), not a linear-light decode with a
+  re-encode. The repo's own disabled gamma precedent
+  (BitmapHelpers.cpp `applyGamma`) is the same direction ("brightens
+  midtones"). ToneBake4 implements the reference formula; γ = 22/10 stays the
+  constants-table value (the exponent is γ⁻¹ = 10/22). Darkening
+  (the literal §5.2.1 wording) would crush shadows against the 0 tone and
+  contradict the reference's documented behavior.
+- **Integer arithmetic.** The LUT build is the bake's only float (two
+  256-entry passes at construction); the contrast LUT is exact rational
+  integer math `((26·v − 765)/20)`, pivot 128; the per-pixel path (LUT
+  lookups + fixed-point diffusion) is integer-only as designed.
+- **Injection.** The GIF converter's inline Floyd–Steinberg duplicate is
+  retired: the converters receive the bake through
+  `RenderConfig::toneBake` (a `ToneBaker` interface in DitherUtils.h), so all
+  four quality decodes call the same `ToneBake4`. A null bake (construction
+  OOM) degrades to the legacy Bayer path, as the converter's OOM path did.
+- **Cache identity.** The quality cache letter moves 'q' → 'r'
+  (TtfImageCache.cpp `kQualityCacheRevision`): the bake change would
+  otherwise re-use tone caches produced by the old quantizer. Stale 'q'
+  files live until the book cache sweep.
+
+Quantization remains nearest-of-{0, 85, 170, 255} in the *mapped* space —
+the thresholds move from the sRGB-uniform 85-step to the LUT-mapped
+equivalents, so no new thresholds are hand-picked.
 
 All four formats' quality paths (SDK JPEG/PNG row bake, GIF converter bake,
 BMP decode bake) call the same `ToneBake4` — one implementation, DRY, no
-per-format forks. The revert switch keeps the old bake available verbatim for
-A/B comparison on device.
+per-format forks. The revert switch keeps the old bake (`FloydSteinberg4`)
+available verbatim for A/B comparison on device.
 
 ### 5.3 SDK PR #40 unresolved threads (gates this feature)
 
@@ -225,11 +250,12 @@ A/B comparison on device.
 
 | Constant | v1 | Where |
 |---|---|---|
-| `TONE_BAKE_GAMMA_NUM/DEN` | 22/10 (γ=2.2) | ToneBake4 LUT build |
-| `TONE_BAKE_DIFFUSION` | 2048/2560 (0.8, 8.8 fixed) | ToneBake4 |
-| `TONE_BAKE_CONTRAST` | 1.3 (eink-image default) as LUT curve | ToneBake4 |
+| `kGammaNum/kGammaDen` | 22/10 (γ=2.2, exponent γ⁻¹ — as-built §5.2) | ToneBake4 LUT build |
+| `kDiffusionNum/kDiffusionDen` | 2048/2560 (0.8, 8.8 fixed) | ToneBake4 |
+| `kContrastNum/kContrastDen` | 13/10 (1.3, eink-image default; pivot 128) | ToneBake4 contrast LUT |
 | Serpentine | enabled | ToneBake4 |
 | Absolute-gray routing | on when `GrayscaleMode::Absolute` supported | display route |
+| `kQualityCacheRevision` | 'r' ('q' = the old bake) | cacheNameFor |
 
 ## 8. Execution plan
 

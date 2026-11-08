@@ -38,7 +38,7 @@ namespace {
 struct RowBakeCtx {
   ttfimg::ToneCacheWriter* cache = nullptr;
   GfxRenderer* paint = nullptr;
-  ttfimg::FloydSteinberg4* bake = nullptr;
+  ttfimg::ToneBake4* bake = nullptr;
   uint8_t* toneRow = nullptr;  // decode-local scratch [width]
   int16_t x = 0;
   int16_t y = 0;
@@ -315,7 +315,7 @@ DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const siz
   const size_t bitsBytes = src.rowBytes;
   PoolBytes bits{poolMakeBytes(bitsBytes ? bitsBytes : 1)};
   PoolBytes gray{poolMakeBytes(srcW + dstW)};  // gray row (srcW) + tone row (dstW) tail
-  ttfimg::FloydSteinberg4 bake(dstW);
+  ttfimg::ToneBake4 bake(dstW);
   if (!bits || !gray || !bake.ok()) {
     writer.abort();
     return DecodeResult::Failed;
@@ -540,7 +540,7 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
     }
     ttfimg::ToneCacheWriter* writerPtr = streamPublishing ? &writer : nullptr;
 
-    ttfimg::FloydSteinberg4 bake(spec.w);
+    ttfimg::ToneBake4 bake(spec.w);
     uint8_t toneRowStack[256];
     uint8_t* toneRow = toneRowStack;
     PoolBytes toneRowHeap;
@@ -605,6 +605,12 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
     config.abortPoll = abortPoll;
     config.abortCtx = abortCtx;
     config.qualityTone = qualityTone;  // GIF bake policy (§5.6)
+    // The shared ToneBake4 (design 2026-11-08 §5.2) — the converter's inline
+    // Floyd–Steinberg duplicate retired into it. A failed bake construction
+    // leaves the hook null: the converter's quality mode needs it and
+    // degrades to the legacy Bayer path.
+    ttfimg::ToneBake4 gifBake(spec.w);
+    config.toneBake = gifBake.ok() ? &gifBake : nullptr;
 
     bool decoded = false;
     bool aborted = false;

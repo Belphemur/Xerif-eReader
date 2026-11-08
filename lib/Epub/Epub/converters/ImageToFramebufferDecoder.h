@@ -1,4 +1,5 @@
 #pragma once
+#include "Epub/converters/DitherUtils.h"
 #include <HalStorage.h>
 
 #include <cstddef>
@@ -87,6 +88,10 @@ struct RenderConfig {
   // 4-level tone. The BITMAP engine never sets this — zero behavior change
   // there; the flag only turns on inside the TTF image decode paths.
   bool qualityTone = false;
+  // The bake the quality path quantizes through (design 2026-11-08 §5.2).
+  // Null keeps the converter's own FS math (the revert switch's verbatim
+  // path); the TTF quality path injects the ttfimg::ToneBake4.
+  ToneBaker* toneBake = nullptr;
 };
 
 class ImageToFramebufferDecoder {
