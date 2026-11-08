@@ -33,6 +33,22 @@ F2 has two candidate origins that must be discriminated, not assumed:
 density; (b) the panel's external-LUT absolute-gray path (UC8279, 5×49) renders rows
 unevenly — outside this design's scope.
 
+**Verified 2026-11-08 (host probes P1–P6, /tmp/pi_ttf_texture_final_report.md):** F1 and
+F2 both reproduce on host with the real `ToneBake4` before any panel LUT is involved.
+Flat 127 bakes a strict 2×2 checkerboard; flat 40 carries 6% white dropout specks; flat
+100 maps to 91 and bakes **100% solid level-1, zero dither** — tone permanently wrong.
+Mechanism: diffusion factor 0.8 discards 20% of each error (`kDiffusionNum/kDiffusionDen`,
+`TtfImageCache.h:65-66`), so small per-pixel errors never cross the next threshold;
+`toneDir` (`TtfImageCache.h:151-174`) quantizes with `t = (v+42)/85`, weights 7/3/5/1
+scaled by 0.8/16 = 1/20. F2: full 240×240 vertical gradient 30→210 shows period-2 row
+alternation — mean |row-to-row delta| 16.6 dots/row vs ideal ~2.0; transition rows
+alternate 0/79 level-2 dots. Cause isolation: serpentine carryover is NOT the cause
+(plain-FS variant still bands, 15.9); `nextRow` (`TtfImageCache.h:189-194`) and the
+phase-1→2 reset (`TtfImageCache.cpp:140-143`) are correct and stateless-clean. The
+horizontal-only mirror variant reduces to ~11.0 but does not eliminate. **Origin: the
+0.8 diffusion factor + 4-level threshold-crossing dynamics.** The §2.3 "panel-side,
+stop" branch does NOT apply.
+
 ## 2. Contract
 
 1. Output tone stays 4-level {0, 85, 170, 255}; the bake stays integer-only end to end.
