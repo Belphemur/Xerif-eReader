@@ -338,6 +338,19 @@ void SdFirmwareUpdateActivity::performUpdate() {
     case ota_install_routing::InstallRoute::DirectWrite: {
       // The target is not the running slot: write it directly (§16 matrix).
       const esp_partition_t* dest = sdTargetIsStable ? ota_slots::stableSlot() : ota_slots::devSlot();
+      if (!dest) {
+        // Same guard as validateFirmware: a board without the classified
+        // slot (single-slot partition table) must fail with an error, not
+        // dereference a null partition.
+        LOG_ERR("FW", "§16 direct write: no target partition available");
+        errorMessage = tr(STR_INVALID_FIRMWARE);
+        {
+          RenderLock lock(*this);
+          state = State::FAILED;
+        }
+        requestUpdate();
+        return;
+      }
       LOG_INF("FW", "§16 direct write → %s", dest->label);
       const auto result =
           firmware_flash::flashFromSdPathInto(firmwarePath.c_str(), dest, progressCb, this,
