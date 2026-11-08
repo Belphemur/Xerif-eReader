@@ -102,11 +102,24 @@ PendingKind pendingInstallKind();
 bool pendingInstallSetDigest(const uint8_t digest[32]);
 bool pendingInstallGetDigest(uint8_t digestOut[32]);
 
+// §16 write-phase latch: the completion pass sets it BEFORE the first erase,
+// so a later boot can tell the TARGET slot may already be partially written.
+// A resume (or in-session failure) that reads the latch true must keep the
+// swap worker selected — unwinding otadata into a half-written slot would
+// boot-loop. Arming a new dance resets the latch.
+bool pendingInstallMarkWriteStarted();
+// False when the latch was never set for this record. TRUE on a read failure
+// (fail-safe: an unreadable latch means the slot may be modified).
+bool pendingInstallWriteStarted();
+
 // Streams `path` once and returns its SHA-256 (the §16 dance identity check:
 // arm-time consent record and completion-time re-verification). False when the
 // file cannot be opened or a read fails mid-stream.
 bool sha256OfFile(const char* path, uint8_t out[32]);
 
-void pendingInstallClear();
+// Erases every pending-install key (payload, kind, digest, write latch) and
+// verifies the record is gone. False when the record may still be armed: a
+// dance reported as disarmed MUST NOT leave a request resumable.
+bool pendingInstallClear();
 
 }  // namespace dev_ota

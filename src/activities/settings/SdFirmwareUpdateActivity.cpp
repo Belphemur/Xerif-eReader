@@ -61,6 +61,25 @@ void SdFirmwareUpdateActivity::onEnter() {
             sdTargetIsStable ? "stable" : "dev", dancePath);
     firmwarePath = dancePath;
 
+    // §16 write-phase latch: the previous attempt may already have started
+    // writing the TARGET slot (power loss after the latch was set). Unwinding
+    // otadata into a half-written slot would boot-loop — keep the worker
+    // selected (it is already running), disarm the record and drop the staged
+    // file so the user can retry the install from scratch.
+    if (dev_ota::pendingInstallWriteStarted()) {
+      LOG_ERR("FW", "autoResume: the previous attempt already wrote the target; keeping the worker");
+      const bool staged = kind == dev_ota::PendingKind::StableStaged;
+      dev_ota::pendingInstallClear();
+      if (staged) Storage.remove(firmwarePath.c_str());
+      {
+        RenderLock lock(*this);
+        errorMessage = tr(STR_FIRMWARE_WRITE_FAILED);
+        state = State::FAILED;
+      }
+      requestUpdate();
+      return;
+    }
+
     // Battery gate for the unattended completion pass (the §5 dance's rule):
     // a brownout mid-write can corrupt the TARGET slot. A resumed install
     // that fails here must not leave the flag armed — every boot would
@@ -131,6 +150,10 @@ void SdFirmwareUpdateActivity::onEnter() {
       // skip the comparison.
       resumeDigestExpected_ = true;
     }
+    // §16 write-phase latch: set before the first erase so any later boot (or
+    // failure below) knows the TARGET slot may be modified and must never be
+    // selected by an unwind.
+    dev_ota::pendingInstallMarkWriteStarted();
     // The completion pass paints the same uninterruptible-flash UI as the
     // interactive confirmation path: progress bar + do-not-power-off line.
     // Staying in VALIDATING would repaint that static line for the whole
@@ -461,7 +484,9 @@ void SdFirmwareUpdateActivity::finishFlash(const firmware_flash::Result result) 
     // drop the staged file so no boot re-enters the installer.
     LOG_ERR("FW", "flashed bytes differ from the consented digest; keeping the worker");
     const bool staged = dev_ota::pendingInstallKind() == dev_ota::PendingKind::StableStaged;
-    dev_ota::pendingInstallClear();
+    if (!dev_ota::pendingInstallClear()) {
+      LOG_ERR("FW", "pending-install clear failed; the record stays armed (resume re-checks the digest)");
+    }
     if (staged) Storage.remove(firmwarePath.c_str());
     errorMessage = tr(STR_OTA_FILE_CHANGED);
     {
@@ -482,9 +507,19 @@ void SdFirmwareUpdateActivity::finishFlash(const firmware_flash::Result result) 
     if (autoResume) {
       // A failed completion pass must not leave the flag armed: every boot
       // would re-enter the installer (the same no-retry-loop rule as the
-      // §5 dance's failure paths). Unwind fully: otadata back to the target
-      // slot and the staged file removed.
-      unwindDance();
+      // §5 dance's failure paths). With the write-phase latch set, the TARGET
+      // slot may be partially or fully written — unwinding otadata to it
+      // would boot-loop. Keep the healthy worker selected and disarm the
+      // record (the DIGEST_MISMATCH rule). Without the latch the failure is
+      // strictly pre-write (validation phase) and the full unwind stays safe.
+      if (dev_ota::pendingInstallWriteStarted()) {
+        LOG_ERR("FW", "§16 post-write failure: keeping the worker selected");
+        const bool staged = dev_ota::pendingInstallKind() == dev_ota::PendingKind::StableStaged;
+        dev_ota::pendingInstallClear();
+        if (staged) Storage.remove(firmwarePath.c_str());
+      } else {
+        unwindDance();
+      }
     }
     RenderLock lock(*this);
     state = State::FAILED;
@@ -499,7 +534,9 @@ void SdFirmwareUpdateActivity::finishFlash(const firmware_flash::Result result) 
     // install also drops its 5 MB staging file here; a user-picked file is
     // never removed.
     const bool staged = dev_ota::pendingInstallKind() == dev_ota::PendingKind::StableStaged;
-    dev_ota::pendingInstallClear();
+    if (!dev_ota::pendingInstallClear()) {
+      LOG_ERR("FW", "pending-install clear failed; the record stays armed (the target booted and is valid)");
+    }
     if (staged) Storage.remove(firmwarePath.c_str());
   }
   {

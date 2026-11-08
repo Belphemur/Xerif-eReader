@@ -32,6 +32,7 @@ constexpr char NVS_NAMESPACE[] = "devota";
 constexpr char NVS_PENDING_KEY[] = "pend";
 constexpr char NVS_PENDING_KIND_KEY[] = "pendk";
 constexpr char NVS_PENDING_DIGEST_KEY[] = "pendd";
+constexpr char NVS_PENDING_WRITE_KEY[] = "pendw";
 
 // SHA-256 of the file at `path`, streamed in 4 KiB chunks. False on open or
 // read failure.
@@ -83,6 +84,27 @@ bool pendingInstallGetDigest(uint8_t digestOut[32]) {
   const esp_err_t err = nvs_get_blob(handle, NVS_PENDING_DIGEST_KEY, digestOut, &stored);
   nvs_close(handle);
   return err == ESP_OK && stored == 32;
+}
+
+bool pendingInstallMarkWriteStarted() {
+  nvs_handle_t handle;
+  if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) return false;
+  const bool ok = nvs_set_u8(handle, NVS_PENDING_WRITE_KEY, 1) == ESP_OK && nvs_commit(handle) == ESP_OK;
+  nvs_close(handle);
+  if (!ok) LOG_ERR("DEVOTA", "write-phase latch write failed");
+  return ok;
+}
+
+bool pendingInstallWriteStarted() {
+  nvs_handle_t handle;
+  if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
+    // Fail-safe: an unreadable latch means the slot may be modified.
+    return true;
+  }
+  uint8_t stored = 0;
+  const esp_err_t err = nvs_get_u8(handle, NVS_PENDING_WRITE_KEY, &stored);
+  nvs_close(handle);
+  return err != ESP_ERR_NVS_NOT_FOUND && (err != ESP_OK || stored != 0);
 }
 
 Error fetchDevManifest(OtaDevVersionEntry* entries, int maxEntries, int* outCount) {
@@ -212,6 +234,7 @@ bool pendingInstallGet(char* versionOut, size_t cap) {
 bool pendingInstallSet(const char* version) {
   nvs_handle_t handle;
   if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) return false;
+  nvs_erase_key(handle, NVS_PENDING_WRITE_KEY);
   const bool ok =
       nvs_set_str(handle, NVS_PENDING_KEY, version ? version : "") == ESP_OK && nvs_commit(handle) == ESP_OK;
   nvs_close(handle);
@@ -222,6 +245,9 @@ bool pendingInstallSet(const char* version) {
 bool pendingInstallSet(const char* payload, const PendingKind kind) {
   nvs_handle_t handle;
   if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) return false;
+  // A fresh record is not mid-write: clear any latch a previous aborted
+  // dance left behind before stamping the new one.
+  nvs_erase_key(handle, NVS_PENDING_WRITE_KEY);
   const bool ok = nvs_set_str(handle, NVS_PENDING_KEY, payload ? payload : "") == ESP_OK &&
                   nvs_set_u8(handle, NVS_PENDING_KIND_KEY, static_cast<uint8_t>(kind)) == ESP_OK &&
                   nvs_commit(handle) == ESP_OK;
@@ -245,14 +271,25 @@ PendingKind pendingInstallKind() {
                                                                    : PendingKind::DevChannel;
 }
 
-void pendingInstallClear() {
+bool pendingInstallClear() {
   nvs_handle_t handle;
-  if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) return;
+  if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
+    LOG_ERR("DEVOTA", "pending-install clear: nvs_open failed");
+    return false;
+  }
   nvs_erase_key(handle, NVS_PENDING_KEY);
   nvs_erase_key(handle, NVS_PENDING_KIND_KEY);
   nvs_erase_key(handle, NVS_PENDING_DIGEST_KEY);
-  nvs_commit(handle);
+  nvs_erase_key(handle, NVS_PENDING_WRITE_KEY);
+  const bool ok = nvs_commit(handle) == ESP_OK;
   nvs_close(handle);
+  if (!ok) {
+    LOG_ERR("DEVOTA", "pending-install clear: commit failed; record may still be armed");
+    return false;
+  }
+  // Verify: the disarm only counts when nothing readable remains.
+  char payload[dev_ota::kPendingPayloadCap];
+  return !pendingInstallGet(payload, sizeof(payload));
 }
 
 }  // namespace dev_ota
