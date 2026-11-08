@@ -221,7 +221,7 @@ jobs:
         run: |
           set -euo pipefail
           asset="xerif-pr-${PR_NUMBER}-${SHORT_SHA}-x4pro.bin"
-          mv artifact/firmware-x4pro.bin "${asset}"
+          mv artifact/firmware.bin "${asset}"
 
           if ! gh release view dev --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create dev \
