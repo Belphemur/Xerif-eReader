@@ -39,15 +39,17 @@ bool parseOtaManifest(const char* data, size_t len, ManifestBoardEntry* entries,
 // overflow-truncated strings like the rest of this module.
 struct OtaDevVersionEntry {
   bool hasSha = false;
-  char name[64] = {0};  // asset file name, e.g. "xerif-dev-<sha>-x4pro.bin"
-  char url[192] = {0};  // browser_download_url
-  char date[32] = {0};  // build date (ISO 8601), display only
+  char name[64] = {0};     // asset file name, e.g. "xerif-dev-<sha>-x4pro.bin"
+  char url[192] = {0};     // browser_download_url
+  char version[48] = {0};  // stamped firmware version; empty when absent (older manifests, PR entries)
+  char date[32] = {0};     // build date (ISO 8601), display only
   uint8_t sha256[32] = {0};
 };
 
-// Parse the dev channel's manifest.json ({"versions":[{name,url,sha256,date},...]
-// in newest-first order). Returns false on malformed JSON or null required
-// arguments; entries beyond `maxEntries` are dropped.
+// Parse the dev channel's manifest.json ({"versions":[{name,url,sha256,date[,version]},...]
+// in newest-first order). `version` is the stamped firmware version and is
+// optional: older manifests and PR entries omit it. Returns false on
+// malformed JSON or null required arguments; entries beyond `maxEntries` are dropped.
 bool parseOtaDevManifest(const char* data, size_t len, OtaDevVersionEntry* entries, int maxEntries, int* outCount);
 
 // True when `latestTag` (GitHub release tag, e.g. "v1.9.0") is newer than

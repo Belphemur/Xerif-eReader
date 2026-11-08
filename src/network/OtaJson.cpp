@@ -107,6 +107,7 @@ bool parseOtaDevManifest(const char* data, size_t len, OtaDevVersionEntry* entri
     e = OtaDevVersionEntry{};
     copyStr(version["name"] | "", e.name, sizeof(e.name));
     copyStr(version["url"] | "", e.url, sizeof(e.url));
+    copyStr(version["version"] | "", e.version, sizeof(e.version));
     copyStr(version["date"] | "", e.date, sizeof(e.date));
     e.hasSha = decodeSha256Hex(version["sha256"] | "", e.sha256);
     ++n;

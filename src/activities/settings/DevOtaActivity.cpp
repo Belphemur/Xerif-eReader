@@ -65,6 +65,17 @@ bool compactDevDate(const char* iso, char* out, size_t cap) {
   return true;
 }
 
+// Row/confirm label: the stamped version when the manifest carries one (build
+// identity), else the compact "dev <sha>" label, else the raw asset name
+// (older manifests, PR entries).
+void rowLabel(const OtaDevVersionEntry& entry, char* out, size_t cap) {
+  if (entry.version[0]) {
+    snprintf(out, cap, "%s", entry.version);
+  } else if (!devNameLabel(entry.name, out, cap)) {
+    snprintf(out, cap, "%s", entry.name);
+  }
+}
+
 const char* describeDevError(const dev_ota::Error err) {
   switch (err) {
     case dev_ota::Error::SHA_MISMATCH:
@@ -177,10 +188,8 @@ void DevOtaActivity::promptInstall(const int index) {
   if (index < 0 || index >= entries.count) return;
   selectedIndex = index;
 
-  char label[40];
-  if (!devNameLabel(entries.items[index].name, label, sizeof(label))) {
-    snprintf(label, sizeof(label), "%s", entries.items[index].name);
-  }
+  char label[48];
+  rowLabel(entries.items[index], label, sizeof(label));
   const char* options[] = {tr(STR_CANCEL), tr(STR_INSTALL)};
   // Default is Cancel: a stray confirm press must never land on Install.
   confirmPopup.show(tr(STR_DEV_INSTALL_PROMPT), label, options, 2, 0, [this, index](const int idx) {
@@ -459,10 +468,8 @@ void DevOtaActivity::render(RenderLock&&) {
     fui::Rect rowRects[dev_ota::kMaxVersions];
     int rowCount = 0;
     for (int i = 0; i < entries.count; ++i) {
-      char label[40];
-      if (!devNameLabel(entries.items[i].name, label, sizeof(label))) {
-        snprintf(label, sizeof(label), "%s", entries.items[i].name);
-      }
+      char label[48];
+      rowLabel(entries.items[i], label, sizeof(label));
       // The selection outline is the row rect itself: the hit band registered
       // below is this exact rectangle, so the tap target never drifts.
       if (i == selectedIndex) {
@@ -475,7 +482,10 @@ void DevOtaActivity::render(RenderLock&&) {
       if (compactDevDate(entries.items[i].date, compact, sizeof(compact))) {
         const int dateX = pageWidth - side - renderer.getTextWidth(rowFont, compact);
         // Right-align the compact timestamp; drop it rather than overprint
-        // the label on a narrow screen.
+        // the label on a narrow screen. Measured (UI_12 medium): a 28-char
+        // version label is 352 px and the date 132 px, so a 480 px portrait
+        // row (440 px usable) cannot hold both — the version wins (identity
+        // beats the build instant); landscape's 760 px row keeps the date.
         if (dateX > side + renderer.getTextWidth(rowFont, label) + 4) {
           renderer.drawText(rowFont, dateX, textY, compact);
         }

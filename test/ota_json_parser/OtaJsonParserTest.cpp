@@ -636,3 +636,41 @@ TEST(OtaDevManifestParse, MissingFieldsLeaveEmptyStrings) {
   EXPECT_EQ(entries[0].date[0], '\0');
   EXPECT_FALSE(entries[0].hasSha);
 }
+
+TEST(OtaDevManifestParse, VersionFieldParsedWhenPresent) {
+  constexpr char kVersioned[] =
+      R"({"versions": [{"name": "xerif-dev-0123456789abcdef0123456789abcdef01234567-x4pro.bin", "url": "https://x/a.bin", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "date": "2026-11-07T12:00:00Z", "version": "2.14.0-dev-develop-32c5038a4"}]})";
+  OtaDevVersionEntry entries[3];
+  int count = -1;
+
+  ASSERT_TRUE(parseOtaDevManifest(kVersioned, strlen(kVersioned), entries, 3, &count));
+  ASSERT_EQ(count, 1);
+  EXPECT_STREQ(entries[0].version, "2.14.0-dev-develop-32c5038a4");
+}
+
+TEST(OtaDevManifestParse, AbsentVersionFieldLeavesEmptyForNameFallback) {
+  // kDevManifest carries no version field (older-manifest shape): the device
+  // falls back to the asset name for such rows.
+  OtaDevVersionEntry entries[3];
+  int count = -1;
+
+  ASSERT_TRUE(parseOtaDevManifest(kDevManifest, strlen(kDevManifest), entries, 3, &count));
+  ASSERT_EQ(count, 2);
+  EXPECT_EQ(entries[0].version[0], '\0');
+  EXPECT_EQ(entries[1].version[0], '\0');
+}
+
+TEST(OtaDevManifestParse, OverlongVersionClampsToFieldCapacity) {
+  std::string json = R"({"versions": [{"name": "a.bin", "url": "https://x/a.bin", "version": ")";
+  json += std::string(60, 'a');  // over version[48]
+  json += R"("}]})";
+  OtaDevVersionEntry entries[3];
+  int count = -1;
+
+  ASSERT_TRUE(parseOtaDevManifest(json.c_str(), json.size(), entries, 3, &count));
+  ASSERT_EQ(count, 1);
+  EXPECT_EQ(strlen(entries[0].version), sizeof(entries[0].version) - 1);
+  for (size_t i = 0; i < sizeof(entries[0].version) - 1; ++i) {
+    EXPECT_EQ(entries[0].version[i], 'a');
+  }
+}
