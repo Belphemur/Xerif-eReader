@@ -134,3 +134,111 @@ jobs:
                 body,
               });
             }
+
+  # PR firmware publish lane (design docs/design/2026-11-08-dev-ota-pr-firmware.md):
+  # after the comment job updates the artifact links, this run's x4pro build is
+  # uploaded to the rolling `dev` prerelease and manifest.json is republished.
+  # Bot-authored PRs skip silently (D2: no asset upload, no manifest write).
+  publish-pr-firmware:
+    needs: update-comment
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
+    concurrency:
+      # Shared repo-wide publication lane (D6): publishers wait on each other;
+      # the PR delete lane (pr-dev-cleanup.yml) is what cancels in progress.
+      group: dev-release-manifest
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Resolve the pull request and apply the bot filter
+        id: gate
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const { owner, repo } = context.repo;
+
+            const headOwner = run.head_repository?.owner?.login;
+            if (!headOwner) return;
+
+            const { data: pullRequests } = await github.rest.pulls.list({
+              owner,
+              repo,
+              head: `${headOwner}:${run.head_branch}`,
+              state: 'open',
+              per_page: 100,
+            });
+            const associatedPullRequest = pullRequests.find(
+              (pr) => pr.head.sha === run.head_sha,
+            );
+            if (!associatedPullRequest) return;
+
+            // D2: an author login containing "bot" (case-insensitive) skips
+            // the publish lane silently — no asset, no manifest change.
+            const author = (associatedPullRequest.user?.login || '').toLowerCase();
+            if (author.includes('bot')) return;
+
+            core.setOutput('publish', 'true');
+            core.setOutput('pr_number', String(associatedPullRequest.number));
+            core.setOutput('short_sha', run.head_sha.slice(0, 7));
+
+      - uses: actions/checkout@v7
+        if: steps.gate.outputs.publish == 'true'
+        with:
+          persist-credentials: false
+
+      - name: Stage the previous manifest for sha256 reuse
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p carry
+          gh release download dev --repo "$GITHUB_REPOSITORY" --dir carry \
+            --pattern 'manifest.json' --clobber \
+            || echo "no prior manifest.json on the dev release"
+
+      - name: Download the x4pro firmware artifact
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh run download "${{ github.event.workflow_run.id }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name firmware-x4pro.bin \
+            --dir artifact
+
+      - name: Upload PR firmware, then regenerate and upload the manifest last
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
+          SHORT_SHA: ${{ steps.gate.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          asset="xerif-pr-${PR_NUMBER}-${SHORT_SHA}-x4pro.bin"
+          mv artifact/firmware-x4pro.bin "${asset}"
+
+          if ! gh release view dev --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create dev \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --prerelease \
+              --title "Dev builds (rolling)" \
+              --notes "Rolling dev channel: the newest x4pro builds from develop and open pull requests. Install from Settings > Dev channel on a dev build; unsigned manifest, SHA-256 pinned."
+          fi
+
+          # Atomic-publish invariant (D7): the asset goes up first; the
+          # manifest is then regenerated from the release's actual assets and
+          # uploaded last, so a failed manifest upload leaves the previous
+          # manifest live.
+          gh release upload dev --repo "$GITHUB_REPOSITORY" --clobber "${asset}"
+          python3 .github/workflows/generate_dev_manifest.py \
+            --out manifest.json \
+            --prior carry/manifest.json \
+            --local .
+          gh release upload dev --repo "$GITHUB_REPOSITORY" --clobber manifest.json

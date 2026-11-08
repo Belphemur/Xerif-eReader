@@ -15,7 +15,8 @@ This design adds: **open PRs get firmware on the same `dev` prerelease**, so a
 candidate patch is installable from the device's Dev channel UI. Constraints:
 
 - Only PRs **not opened by a bot** (author login contains "bot" case-insensitively
-  → skip entirely, no publish, no comment change).
+  → the publish lane skips silently: no asset upload, no manifest write; the
+  artifact-links comment is unaffected).
 - When the PR is **closed for any reason**, that PR's firmware is removed from the
   prerelease and its manifest entries are dropped.
 - Fixed cap: **latest-per-PR, N=6** PR entries in the device list (newest first).
@@ -79,10 +80,11 @@ candidate patch is installable from the device's Dev channel UI. Constraints:
 
 ### 4.4 Manifest generation (shared)
 
-The generation logic must be identical in all three workflows. The
-manifest is rebuilt from the current release assets each time (develop builds +
-PR builds, newest first, cap 4096 bytes), so the device list always reflects the
-prerelease's actual assets. The dev-build.yml manifest step's `keep = 3` cap
+The generation logic must be identical in all three workflows; it is
+implemented once as `.github/workflows/generate_dev_manifest.py`, invoked by all
+three. The manifest is rebuilt from the current release assets each time
+(develop builds + PR builds, newest first, cap 4096 bytes), so the device list
+always reflects the prerelease's actual assets. The dev-build.yml manifest step's `keep = 3` cap
 applies to develop builds only; PR entries are kept separately up to the N=6
 window.
 
