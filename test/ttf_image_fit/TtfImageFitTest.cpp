@@ -803,16 +803,18 @@ void expectReadFailureStillPaints(const int failReadAtCall, const int failOpenFo
   FakeRenderer r;
   auto& storage = HalStorage::getInstance();
   storage.files.clear();
-  HalFile::failReadAtCall = failReadAtCall;
-  HalFile::readCallCount = 0;
-  storage.failOpenForReadAtCall = failOpenForReadAtCall;
-  storage.openForReadCallCount = 0;
 
   ttfimg::ImageSpec spec = makeSpec(20, 600, 32, 24);
   snprintf(spec.href, sizeof(spec.href), "OEBPS/images/small.bmp");
   spec.generation = 13;
   char cachePath[256];
   ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, cachePath, sizeof(cachePath)));
+  // Arm the injections only after the last ASSERT: a failing ASSERT returns
+  // early, and leaked injections would fail every later ImageFit* test.
+  HalFile::failReadAtCall = failReadAtCall;
+  HalFile::readCallCount = 0;
+  storage.failOpenForReadAtCall = failOpenForReadAtCall;
+  storage.openForReadCallCount = 0;
   const auto res = ttfimg::decodeAndCache(spec, cachePath, source, book.zip(), scratch, &epub, &r, true, true, nullptr,
                                           nullptr, true);
   HalFile::failReadAtCall = 0;
