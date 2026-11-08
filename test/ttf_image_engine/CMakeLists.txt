@@ -11,6 +11,9 @@ target_include_directories(TtfImageEngineTest PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/stubs
   ${REPO_ROOT}/src/activities/reader
   ${REPO_ROOT}/lib/Epub/Epub
+  # TtfImageCache.h's DitherUtils.h include uses the firmware's "Epub/..."
+  # prefix (lib/Epub on the include path).
+  ${REPO_ROOT}/lib/Epub
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/include
   ${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont/include
 )

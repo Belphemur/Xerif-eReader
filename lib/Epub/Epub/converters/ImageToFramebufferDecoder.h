@@ -7,6 +7,8 @@
 #include <memory>
 #include <string>
 
+#include "Epub/converters/DitherUtils.h"
+
 class GfxRenderer;
 
 // Read-only, seekable view over a memory buffer (PSRAM pool buffer on PSRAM
@@ -87,6 +89,12 @@ struct RenderConfig {
   // 4-level tone. The BITMAP engine never sets this — zero behavior change
   // there; the flag only turns on inside the TTF image decode paths.
   bool qualityTone = false;
+  // The bake the quality path quantizes through (design 2026-11-08 §5.2).
+  // Null with qualityTone set: the converter falls back to nearest + Bayer
+  // (the legacy dither) — no per-converter error-diffusion bake exists.
+  // The TTF quality path injects ttfimg::ToneBake4; the revert switch
+  // (qualityTone false) never reaches the converters (decodeAndCache Skip).
+  ToneBaker* toneBake = nullptr;
 };
 
 class ImageToFramebufferDecoder {

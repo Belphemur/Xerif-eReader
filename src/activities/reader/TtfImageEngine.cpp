@@ -38,7 +38,7 @@ namespace {
 struct RowBakeCtx {
   ttfimg::ToneCacheWriter* cache = nullptr;
   GfxRenderer* paint = nullptr;
-  ttfimg::FloydSteinberg4* bake = nullptr;
+  ttfimg::ToneBake4* bake = nullptr;
   uint8_t* toneRow = nullptr;  // decode-local scratch [width]
   int16_t x = 0;
   int16_t y = 0;
@@ -68,10 +68,11 @@ bool rowBakeFn(void* user, const uint16_t rowIdx, const uint8_t* grayRow, const 
     ctx->aborted = true;
     return false;
   }
-  for (uint16_t x = 0; x < width; ++x) {
-    ctx->toneRow[x] = ctx->bake->tone(static_cast<int>(x), grayRow[x]);
-  }
-  ctx->bake->nextRow();
+  // Serpentine row bake: the bake visits the row in its own scan direction
+  // and advances the error state (the per-pixel loop + nextRow it replaces
+  // cannot honor the direction). toneRow is byte-exact with the device bake
+  // (cache 'r' identity).
+  ctx->bake->toneRow(grayRow, ctx->toneRow);
   // A missing writer (cache open failed, uncached paint) must not reject the
   // row — the rows still paint through the target renderer below.
   if (ctx->cache != nullptr && !ctx->cache->writeRow(ctx->toneRow)) {
@@ -314,14 +315,15 @@ DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const siz
   }
   const size_t bitsBytes = src.rowBytes;
   PoolBytes bits{poolMakeBytes(bitsBytes ? bitsBytes : 1)};
-  PoolBytes gray{poolMakeBytes(srcW + dstW)};  // gray row (srcW) + tone row (dstW) tail
-  ttfimg::FloydSteinberg4 bake(dstW);
+  PoolBytes gray{poolMakeBytes(srcW + 2 * static_cast<size_t>(dstW))};  // gray (srcW) + averaged (dstW) + tone (dstW)
+  ttfimg::ToneBake4 bake(dstW);
   if (!bits || !gray || !bake.ok()) {
     writer.abort();
     return DecodeResult::Failed;
   }
   uint8_t* grayRow = gray.get();
-  uint8_t* toneRow = grayRow + srcW;
+  uint8_t* avgRow = grayRow + srcW;
+  uint8_t* toneRow = avgRow + dstW;
 
   std::unique_ptr<uint32_t[]> sums;
   std::unique_ptr<uint16_t[]> counts;
@@ -383,39 +385,24 @@ DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const siz
           }
         }
       } else {
-        // Nearest otherwise (the converter family's today-behavior).
+        // Nearest otherwise (the converter family's today-behavior): collect
+        // the sampled luma; the row bakes once, below the source-row loop.
         for (int dstX = 0; dstX < dstW; ++dstX) {
           int srcX = dstX * srcW / dstW;
           if (srcX > srcW - 1) srcX = srcW - 1;
-          toneRow[dstX] = bake.tone(dstX, grayRow[srcX]);
+          avgRow[dstX] = grayRow[srcX];
         }
-        bake.nextRow();
-        if (writerActive && !writer.writeRow(toneRow)) {
-          // Storage failure mid-stream: drop the cache, keep painting.
-          writer.abort();
-          writerActive = false;
-        }
-        if (paint != nullptr) {
-          const int outY = spec.y + dstY;
-          if (paintRowOnScreen(*paint, outY)) {
-            DirectPixelWriter pw;
-            pw.init(*paint);
-            pw.beginRow(outY);
-            for (int col = 0; col < dstW; ++col) {
-              const int outX = spec.x + col;
-              if (paintColOnScreen(*paint, outX)) pw.writePixel(outX, toneRow[col]);
-            }
-          }
-        }
-        continue;
       }
     }
-    if (!areaScale) continue;  // row already written by the nearest branch
-    for (int dstX = 0; dstX < dstW; ++dstX) {
-      const uint32_t avg = counts[dstX] != 0 ? sums[dstX] / counts[dstX] : 0;
-      toneRow[dstX] = bake.tone(dstX, static_cast<int>(avg > 255 ? 255 : avg));
+    if (areaScale) {
+      for (int dstX = 0; dstX < dstW; ++dstX) {
+        const uint32_t avg = counts[dstX] != 0 ? sums[dstX] / counts[dstX] : 0;
+        avgRow[dstX] = static_cast<uint8_t>(avg > 255 ? 255 : avg);
+      }
     }
-    bake.nextRow();
+    // Serpentine row bake: the bake visits the row in its own scan direction
+    // and advances the error state (toneRow contract, design §5.2).
+    bake.toneRow(avgRow, toneRow);
     if (writerActive && !writer.writeRow(toneRow)) {
       writer.abort();
       writerActive = false;
@@ -492,7 +479,8 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
                             const freeink::book::ZipCatalog& zip, freeink::book::Arena& scratch, Epub* epub,
                             GfxRenderer* paint, const bool qualityTone, const bool caching,
                             bool (*abortPoll)(void* ctx), void* abortCtx, const bool paintToTarget) {
-  const ZipEntry* entry = zip.find(spec.href);
+  const char* const href = (spec.hrefExt != nullptr && spec.hrefExt[0] != '\0') ? spec.hrefExt : spec.href;
+  const ZipEntry* entry = zip.find(href);
   if (entry == nullptr) return DecodeResult::Skip;
 
   // Atomic publish: every writer streams to "<cachePath>.t" and the engine
@@ -511,7 +499,7 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
   if (probe != BookStatus::Ok) return DecodeResult::Failed;
 
   freeink::book::PageImage sdkImage{};
-  sdkImage.href = spec.href;
+  sdkImage.href = href;
   sdkImage.x = spec.x;
   sdkImage.y = spec.y;
   sdkImage.width = static_cast<uint16_t>(spec.w);
@@ -540,7 +528,7 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
     }
     ttfimg::ToneCacheWriter* writerPtr = streamPublishing ? &writer : nullptr;
 
-    ttfimg::FloydSteinberg4 bake(spec.w);
+    ttfimg::ToneBake4 bake(spec.w);
     uint8_t toneRowStack[256];
     uint8_t* toneRow = toneRowStack;
     PoolBytes toneRowHeap;
@@ -584,9 +572,9 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
     if (epub == nullptr || paint == nullptr) return DecodeResult::Failed;
 
     size_t imageSize = 0;
-    PoolBytes image{epub->extractItemToPsram(spec.href, &imageSize)};
+    PoolBytes image{epub->extractItemToPsram(href, &imageSize)};
     if (!image) {
-      LOG_ERR("TIMGE", "PSRAM extraction failed: %s", spec.href);
+      LOG_ERR("TIMGE", "PSRAM extraction failed: %s", href);
       return DecodeResult::Failed;
     }
 
@@ -613,6 +601,14 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
       // identified this GIF from its bytes, so a mismatched or extensionless
       // href must still reach the GIF converter (it would otherwise get no
       // decoder and stay blank).
+      // The shared ToneBake4 (design 2026-11-08 §5.2) — the converter's
+      // inline Floyd–Steinberg duplicate retired into it. A failed bake
+      // construction leaves the hook null: the converter's quality mode
+      // needs it and degrades to the legacy Bayer path. Scoped to the GIF
+      // branch: a BMP decode must not carry two unused error buffers under
+      // heap pressure (review round 2).
+      ttfimg::ToneBake4 gifBake(spec.w);
+      config.toneBake = gifBake.ok() ? &gifBake : nullptr;
       AbortTracker tracker{abortPoll, abortCtx};
       config.abortPoll = &trackAbort;
       config.abortCtx = &tracker;

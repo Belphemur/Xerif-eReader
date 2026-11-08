@@ -354,6 +354,14 @@ class EpubReaderActivity final : public ReaderActivity {
                            size_t scratchMark);
   void renderTtfGrayFullFrame(const freeink::book::Page& page, const freeink::book::LayoutParams& params,
                               size_t scratchMark);
+  // Image pages on absolute-capable panels (design 2026-11-08 §5.1): the
+  // legacy reader's absolute arm over the TTF paint — base display, then a
+  // two-pass plane walk of the page content, no DUAL targets (the engine's
+  // FrameTarget can only write the framebuffer; the framebuffer IS each
+  // pass's plane source). Falls back to the B/W display when the driver or
+  // the BW buffer refuses.
+  void renderTtfImageGrayAbsolute(const freeink::book::Page& page, const freeink::book::LayoutParams& params,
+                                  size_t scratchMark);
   // Rasterizes an engine page through the active render mode (gray parity or
   // 1bpp): text + rubies + rules + images/placeholder. Shared by the reader's
   // own page render and the TTF dictionary selector's repaint hook.

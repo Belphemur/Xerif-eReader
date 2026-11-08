@@ -39,17 +39,21 @@ struct GifContext {
   bool success{true};
   uint32_t lastYieldMs{0};
   // Quality tone mode (RenderConfig::qualityTone): area-averaged downscale
-  // + Floyd–Steinberg 4-level bake instead of nearest + Bayer. Allocation
-  // failure silently falls back to the legacy path.
+  // + the injected ToneBaker (RenderConfig::toneBake — the shared bake,
+  // design 2026-11-08 §5.2) instead of nearest + Bayer. Allocation failure
+  // or a missing bake silently falls back to the legacy path.
   bool quality{false};
   std::unique_ptr<uint32_t[]> qSums;    // [dstWidth] gray accumulation
   std::unique_ptr<uint16_t[]> qCounts;  // [dstWidth] samples per column
-  std::unique_ptr<int16_t[]> qErr;      // [dstWidth+2] FS error, current row
-  std::unique_ptr<int16_t[]> qErrNext;  // [dstWidth+2] FS error, next row
+  std::unique_ptr<uint8_t[]> qGrayRow;  // [dstWidth] averaged luma handed to the bake
   std::unique_ptr<uint8_t[]> qToneRow;  // [dstWidth] baked 4-level tones
+  ToneBaker* bake{nullptr};             // not owned; from RenderConfig::toneBake
   int qAccumDstY = -1;                  // dst row currently accumulating (-1 = none)
   int qFlushedRows = 0;                 // next destination row to bake (in order)
 };
+
+// Retired inline Floyd–Steinberg (qToneAt/qNextErrorRow): the bake comes from
+// RenderConfig::toneBake so all four quality decodes share one implementation.
 
 void updateGrayPalette(const GIFDRAW* pDraw, GifContext& ctx) {
   const uint8_t* palette24 = pDraw->pPalette24;
@@ -67,30 +71,6 @@ void updateGrayPalette(const GIFDRAW* pDraw, GifContext& ctx) {
 void qResetAccum(GifContext& ctx) {
   memset(ctx.qSums.get(), 0, static_cast<size_t>(ctx.dstWidth) * sizeof(uint32_t));
   memset(ctx.qCounts.get(), 0, static_cast<size_t>(ctx.dstWidth) * sizeof(uint16_t));
-}
-
-void qSeedError(GifContext& ctx) {
-  memset(ctx.qErr.get(), 0, (static_cast<size_t>(ctx.dstWidth) + 2) * sizeof(int16_t));
-  memset(ctx.qErrNext.get(), 0, (static_cast<size_t>(ctx.dstWidth) + 2) * sizeof(int16_t));
-}
-
-uint8_t qToneAt(GifContext& ctx, const int x, const int gray) {
-  // Floyd–Steinberg into the 4-level tone; x is destination-local.
-  const int v = gray + ctx.qErr[x + 1];
-  int tone = (v + 42) / 85;
-  if (tone < 0) tone = 0;
-  if (tone > 3) tone = 3;
-  const int errVal = v - tone * 85;
-  if (x + 1 < ctx.dstWidth) ctx.qErr[x + 2] += static_cast<int16_t>(errVal * 7 / 16);
-  ctx.qErrNext[x] += static_cast<int16_t>(errVal * 3 / 16);
-  ctx.qErrNext[x + 1] += static_cast<int16_t>(errVal * 5 / 16);
-  ctx.qErrNext[x + 2] += static_cast<int16_t>(errVal * 1 / 16);
-  return static_cast<uint8_t>(tone);
-}
-
-void qNextErrorRow(GifContext& ctx) {
-  memcpy(ctx.qErr.get(), ctx.qErrNext.get(), (static_cast<size_t>(ctx.dstWidth) + 2) * sizeof(int16_t));
-  memset(ctx.qErrNext.get(), 0, (static_cast<size_t>(ctx.dstWidth) + 2) * sizeof(int16_t));
 }
 
 // Bakes one accumulated destination row (counts == 0 → white) and emits it
@@ -115,13 +95,17 @@ void qFlushRow(const int dstY, GifContext& ctx) {
   if (paintRow) pw.beginRow(outY);
   for (int dstX = 0; dstX < ctx.dstWidth; ++dstX) {
     const uint32_t avg = ctx.qCounts[dstX] != 0 ? ctx.qSums[dstX] / ctx.qCounts[dstX] : 255;
-    const uint8_t tone = qToneAt(ctx, dstX, avg > 255 ? 255 : static_cast<int>(avg));
-    ctx.qToneRow[dstX] = tone;
+    ctx.qGrayRow[dstX] = static_cast<uint8_t>(avg > 255 ? 255 : avg);
+  }
+  // Serpentine row bake: the bake visits the row in its own scan direction
+  // and advances the error state (toneRow contract, design §5.2).
+  ctx.bake->toneRow(ctx.qGrayRow.get(), ctx.qToneRow.get());
+  for (int dstX = 0; dstX < ctx.dstWidth; ++dstX) {
+    const uint8_t tone = ctx.qToneRow[dstX];
     const int outX = ctx.config->x + dstX;
     if (paintRow && outX >= 0 && outX < ctx.screenWidth) pw.writePixel(outX, tone);
     if (caching) cw.writePixel(outX, tone);
   }
-  qNextErrorRow(ctx);
   if (dstY == ctx.qFlushedRows) ++ctx.qFlushedRows;
 }
 
@@ -501,24 +485,22 @@ bool GifToFramebufferConverter::decodeGifSource(const char* imagePath, uint8_t* 
   memset(ctx.whiteRow.get(), 255, static_cast<size_t>(ctx.srcWidth));
 
   if (config.qualityTone) {
-    // Quality bake state; allocation failure degrades to the legacy path
-    // rather than failing the decode. Partially allocated buffers are
-    // released so the fallback's cache band can still allocate under
-    // pressure.
+    // Quality bake state; allocation failure (or a missing injected bake)
+    // degrades to the legacy path rather than failing the decode. Partially
+    // allocated buffers are released so the fallback's cache band can still
+    // allocate under pressure.
     ctx.qSums = makeUniqueNoThrow<uint32_t[]>(ctx.dstWidth);
     ctx.qCounts = makeUniqueNoThrow<uint16_t[]>(ctx.dstWidth);
-    ctx.qErr = makeUniqueNoThrow<int16_t[]>(ctx.dstWidth + 2);
-    ctx.qErrNext = makeUniqueNoThrow<int16_t[]>(ctx.dstWidth + 2);
+    ctx.qGrayRow = makeUniqueNoThrow<uint8_t[]>(ctx.dstWidth);
     ctx.qToneRow = makeUniqueNoThrow<uint8_t[]>(ctx.dstWidth);
-    if (ctx.qSums && ctx.qCounts && ctx.qErr && ctx.qErrNext && ctx.qToneRow) {
+    if (ctx.qSums && ctx.qCounts && ctx.qGrayRow && ctx.qToneRow && config.toneBake != nullptr) {
+      ctx.bake = config.toneBake;
       ctx.quality = true;
-      qSeedError(ctx);
     } else {
-      LOG_ERR("GIF", "OOM: quality bake state — falling back to legacy dither");
+      LOG_ERR("GIF", "Quality bake unavailable — falling back to legacy dither");
       ctx.qSums.reset();
       ctx.qCounts.reset();
-      ctx.qErr.reset();
-      ctx.qErrNext.reset();
+      ctx.qGrayRow.reset();
       ctx.qToneRow.reset();
     }
   }

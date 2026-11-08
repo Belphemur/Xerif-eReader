@@ -6,6 +6,7 @@
 #include "PagePaint.h"
 
 #include <Arduino.h>  // millis() for the slice budget; host targets provide a stub
+#include <BitmapHelpers.h>
 #include <GfxRenderer.h>
 
 #include "GrayPlanes.h"
@@ -227,6 +228,44 @@ struct PlaneCtx {
   const GfxRenderer* renderer;
 };
 
+// Absolute-gray plane pass (design 2026-11-08 §5.1): same walk as plotPlanes
+// but for the absolute encoding — the pass runs full-frame on a 0xFF-seeded
+// framebuffer (the plane source), so a dark tone's plane bit is CLEARED and
+// white leaves the seed. Tone→plane via the shared grayPlanePixel absolute
+// branch: tone n maps to level 3−n (PagePaint tones count up from white,
+// plane levels count up from black).
+struct AbsolutePlaneCtx {
+  const GfxRenderer* renderer;
+  int width;
+  int height;
+  bool msbPass;
+  bool binaryText;  // Crisp mode: coverage past the ink threshold, no AA bands
+};
+
+// Mono1Sharp's ink threshold (PageRenderer.cpp): the crisp base plots
+// coverage above this as solid ink — the plane passes must agree.
+constexpr uint8_t kCrispInkThreshold = 120;
+
+void plotAbsolutePlane(void* ctx, const int32_t x, const int32_t y, const uint8_t coverage) {
+  auto* self = static_cast<AbsolutePlaneCtx*>(ctx);
+  if (self->binaryText) {
+    // Crisp text: solid ink or nothing — both planes carry the glyph the
+    // same way the crisp base does (tone 3), no gray edge bands.
+    if (coverage < kCrispInkThreshold) return;
+  } else {
+    const uint8_t tone = pagepaint::grayTone(coverage);
+    if (tone == 0) return;  // white — the 0xFF seed already carries it
+  }
+  if (x < 0 || y < 0 || x >= self->width || y >= self->height) return;  // keep drawPixel's range quiet
+  if (self->binaryText) {
+    self->renderer->drawPixel(static_cast<int>(x), static_cast<int>(y), true);  // clear the bit
+    return;
+  }
+  const auto pixel = grayPlanePixel(static_cast<uint8_t>(3 - pagepaint::grayTone(coverage)), self->msbPass,
+                                    /*absolute=*/true);
+  if (pixel.black) self->renderer->drawPixel(static_cast<int>(x), static_cast<int>(y), true);  // clear the bit
+}
+
 // Dual-plane pass: tone 1 flags MSB, tone 2 flags MSB+LSB; tone 3 is the
 // base's job (GrayPlanes.h: plotting solid ink in the shared strip corrupts
 // the base) and tone 0 stays untouched.
@@ -282,6 +321,16 @@ void PagePaint::paintPlanes(const Page& page, FontChain& fonts, const GfxRendere
   };
   walkText(page, fonts, &ctx, plotPlanes, filter, 0, 0, nullptr, nullptr, 0, characterSpacingPx, wordSpacingPx);
   walkRubies(page, fonts, &ctx, plotPlanes, filter);
+}
+
+void PagePaint::paintTextAbsolutePlanes(const Page& page, FontChain& fonts, const GfxRenderer& renderer,
+                                        const bool msbPass, const bool binaryText, const int16_t characterSpacingPx,
+                                        const int16_t wordSpacingPx) {
+  // Full-frame walk (no strip bands): the caller seeded 0xFF and the plane
+  // upload copies the framebuffer whole, so no band filter applies.
+  AbsolutePlaneCtx ctx{&renderer, renderer.getScreenWidth(), renderer.getScreenHeight(), msbPass, binaryText};
+  walkText(page, fonts, &ctx, plotAbsolutePlane, nullptr, 0, 0, nullptr, nullptr, 0, characterSpacingPx, wordSpacingPx);
+  walkRubies(page, fonts, &ctx, plotAbsolutePlane, nullptr);
 }
 
 }  // namespace book

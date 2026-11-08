@@ -72,7 +72,8 @@ TEST(CacheIdentity, PolicyLetterSeparatesBakes) {
   ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 10, 20, 100, 80), kDir, true, a, sizeof(a)));
   ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 10, 20, 100, 80), kDir, false, b, sizeof(b)));
   EXPECT_STRNE(a, b);
-  EXPECT_NE(strstr(a, "/iq"), nullptr);
+  // 'r' = the ToneBake4 revision (design 2026-11-08 §5.2); 'l' = legacy.
+  EXPECT_NE(strstr(a, "/ir"), nullptr);
   EXPECT_NE(strstr(b, "/il"), nullptr);
 }
 
@@ -251,6 +252,199 @@ TEST(ToneBake, QuantizesToFourLevels) {
   const uint8_t mid = bake3.tone(0, 127);
   EXPECT_LE(mid, 3);
   EXPECT_GE(mid, 1);
+}
+
+// ── ToneBake4 (design 2026-11-08 §5.2) ───────────────────────────────────
+
+TEST(ToneBake4, IsDeterministicAcrossRuns) {
+  // Worker/foreground parity foundation: the same bake over the same rows.
+  const int w = 37;
+  uint8_t gray[37];
+  for (int i = 0; i < w; ++i) gray[i] = static_cast<uint8_t>(i * 7);
+  uint8_t run1[3][37];
+  uint8_t run2[3][37];
+  for (int pass = 0; pass < 2; ++pass) {
+    ttfimg::ToneBake4 bake(w);
+    ASSERT_TRUE(bake.ok());
+    for (int r = 0; r < 3; ++r) {
+      for (int x = 0; x < w; ++x) (pass == 0 ? run1 : run2)[r][x] = bake.tone(x, gray[x]);
+      bake.nextRow();
+    }
+  }
+  EXPECT_EQ(memcmp(run1, run2, sizeof(run1)), 0);
+}
+
+TEST(ToneBake4, IsPlacementIndependent) {
+  // Error state runs over image-local columns; the placement never enters
+  // the bake (§5.4 of the 2026-11-07 design).
+  const int w = 24;
+  uint8_t gray[24];
+  for (int i = 0; i < w; ++i) gray[i] = static_cast<uint8_t>(255 - i * 9);
+  ttfimg::ToneBake4 a(w);
+  ttfimg::ToneBake4 b(w);
+  ASSERT_TRUE(a.ok() && b.ok());
+  for (int r = 0; r < 4; ++r) {
+    for (int x = 0; x < w; ++x) {
+      EXPECT_EQ(a.tone(x, gray[x]), b.tone(x, gray[x]));
+    }
+    a.nextRow();
+    b.nextRow();
+  }
+}
+
+TEST(ToneBake4, DiffusionWeightScalesEveryKernelTerm) {
+  // W = 2048/2560 = 4/5: term = errVal·k/20 for k = 7|3|5|1 (§7).
+  ttfimg::ToneBake4 bake(8);
+  ASSERT_TRUE(bake.ok());
+  EXPECT_EQ(bake.diffuse(20, 7), 7);  // 20·7/20
+  EXPECT_EQ(bake.diffuse(20, 3), 3);
+  EXPECT_EQ(bake.diffuse(20, 5), 5);
+  EXPECT_EQ(bake.diffuse(20, 1), 1);
+  EXPECT_EQ(bake.diffuse(-40, 7), -14);
+  EXPECT_EQ(bake.diffuse(3, 7), 1);  // 21/20 truncated
+}
+
+TEST(ToneBake4, SerpentineMirrorsTheKernel) {
+  // toneRow drives the scan direction itself: a mirror-symmetric row baked
+  // ascending (row 0) equals the same row baked on a reverse-seeded bake —
+  // the FS kernel mirrors with the visit direction, so the horizontal error
+  // term always lands on the next-visited pixel.
+  const int w = 16;
+  uint8_t gray[w];
+  for (int i = 0; i < w; ++i) gray[i] = static_cast<uint8_t>(60 + (i < w - 1 - i ? i : w - 1 - i) * 15);
+  ttfimg::ToneBake4 forward(w);
+  ttfimg::ToneBake4 backward(w);
+  ASSERT_TRUE(forward.ok() && backward.ok());
+  backward.reverse = true;  // row 0 visits right-to-left
+  uint8_t fwd[w];
+  uint8_t rev[w];
+  forward.toneRow(gray, fwd);
+  backward.toneRow(gray, rev);
+  for (int x = 0; x < w; ++x) EXPECT_EQ(fwd[x], rev[w - 1 - x]) << "column " << x;
+  // And the serpentine state flips per row: row 1 of the same bake (visited
+  // descending) differs from row 0 — direction-aware error flow.
+  uint8_t row2[w];
+  forward.toneRow(gray, row2);
+  EXPECT_NE(memcmp(fwd, row2, sizeof(fwd)), 0);
+}
+
+TEST(ToneBake4, PerPixelToneStaysForwardForAscendingCallers) {
+  // The ToneBaker per-pixel kernel is ALWAYS ascending (the callers' raster
+  // order): a reverse-flagged bake's tone() must not mirror the kernel —
+  // the serpentine lives in toneRow's visit order, not in tone().
+  const int w = 8;
+  ttfimg::ToneBake4 a(w);
+  ttfimg::ToneBake4 b(w);
+  ASSERT_TRUE(a.ok() && b.ok());
+  b.reverse = true;  // must not change tone()'s kernel
+  for (int x = 0; x < w; ++x) EXPECT_EQ(a.tone(x, 128), b.tone(x, 128));
+}
+
+TEST(ToneBake4, ToneRowDeterministicAcrossRuns) {
+  // Worker/foreground parity through the row API (the production path).
+  const int w = 37;
+  uint8_t gray[37];
+  for (int i = 0; i < w; ++i) gray[i] = static_cast<uint8_t>(i * 7);
+  uint8_t run1[3][37];
+  uint8_t run2[3][37];
+  for (int pass = 0; pass < 2; ++pass) {
+    ttfimg::ToneBake4 bake(w);
+    ASSERT_TRUE(bake.ok());
+    for (int r = 0; r < 3; ++r) bake.toneRow(gray, (pass == 0 ? run1 : run2)[r]);
+  }
+  EXPECT_EQ(memcmp(run1, run2, sizeof(run1)), 0);
+}
+
+TEST(ToneBake4, FlatInputsPinEndpointsAndMidtones) {
+  // Flat 0/255 have zero quantization error: no diffusion, one tone.
+  {
+    ttfimg::ToneBake4 bake(8);
+    ASSERT_TRUE(bake.ok());
+    for (int x = 0; x < 8; ++x) EXPECT_EQ(bake.tone(x, 0), 0);
+    bake.nextRow();
+    for (int x = 0; x < 8; ++x) EXPECT_EQ(bake.tone(x, 0), 0);
+  }
+  {
+    ttfimg::ToneBake4 bake(8);
+    ASSERT_TRUE(bake.ok());
+    for (int x = 0; x < 8; ++x) EXPECT_EQ(bake.tone(x, 255), 3);
+    bake.nextRow();
+    for (int x = 0; x < 8; ++x) EXPECT_EQ(bake.tone(x, 255), 3);
+  }
+  {
+    // Flat mid-gray: gamma+contrast map 128 into tone 2's band (the mapped
+    // endpoints clamp, so the row stays inside {2,3} — no pepper into 0/1).
+    ttfimg::ToneBake4 bake(32);
+    ASSERT_TRUE(bake.ok());
+    for (int r = 0; r < 4; ++r) {
+      for (int x = 0; x < 32; ++x) {
+        const uint8_t t = bake.tone(x, 128);
+        EXPECT_GE(t, 2);
+        EXPECT_LE(t, 3);
+      }
+      bake.nextRow();
+    }
+  }
+}
+
+TEST(ToneBake4, GradientUsesAllFourTones) {
+  ttfimg::ToneBake4 bake(64);
+  ASSERT_TRUE(bake.ok());
+  bool seen[4] = {false, false, false, false};
+  for (int r = 0; r < 8; ++r) {
+    for (int x = 0; x < 64; ++x) {
+      const int gray = (r * 64 + x) * 255 / 512;
+      seen[bake.tone(x, gray)] = true;
+    }
+    bake.nextRow();
+  }
+  for (int t = 0; t < 4; ++t) EXPECT_TRUE(seen[t]) << "tone " << t << " never emitted";
+}
+
+TEST(ToneBake4, StepInputChangesToneAtTheBoundary) {
+  // The sRGB-space thresholds moved with the LUTs (§5.2): sRGB 60 maps into
+  // the light band (was tone 1 under the plain quantizer), sRGB 30 into the
+  // dark band — pinned with margin against LUT-build drift.
+  ttfimg::ToneBake4 bake(8);
+  ASSERT_TRUE(bake.ok());
+  EXPECT_EQ(bake.tone(0, 30), 1);
+  EXPECT_EQ(bake.tone(1, 60), 2);
+  EXPECT_EQ(bake.tone(2, 100), 2);
+  // Deep shadow: the brightening curve parks sRGB 10 below tone 0's mapped
+  // boundary (gamma⁻¹(43) ≈ sRGB 5..10).
+  EXPECT_EQ(bake.tone(3, 10), 0);
+}
+
+TEST(ToneBake4, LutStructure) {
+  // Structural pins (libm-independent): endpoints fixed, non-decreasing,
+  // contrast pivot preserved, midtone brightened per the reference curve.
+  ttfimg::ToneBake4 bake(1);
+  EXPECT_EQ(bake.gammaLut[0], 0);
+  EXPECT_EQ(bake.gammaLut[255], 255);
+  EXPECT_EQ(bake.contrastLut[0], 0);
+  EXPECT_EQ(bake.contrastLut[255], 255);
+  for (int i = 1; i < 256; ++i) {
+    EXPECT_GE(bake.gammaLut[i], bake.gammaLut[i - 1]);
+    EXPECT_GE(bake.contrastLut[i], bake.contrastLut[i - 1]);
+  }
+  EXPECT_NEAR(bake.contrastLut[128], 128, 2);  // pivot 128 stays
+  EXPECT_NEAR(bake.gammaLut[128], 186, 4);     // 0.502^(1/2.2) brightens
+}
+
+// ── Display routing predicate (design 2026-11-08 §5.1) ───────────────────
+
+TEST(ImageGrayRoute, PredicateMatrix) {
+  using ttfimg::absoluteGrayImageRoute;
+  // Image page, quality path, capable panel: the absolute-gray route.
+  EXPECT_TRUE(absoluteGrayImageRoute(true, true, false, true, true));
+  // Text-only page: the overlay parity route, never the absolute image arm.
+  EXPECT_FALSE(absoluteGrayImageRoute(false, true, false, true, true));
+  // Revert switch (imageDecodeQuality == 0): today's behavior verbatim.
+  EXPECT_FALSE(absoluteGrayImageRoute(true, false, false, true, true));
+  // X3 guard + non-UC8279 controller + no absolute capability.
+  EXPECT_FALSE(absoluteGrayImageRoute(true, true, true, true, true));
+  EXPECT_FALSE(absoluteGrayImageRoute(true, true, false, false, true));
+  EXPECT_FALSE(absoluteGrayImageRoute(true, true, false, true, false));
 }
 
 // ── ImageDecodeGate protocol ────────────────────────────────────────────────
