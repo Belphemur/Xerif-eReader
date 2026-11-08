@@ -336,8 +336,8 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   return OK;
 }
 
-OtaUpdater::OtaUpdaterError OtaUpdater::stageUpdateToSd(const char* stagingPath, ProgressCallback onProgress,
-                                                        void* ctx) {
+OtaUpdater::OtaUpdaterError OtaUpdater::stageUpdateToSd(const char* stagingPath, uint8_t* outDigest,
+                                                        ProgressCallback onProgress, void* ctx) {
   if (!isUpdateNewer()) {
     return UPDATE_OLDER_ERROR;
   }
@@ -408,6 +408,11 @@ OtaUpdater::OtaUpdaterError OtaUpdater::stageUpdateToSd(const char* stagingPath,
     LOG_ERR("OTA", "staged firmware SHA-256 does not match signed manifest");
     Storage.remove(tmpPath.c_str());
     return SIGNATURE_ERROR;
+  }
+  // Handed out only after the manifest verification above: the caller pins
+  // the dance identity with it instead of re-hashing the file from SD.
+  if (outDigest) {
+    memcpy(outDigest, computedSha, 32);
   }
   if (!Storage.replaceFile(tmpPath.c_str(), stagingPath)) {
     LOG_ERR("OTA", "staging publish failed");

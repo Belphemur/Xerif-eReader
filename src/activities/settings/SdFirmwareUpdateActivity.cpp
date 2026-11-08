@@ -126,6 +126,17 @@ void SdFirmwareUpdateActivity::onEnter() {
         return;
       }
     }
+    // The completion pass paints the same uninterruptible-flash UI as the
+    // interactive confirmation path: progress bar + do-not-power-off line.
+    // Staying in VALIDATING would repaint that static line for the whole
+    // flash instead.
+    {
+      RenderLock lock(*this);
+      state = State::UPDATING;
+      writtenBytes = 0;
+      lastRenderedPercent = 101;
+    }
+    requestUpdateAndWait();
     performUpdate();
     return;
   }

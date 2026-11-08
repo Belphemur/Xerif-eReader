@@ -371,11 +371,12 @@ void OtaUpdateActivity::armStableDance() {
   // Fail-safe order: stage → flag → otadata. A failed otadata switch leaves
   // at most a stale flag (cleared by the boot hook) plus the staging file.
   OtaUpdater::OtaUpdaterError res;
+  uint8_t stagedDigest[32];
   {
     memclaim::DeviceClaim claim(renderer, "OTA");
     claim.runCheap();
     res = updater.stageUpdateToSd(
-        kStableStagingPath,
+        kStableStagingPath, stagedDigest,
         [](void* ctx) {
           // immediate=true: the deferred path is consumed by
           // ActivityManager::loop(), which never runs while the download
@@ -395,12 +396,12 @@ void OtaUpdateActivity::armStableDance() {
     return;
   }
 
-  // Pin the staged file's identity (§16 dance identity): the unattended
-  // completion pass re-hashes the staging file and refuses to flash when the
-  // SD card's contents changed between this arm and the completion boot.
-  uint8_t stagedDigest[32];
-  if (!dev_ota::sha256OfFile(kStableStagingPath, stagedDigest) ||
-      !dev_ota::pendingInstallSet(kStableStagingPath, dev_ota::PendingKind::StableStaged) ||
+  // Pin the staged file's identity (§16 dance identity): the digest comes
+  // straight from the staging pass (already verified against the signed
+  // manifest — no second 5 MB SD read here). The unattended completion pass
+  // re-hashes the staging file and refuses to flash when the SD card's
+  // contents changed between this arm and the completion boot.
+  if (!dev_ota::pendingInstallSet(kStableStagingPath, dev_ota::PendingKind::StableStaged) ||
       !dev_ota::pendingInstallSetDigest(stagedDigest) || !ota_boot::switchTo(ota_slots::devSlot())) {
     LOG_ERR("OTA", "§16 dance arm failed; clearing the flag");
     dev_ota::pendingInstallClear();

@@ -34,9 +34,12 @@ class OtaUpdater {
   // §16 stable→stable dance (design §15/§16): stage the pinned gh_release
   // asset to an SD path (the swap space) with SHA-256 verification against
   // the signed manifest. Requires a prior checkForUpdate(); fails closed
-  // without a pinned digest. The staged file is written by the dance's
-  // completion pass and removed there after the flash.
-  OtaUpdaterError stageUpdateToSd(const char* stagingPath, ProgressCallback onProgress = nullptr, void* ctx = nullptr);
+  // without a pinned digest. When outDigest is non-null it receives the
+  // verified digest of the staged image, saving the caller a full 5 MB
+  // re-read to pin the dance identity. The staged file is written by the
+  // dance's completion pass and removed there after the flash.
+  OtaUpdaterError stageUpdateToSd(const char* stagingPath, uint8_t* outDigest = nullptr,
+                                  ProgressCallback onProgress = nullptr, void* ctx = nullptr);
 
  private:
   bool updateAvailable = false;
