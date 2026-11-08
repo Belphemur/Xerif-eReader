@@ -1,5 +1,4 @@
 #pragma once
-#include "Epub/converters/DitherUtils.h"
 #include <HalStorage.h>
 
 #include <cstddef>
@@ -7,6 +6,8 @@
 #include <cstring>
 #include <memory>
 #include <string>
+
+#include "Epub/converters/DitherUtils.h"
 
 class GfxRenderer;
 

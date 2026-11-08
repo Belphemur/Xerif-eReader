@@ -244,7 +244,7 @@ struct AbsolutePlaneCtx {
 void plotAbsolutePlane(void* ctx, const int32_t x, const int32_t y, const uint8_t coverage) {
   auto* self = static_cast<AbsolutePlaneCtx*>(ctx);
   const uint8_t tone = pagepaint::grayTone(coverage);
-  if (tone == 0) return;  // white — the 0xFF seed already carries it
+  if (tone == 0) return;                                                // white — the 0xFF seed already carries it
   if (x < 0 || y < 0 || x >= self->width || y >= self->height) return;  // keep drawPixel's range quiet
   const auto pixel = grayPlanePixel(static_cast<uint8_t>(3 - tone), self->msbPass, /*absolute=*/true);
   if (pixel.black) self->renderer->drawPixel(static_cast<int>(x), static_cast<int>(y), true);  // clear the bit
@@ -313,8 +313,7 @@ void PagePaint::paintTextAbsolutePlanes(const Page& page, FontChain& fonts, cons
   // Full-frame walk (no strip bands): the caller seeded 0xFF and the plane
   // upload copies the framebuffer whole, so no band filter applies.
   AbsolutePlaneCtx ctx{&renderer, renderer.getScreenWidth(), renderer.getScreenHeight(), msbPass};
-  walkText(page, fonts, &ctx, plotAbsolutePlane, nullptr, 0, 0, nullptr, nullptr, 0, characterSpacingPx,
-           wordSpacingPx);
+  walkText(page, fonts, &ctx, plotAbsolutePlane, nullptr, 0, 0, nullptr, nullptr, 0, characterSpacingPx, wordSpacingPx);
   walkRubies(page, fonts, &ctx, plotAbsolutePlane, nullptr);
 }
 

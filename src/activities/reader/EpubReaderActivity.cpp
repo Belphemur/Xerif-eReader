@@ -4563,7 +4563,9 @@ void EpubReaderActivity::ttfCommitFrame(const freeink::book::Page& page, const f
     // advertises Overlay gray with stripUploads=false — the full planes go
     // through the same driver's full-plane upload, not a strip flag flip).
     LOG_DBG("GRS", "ttf gray route: transport=%s pagesUntilFullRefresh=%d refreshFrequency=%d images=%d",
-            absoluteImageGray ? "absolute-image" : grayCaps.stripUploads ? "strips" : "full-frame",
+            absoluteImageGray       ? "absolute-image"
+            : grayCaps.stripUploads ? "strips"
+                                    : "full-frame",
             pagesUntilFullRefresh, SETTINGS.getRefreshFrequency(), pageHasImages);
     if (absoluteImageGray) {
       renderTtfImageGrayAbsolute(page, params, scratchMark);
@@ -5109,8 +5111,8 @@ void EpubReaderActivity::renderTtfImageGrayAbsolute(const freeink::book::Page& p
 #endif
   renderer.restoreBwBuffer();
 #ifdef BOOK_PROFILE
-  LOG_DBG("PROF", "phase=ttf_gray_absolute base=%lums lsb=%lums msb=%lums gray=%lums total=%lums", tBaseMs - renderStartMs,
-          tLsbMs - tBaseMs, tMsbMs - tLsbMs, tGrayMs - tMsbMs, millis() - renderStartMs);
+  LOG_DBG("PROF", "phase=ttf_gray_absolute base=%lums lsb=%lums msb=%lums gray=%lums total=%lums",
+          tBaseMs - renderStartMs, tLsbMs - tBaseMs, tMsbMs - tLsbMs, tGrayMs - tMsbMs, millis() - renderStartMs);
 #endif
 }
 

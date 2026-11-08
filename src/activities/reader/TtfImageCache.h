@@ -50,9 +50,9 @@ constexpr bool absoluteGrayImageRoute(const bool pageHasImages, const bool quali
 // nearest-of-{0, 85, 170, 255} in the mapped space — thresholds move with the
 // LUTs, none are hand-picked.
 struct ToneBake4 : ToneBaker {
-  static constexpr int kGammaNum = 22;       // γ = kGammaNum/kGammaDen (§7)
+  static constexpr int kGammaNum = 22;  // γ = kGammaNum/kGammaDen (§7)
   static constexpr int kGammaDen = 10;
-  static constexpr int kContrastNum = 13;    // 1.3 (eink-image default), pivot 128
+  static constexpr int kContrastNum = 13;  // 1.3 (eink-image default), pivot 128
   static constexpr int kContrastDen = 10;
   static constexpr int kDiffusionNum = 2048;  // 0.8 in 8.8 fixed point (§7)
   static constexpr int kDiffusionDen = 2560;

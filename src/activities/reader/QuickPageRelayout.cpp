@@ -3,10 +3,9 @@
 #if defined(CROSSPOINT_TTF_READER)
 
 #include <BookTypes.h>
-#include <Logging.h>
-
 #include <HalDisplay.h>
 #include <HalGPIO.h>
+#include <Logging.h>
 
 #include "BookFontLoader.h"
 #include "CrossPointSettings.h"
@@ -201,8 +200,8 @@ void paintCapturedPage(const freeink::book::Page& page, void* font, GfxRenderer&
 #else
   const bool smoothText = SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH;
 #endif
-  const bool grayParity = smoothText && (absoluteImages || !pageHasImages) &&
-                          renderer.grayscaleCapabilities().supported();
+  const bool grayParity =
+      smoothText && (absoluteImages || !pageHasImages) && renderer.grayscaleCapabilities().supported();
   auto* chain = static_cast<freeink::book::FontChain*>(font);
   if (pass == TtfPaintPass::Base) {
     if (grayParity) {

@@ -69,7 +69,7 @@ enum class TtfPaintPass : uint8_t { Base, PlaneLsb, PlaneMsb };
 // spacingPx are the values the page was laid out with; the engine charges them
 // to every glyph advance, so the paint pass must replay them.
 void paintCapturedPage(const freeink::book::Page& page, void* font, GfxRenderer& renderer,
-                       freeink::book::TtfBookRuntime& ttf, int16_t characterSpacingPx = 0,
-                       int16_t wordSpacingPx = 0, TtfPaintPass pass = TtfPaintPass::Base);
+                       freeink::book::TtfBookRuntime& ttf, int16_t characterSpacingPx = 0, int16_t wordSpacingPx = 0,
+                       TtfPaintPass pass = TtfPaintPass::Base);
 
 #endif  // CROSSPOINT_TTF_READER

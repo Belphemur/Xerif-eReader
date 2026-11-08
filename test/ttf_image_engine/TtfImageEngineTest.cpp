@@ -296,12 +296,12 @@ TEST(ToneBake4, DiffusionWeightScalesEveryKernelTerm) {
   // W = 2048/2560 = 4/5: term = errVal·k/20 for k = 7|3|5|1 (§7).
   ttfimg::ToneBake4 bake(8);
   ASSERT_TRUE(bake.ok());
-  EXPECT_EQ(bake.diffuse(20, 7), 7);   // 20·7/20
+  EXPECT_EQ(bake.diffuse(20, 7), 7);  // 20·7/20
   EXPECT_EQ(bake.diffuse(20, 3), 3);
   EXPECT_EQ(bake.diffuse(20, 5), 5);
   EXPECT_EQ(bake.diffuse(20, 1), 1);
   EXPECT_EQ(bake.diffuse(-40, 7), -14);
-  EXPECT_EQ(bake.diffuse(3, 7), 1);   // 21/20 truncated
+  EXPECT_EQ(bake.diffuse(3, 7), 1);  // 21/20 truncated
 }
 
 TEST(ToneBake4, SerpentineMirrorsTheKernel) {
