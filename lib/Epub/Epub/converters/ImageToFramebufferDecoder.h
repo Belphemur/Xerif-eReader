@@ -95,6 +95,11 @@ struct RenderConfig {
   // The TTF quality path injects ttfimg::ToneBake4; the revert switch
   // (qualityTone false) never reaches the converters (decodeAndCache Skip).
   ToneBaker* toneBake = nullptr;
+  // Adaptive two-phase collection (design 2026-11-08 §2.1 amendment 2):
+  // with toneCollect the converter only FEEDS the bake's collection pass
+  // (histogram + gray temp) — no paint, no pixel cache (cachePath stays
+  // empty); the engine's remap pass owns tone, cache and paint.
+  bool toneCollect = false;
 };
 
 class ImageToFramebufferDecoder {

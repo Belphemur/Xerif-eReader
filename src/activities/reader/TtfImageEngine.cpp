@@ -33,15 +33,12 @@ namespace {
 // --- cache reads --------------------------------------------------------------
 
 // Row sink for the SDK ImageRenderer on the quality JPEG/PNG decode: aborts
-// first (foreground takeover is instant), then bakes tone, appends the cache
-// row, and paints the same tone through the target renderer.
-struct RowBakeCtx {
-  ttfimg::ToneCacheWriter* cache = nullptr;
-  GfxRenderer* paint = nullptr;
+// first (foreground takeover is instant), then feeds the adaptive bake's
+// collection pass (histogram + gray temp, design 2026-11-08 §2.1 amendment
+// 2). No tone, no cache, no paint here — the remap pass after the decode
+// owns tone, cache and paint, so every decoder shares one phase-2.
+struct GrayCollectCtx {
   ttfimg::ToneBake4* bake = nullptr;
-  uint8_t* toneRow = nullptr;  // decode-local scratch [width]
-  int16_t x = 0;
-  int16_t y = 0;
   uint16_t w = 0;
   bool (*abortPoll)(void* ctx) = nullptr;
   void* abortCtx = nullptr;
@@ -61,42 +58,20 @@ bool paintRowOnScreen(const GfxRenderer& paint, const int outY) { return outY >=
 
 bool paintColOnScreen(const GfxRenderer& paint, const int outX) { return outX >= 0 && outX < paint.getScreenWidth(); }
 
-bool rowBakeFn(void* user, const uint16_t rowIdx, const uint8_t* grayRow, const uint16_t width) {
-  RowBakeCtx* ctx = static_cast<RowBakeCtx*>(user);
+bool grayCollectFn(void* user, const uint16_t rowIdx, const uint8_t* grayRow, const uint16_t width) {
+  GrayCollectCtx* ctx = static_cast<GrayCollectCtx*>(user);
   if (ctx->aborted) return false;
   if (ctx->abortPoll != nullptr && ctx->abortPoll(ctx->abortCtx)) {
     ctx->aborted = true;
     return false;
   }
-  if (ctx->bake == nullptr || ctx->toneRow == nullptr) return false;
+  if (ctx->bake == nullptr) return false;
   if (width != ctx->w) {
     LOG_ERR("TIMGE", "SDK row width mismatch: %u != %u", width, ctx->w);
     ctx->aborted = true;
     return false;
   }
-  // Serpentine row bake: the bake visits the row in its own scan direction
-  // and advances the error state (the per-pixel loop + nextRow it replaces
-  // cannot honor the direction). toneRow is byte-exact with the device bake
-  // (cache 'r' identity).
-  ctx->bake->toneRow(grayRow, ctx->toneRow);
-  // A missing writer (cache open failed, uncached paint) must not reject the
-  // row — the rows still paint through the target renderer below.
-  if (ctx->cache != nullptr && !ctx->cache->writeRow(ctx->toneRow)) {
-    ctx->aborted = true;  // cache write failed: stop, the writer already dropped the file
-    return false;
-  }
-  if (ctx->paint != nullptr) {
-    const int outY = ctx->y + static_cast<int>(rowIdx);
-    if (paintRowOnScreen(*ctx->paint, outY)) {
-      DirectPixelWriter pw;
-      pw.init(*ctx->paint);
-      pw.beginRow(outY);
-      for (uint16_t col = 0; col < width; ++col) {
-        const int outX = ctx->x + static_cast<int>(col);
-        if (paintColOnScreen(*ctx->paint, outX)) pw.writePixel(outX, ctx->toneRow[col]);
-      }
-    }
-  }
+  ctx->bake->collectRow(grayRow);
   return true;
 }
 
@@ -293,11 +268,14 @@ struct BmpSource {
 // `cacheStreamOk` (optional) reports whether the tone-cache stream ran to a
 // finalized end — a degraded stream paints every row but produces no cache,
 // so the caller must not publish.
-DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const size_t size, GfxRenderer* paint,
-                           const char* cachePath, const bool caching, bool (*abortPoll)(void* ctx), void* abortCtx,
-                           bool* cacheStreamOk) {
-  if (cacheStreamOk != nullptr) *cacheStreamOk = false;
-  if (paint == nullptr && !caching) return DecodeResult::Failed;  // nothing to produce
+// Quality BMP decode, phase 1 (design 2026-11-08 §2.1 amendment 2): decode
+// to averaged gray rows and feed the adaptive bake's collection pass. No
+// tone, cache or paint here — decodeAndCache runs the shared remap pass
+// (remapGrayToCache) once the histogram is complete. `bake` carries the
+// gray temp (the caller ran beginCollect).
+DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const size_t size, ttfimg::ToneBake4* bake,
+                           bool (*abortPoll)(void* ctx), void* abortCtx) {
+  if (bake == nullptr) return DecodeResult::Failed;
   BmpSource src;
   src.file.attach(data, size);
   if (!src.parse()) {
@@ -312,24 +290,14 @@ DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const siz
   if (srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) return DecodeResult::Failed;
 
   const bool areaScale = (srcW >= 2 * dstW) || (srcH >= 2 * dstH);
-  ttfimg::ToneCacheWriter writer;
-  bool writerActive = caching && writer.begin(cachePath, dstW, dstH);
-  if (caching && !writerActive) {
-    // Storage failure on the cache stream is not a decode failure: keep
-    // painting the rows and skip the cache (the next pass re-decodes).
-    LOG_ERR("TIMGE", "BMP cache open failed — painting uncached: %s", spec.href);
-  }
   const size_t bitsBytes = src.rowBytes;
   PoolBytes bits{poolMakeBytes(bitsBytes ? bitsBytes : 1)};
-  PoolBytes gray{poolMakeBytes(srcW + 2 * static_cast<size_t>(dstW))};  // gray (srcW) + averaged (dstW) + tone (dstW)
-  ttfimg::ToneBake4 bake(dstW);
-  if (!bits || !gray || !bake.ok()) {
-    writer.abort();
+  PoolBytes gray{poolMakeBytes(srcW + static_cast<size_t>(dstW))};  // gray (srcW) + averaged (dstW)
+  if (!bits || !gray) {
     return DecodeResult::Failed;
   }
   uint8_t* grayRow = gray.get();
   uint8_t* avgRow = grayRow + srcW;
-  uint8_t* toneRow = avgRow + dstW;
 
   std::unique_ptr<uint32_t[]> sums;
   std::unique_ptr<uint16_t[]> counts;
@@ -337,7 +305,6 @@ DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const siz
     sums.reset(new (std::nothrow) uint32_t[dstW]);
     counts.reset(new (std::nothrow) uint16_t[dstW]);
     if (!sums || !counts) {
-      writer.abort();
       return DecodeResult::Failed;
     }
   }
@@ -363,12 +330,10 @@ DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const siz
       // Foreground takeover aborts at the source-row boundary — the same
       // hook the GIF converter and the SDK row sink honor.
       if (abortPoll != nullptr && abortPoll(abortCtx)) {
-        writer.abort();
         return DecodeResult::Busy;
       }
       if (sy != loadedRow) {
         if (!src.readRowGray(sy, grayRow, bits.get())) {
-          writer.abort();
           return DecodeResult::Failed;
         }
         loadedRow = sy;
@@ -406,30 +371,10 @@ DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const siz
         avgRow[dstX] = static_cast<uint8_t>(avg > 255 ? 255 : avg);
       }
     }
-    // Serpentine row bake: the bake visits the row in its own scan direction
-    // and advances the error state (toneRow contract, design §5.2).
-    bake.toneRow(avgRow, toneRow);
-    if (writerActive && !writer.writeRow(toneRow)) {
-      writer.abort();
-      writerActive = false;
-    }
-    if (paint != nullptr) {
-      const int outY = spec.y + dstY;
-      if (paintRowOnScreen(*paint, outY)) {
-        DirectPixelWriter pw;
-        pw.init(*paint);
-        pw.beginRow(outY);
-        for (int col = 0; col < dstW; ++col) {
-          const int outX = spec.x + col;
-          if (paintColOnScreen(*paint, outX)) pw.writePixel(outX, toneRow[col]);
-        }
-      }
-    }
+    // Phase 1: histogram + gray temp only (the remap pass bakes).
+    bake->collectRow(avgRow);
   }
-  const bool streamOk = writerActive && writer.finalize();
-  if (cacheStreamOk != nullptr) *cacheStreamOk = streamOk;
-  if (!writerActive) return DecodeResult::Ok;  // degraded: rows painted, no cache
-  return streamOk ? DecodeResult::Ok : DecodeResult::Failed;
+  return DecodeResult::Ok;
 }
 
 bool blitFromCache(GfxRenderer& renderer, const ImageSpec& spec, const char* dir, const bool qualityTone) {
@@ -481,6 +426,90 @@ bool blitFromCache(GfxRenderer& renderer, const ImageSpec& spec, const char* dir
   return true;
 }
 
+// Paints one baked tone row at its placement (shared by every phase-2 remap).
+void paintToneRow(GfxRenderer& paint, const ImageSpec& spec, const int rowIdx, const uint8_t* toneRow,
+                  const int width) {
+  const int outY = spec.y + rowIdx;
+  if (!paintRowOnScreen(paint, outY)) return;
+  DirectPixelWriter pw;
+  pw.init(paint);
+  pw.beginRow(outY);
+  for (int col = 0; col < width; ++col) {
+    const int outX = spec.x + col;
+    if (paintColOnScreen(paint, outX)) pw.writePixel(outX, toneRow[col]);
+  }
+}
+
+// Phase 2 of the adaptive bake (design 2026-11-08 §2.1 amendment 2): stream
+// the .g gray temp back through the adaptive map + serpentine FS bake,
+// appending the 2bpp cache rows and painting each row. ONE implementation for
+// all four decoders — worker/foreground cache parity is this code path.
+// Consumes the gray temp (removed on every exit path). `writePath` is the
+// .t publish temp when publishing, else the final name (no-publish decode).
+DecodeResult remapGrayToCache(const ImageSpec& spec, ttfimg::ToneBake4& bake, const char* writePath, const bool caching,
+                              GfxRenderer* paint, const bool paintToTarget, bool (*abortPoll)(void* ctx),
+                              void* abortCtx) {
+  uint8_t toneRowStack[256];
+  uint8_t* toneRow = toneRowStack;
+  PoolBytes toneRowHeap;
+  if (spec.w > static_cast<int>(sizeof(toneRowStack))) {
+    toneRowHeap = poolMakeBytes(static_cast<size_t>(spec.w));
+    toneRow = toneRowHeap.get();
+  }
+  uint8_t grayStack[256];
+  uint8_t* grayRow = grayStack;
+  PoolBytes grayRowHeap;
+  if (spec.w > static_cast<int>(sizeof(grayStack))) {
+    grayRowHeap = poolMakeBytes(static_cast<size_t>(spec.w));
+    grayRow = grayRowHeap.get();
+  }
+  if (toneRow == nullptr || grayRow == nullptr) {
+    bake.grayDiscard();
+    return DecodeResult::Failed;
+  }
+  bake.beginRemap();
+
+  ToneCacheWriter writer;
+  bool writerActive = caching && writer.begin(writePath, spec.w, spec.h);
+  if (caching && !writerActive) {
+    // Storage failure on the cache stream is not a decode failure: keep
+    // painting the rows and skip the cache (the next pass re-decodes).
+    LOG_ERR("TIMGE", "Image cache open failed — painting uncached: %s", spec.href);
+  }
+  HalFile gray;
+  if (!Storage.openFileForRead("TIMGE", bake.grayPath(), gray)) {
+    if (writerActive) writer.abort();
+    bake.grayDiscard();
+    return DecodeResult::Failed;
+  }
+  for (int row = 0; row < spec.h; ++row) {
+    if (abortPoll != nullptr && abortPoll(abortCtx)) {
+      if (writerActive) writer.abort();
+      bake.grayDiscard();
+      return DecodeResult::Busy;
+    }
+    if (gray.read(grayRow, static_cast<size_t>(spec.w)) != spec.w) {
+      LOG_ERR("TIMGE", "Gray temp read failed at row %d: %s", row, spec.href);
+      if (writerActive) writer.abort();
+      bake.grayDiscard();
+      return DecodeResult::Failed;
+    }
+    // Serpentine row bake over the adaptive map (beginRemap reset the error
+    // state; the byte-exact contract moves to the 's' cache identity).
+    bake.toneRow(grayRow, toneRow);
+    if (writerActive && !writer.writeRow(toneRow)) {
+      // The writer dropped the file; the remaining rows still paint (the
+      // same degraded-paint contract the BMP path had).
+      writerActive = false;
+    }
+    if (paint != nullptr && paintToTarget) paintToneRow(*paint, spec, row, toneRow, spec.w);
+  }
+  const bool streamOk = writerActive && writer.finalize();
+  bake.grayDiscard();
+  if (writerActive && !streamOk) return DecodeResult::Failed;
+  return DecodeResult::Ok;  // rows painted; cache written when writerActive
+}
+
 DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freeink::book::BookSource& source,
                             const freeink::book::ZipCatalog& zip, freeink::book::Arena& scratch, Epub* epub,
                             GfxRenderer* paint, const bool qualityTone, const bool caching,
@@ -520,62 +549,48 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
   }
 
   if (info.kind == ImageInfo::Kind::Png || info.kind == ImageInfo::Kind::Jpeg) {
-    // Quality decode (§5.3 corrected): SDK gray rows — area-averaged exactly
-    // as the foreground fallback's SDK stack — baked to 4-level tone while
-    // appending the cache, and painted through the target row by row. A
-    // cache-only job (worker) skips the placement writes entirely.
-    ttfimg::ToneCacheWriter writer;
-    bool streamPublishing = caching;
-    if (caching && !writer.begin(writePath, spec.w, spec.h)) {
-      // Storage failure on the cache stream is not a decode failure: keep
-      // painting the rows and skip the cache (the next pass re-decodes).
-      LOG_ERR("TIMGE", "Image cache open failed — painting uncached: %s", spec.href);
-      streamPublishing = false;
-    }
-    ttfimg::ToneCacheWriter* writerPtr = streamPublishing ? &writer : nullptr;
-
+    // Quality decode (§5.3 corrected + §2.1 amendment 2): phase 1 — SDK gray
+    // rows (area-averaged exactly as the foreground fallback's SDK stack)
+    // feed the adaptive bake's collection (histogram + gray temp); then the
+    // shared remap pass bakes, caches and paints. Decode cost on first view
+    // is unchanged (one decode) plus one small disk pass; steady state is
+    // the cache as before.
     ttfimg::ToneBake4 bake(spec.w);
-    uint8_t toneRowStack[256];
-    uint8_t* toneRow = toneRowStack;
-    PoolBytes toneRowHeap;
-    if (spec.w > static_cast<int>(sizeof(toneRowStack))) {
-      toneRowHeap = poolMakeBytes(static_cast<size_t>(spec.w));
-      toneRow = toneRowHeap.get();
-    }
-    if (toneRow == nullptr || !bake.ok()) {
-      if (writerPtr != nullptr) writerPtr->abort();
+    char grayPath[280];
+    if (!bake.ok() || snprintf(grayPath, sizeof(grayPath), "%s.g", cachePath) >= static_cast<int>(sizeof(grayPath)) ||
+        !bake.beginCollect(grayPath)) {
       return DecodeResult::Failed;
     }
 
-    RowBakeCtx ctx;
-    ctx.cache = writerPtr;
-    ctx.paint = paintToTarget ? paint : nullptr;
+    GrayCollectCtx ctx;
     ctx.bake = &bake;
-    ctx.toneRow = toneRow;
-    ctx.x = spec.x;
-    ctx.y = spec.y;
     ctx.w = static_cast<uint16_t>(spec.w);
     ctx.abortPoll = abortPoll;
     ctx.abortCtx = abortCtx;
 
-    const BookStatus st = freeink::book::ImageRenderer::render(source, zip, sdkImage, scratch, &rowBakeFn, &ctx);
-    if (st == BookStatus::Ok && !ctx.aborted) {
-      if (writerPtr != nullptr && !writerPtr->finalize()) return DecodeResult::Failed;
-      if (!publishResult(cachePath, writePath, streamPublishing)) return DecodeResult::Failed;
-      return DecodeResult::Ok;
+    const BookStatus st = freeink::book::ImageRenderer::render(source, zip, sdkImage, scratch, &grayCollectFn, &ctx);
+    if (st != BookStatus::Ok || ctx.aborted) {
+      bake.grayDiscard();
+      return ctx.aborted ? DecodeResult::Busy
+                         : (st == BookStatus::Unsupported ? DecodeResult::Skip : DecodeResult::Failed);
     }
-    if (writerPtr != nullptr) writerPtr->abort();
-    return ctx.aborted ? DecodeResult::Busy
-                       : (st == BookStatus::Unsupported ? DecodeResult::Skip : DecodeResult::Failed);
+    if (!bake.grayDone()) return DecodeResult::Failed;
+    const DecodeResult remap =
+        remapGrayToCache(spec, bake, writePath, caching, paint, paintToTarget, abortPoll, abortCtx);
+    if (remap != DecodeResult::Ok) return remap;
+    if (!publishResult(cachePath, writePath, publishing)) return DecodeResult::Failed;
+    return DecodeResult::Ok;
   }
 
   if (info.kind == ImageInfo::Kind::Gif || info.kind == ImageInfo::Kind::Bmp) {
-    // New formats: the converters/BMP decode writes the pixel cache AND
-    // paints through the target renderer. qualityTone=false keeps today's
+    // New formats route through the same adaptive two-phase bake (§2.1
+    // amendment 2): phase 1 collects gray rows (the GIF converter in
+    // collect-only mode, the BMP row decoder directly), then the shared
+    // remap pass bakes/caches/paints. qualityTone=false keeps today's
     // behavior — nothing was rendered for these kinds before, so nothing
     // decodes.
     if (!qualityTone) return DecodeResult::Skip;
-    if (epub == nullptr || paint == nullptr) return DecodeResult::Failed;
+    if (epub == nullptr) return DecodeResult::Failed;
 
     size_t imageSize = 0;
     PoolBytes image{epub->extractItemToPsram(href, &imageSize)};
@@ -584,21 +599,12 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
       return DecodeResult::Failed;
     }
 
-    RenderConfig config;
-    config.x = spec.x;
-    config.y = spec.y;
-    config.maxWidth = spec.w;
-    config.maxHeight = spec.h;
-    config.useGrayscale = true;
-    config.useDithering = true;
-    config.performanceMode = false;
-    config.useExactDimensions = true;
-    if (caching) {
-      config.cachePath = writePath;
+    char grayPath[280];
+    if (snprintf(grayPath, sizeof(grayPath), "%s.g", cachePath) >= static_cast<int>(sizeof(grayPath))) {
+      return DecodeResult::Failed;
     }
-    config.abortPoll = abortPoll;
-    config.abortCtx = abortCtx;
-    config.qualityTone = qualityTone;  // GIF bake policy (§5.6)
+    ttfimg::ToneBake4 bake(spec.w);
+    if (!bake.ok() || !bake.beginCollect(grayPath)) return DecodeResult::Failed;
 
     bool decoded = false;
     bool aborted = false;
@@ -606,35 +612,44 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
       // Select the converter by the SNIFFED kind, not the href: ImageProbe
       // identified this GIF from its bytes, so a mismatched or extensionless
       // href must still reach the GIF converter (it would otherwise get no
-      // decoder and stay blank).
-      // The shared ToneBake4 (design 2026-11-08 §5.2) — the converter's
-      // inline Floyd–Steinberg duplicate retired into it. A failed bake
-      // construction leaves the hook null: the converter's quality mode
-      // needs it and degrades to the legacy Bayer path. Scoped to the GIF
-      // branch: a BMP decode must not carry two unused error buffers under
-      // heap pressure (review round 2).
-      ttfimg::ToneBake4 gifBake(spec.w);
-      config.toneBake = gifBake.ok() ? &gifBake : nullptr;
+      // decoder and stay blank). The shared ToneBake4 collects; the converter
+      // paints nothing and writes no cache in this mode (the remap pass owns
+      // both). The renderer stays live for the converter's geometry reads;
+      // it is simply not drawn through in collect mode.
+      RenderConfig config;
+      config.x = spec.x;
+      config.y = spec.y;
+      config.maxWidth = spec.w;
+      config.maxHeight = spec.h;
+      config.useGrayscale = true;
+      config.useDithering = true;
+      config.performanceMode = false;
+      config.useExactDimensions = true;
+      config.abortPoll = abortPoll;
+      config.abortCtx = abortCtx;
+      config.qualityTone = true;  // GIF bake policy (§5.6)
+      config.toneCollect = true;  // §2.1: phase 1 only
+      config.toneBake = &bake;
       AbortTracker tracker{abortPoll, abortCtx};
       config.abortPoll = &trackAbort;
       config.abortCtx = &tracker;
       ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(".gif");
-      decoded = decoder != nullptr && decoder->decodeToFramebuffer(image.get(), imageSize, *paint, config);
+      decoded = decoder != nullptr && paint != nullptr &&
+                decoder->decodeToFramebuffer(image.get(), imageSize, *paint, config);
       aborted = tracker.fired;
     } else {
-      bool cacheStreamOk = false;
-      const DecodeResult bmpRes =
-          decodeBmpRows(spec, image.get(), imageSize, paintToTarget ? paint : nullptr, caching ? writePath : nullptr,
-                        caching, abortPoll, abortCtx, &cacheStreamOk);
-      // Lossless BMP: leave rows EMPTY in the cache on decode failure so a
-      // later view re-decodes rather than trusting a torn cache.
+      const DecodeResult bmpRes = decodeBmpRows(spec, image.get(), imageSize, &bake, abortPoll, abortCtx);
       decoded = bmpRes == DecodeResult::Ok;
       aborted = bmpRes == DecodeResult::Busy;
-      // A degraded stream painted every row but produced no cache: skip the
-      // publish instead of failing the whole decode over missing bytes.
-      if (decoded && !cacheStreamOk) return DecodeResult::Ok;
     }
-    if (!decoded) return aborted ? DecodeResult::Busy : DecodeResult::Failed;
+    if (!decoded) {
+      bake.grayDiscard();
+      return aborted ? DecodeResult::Busy : DecodeResult::Failed;
+    }
+    if (!bake.grayDone()) return DecodeResult::Failed;
+    const DecodeResult remap =
+        remapGrayToCache(spec, bake, writePath, caching, paint, paintToTarget, abortPoll, abortCtx);
+    if (remap != DecodeResult::Ok) return remap;
     if (!publishResult(cachePath, writePath, publishing)) return DecodeResult::Failed;
     return DecodeResult::Ok;
   }

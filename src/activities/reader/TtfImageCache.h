@@ -35,30 +35,49 @@ constexpr bool absoluteGrayImageRoute(const bool pageHasImages, const bool quali
 // coordinates — so a completed .pxc encodes the image's tone alone and the
 // placement lives only in the cache identity (parity across worker and
 // foreground decodes, and across placements, follows from this).
-// ToneBake4 (design 2026-11-08 §5.2): the quality path's 4-level tone bake —
-// gamma 2.2 LUT, contrast 1.3 LUT, tuned Floyd–Steinberg diffusion (2048/2560
-// ≈ 0.8) and serpentine scanning. The LUTs are built once at construction
-// (the doc's "no runtime float" is the per-pixel path: pure integer LUT
-// lookups and fixed-point error diffusion); error state runs row-sequentially
-// over IMAGE-LOCAL columns — the FloydSteinberg4 invariant — so placement
+// ToneBake4 (design 2026-11-08 §5.2 + §2 adaptive bake): the quality path's
+// 4-level tone bake — per-image adaptive stretch, optional gamma stage,
+// tuned Floyd–Steinberg diffusion (2048/2560 ≈ 0.8) and serpentine scanning.
+// Two phases (design §2.1, amendment 2):
+//   1. beginCollect(path) + collectRow(gray) per destination row, in raster
+//      order — a 256-bin saturating histogram accumulates while the raw
+//      8-bit gray rows append to the caller's .g temp; no tone is emitted.
+//   2. beginRemap() derives the map from the histogram (percentile clip
+//      1%/99% stretched to [0,255]; degenerate histograms fall back to the
+//      fixed contrast 1.3; the gamma stage defaults OFF — identity), resets
+//      the error state, and toneRow() bakes from the .g rows as before.
+// The gamma 2.2 + contrast 1.3 constants stay as the fallback/A-B reference
+// (the eink-image recipe is 1-bit-oriented: its brightening exists to push
+// tones toward a 1-bit dither threshold and collapses midtones on a 4-level
+// panel — the washed-out soak defect). The LUTs are built once (the doc's
+// "no runtime float" is the per-pixel path: pure integer LUT lookups and
+// fixed-point error diffusion); error state runs row-sequentially over
+// IMAGE-LOCAL columns — the FloydSteinberg4 invariant — so placement
 // independence and worker/foreground parity hold by construction.
-//
-// The eink-image reference applies powf(1/gamma) — a BRIGHTENING curve —
-// before dithering (its src/main.rs apply_gamma_correction), not a linear-
-// light decode; the doc §7 constant γ = 22/10 is the exponent's denominator
-// and the doc §5.2 wording is amended to match. Quantization remains
-// nearest-of-{0, 85, 170, 255} in the mapped space — thresholds move with the
-// LUTs, none are hand-picked.
+// Quantization remains nearest-of-{0, 85, 170, 255} in the mapped space —
+// thresholds move with the LUTs, none are hand-picked.
 struct ToneBake4 : ToneBaker {
   static constexpr int kGammaNum = 22;  // γ = kGammaNum/kGammaDen (§7)
   static constexpr int kGammaDen = 10;
-  static constexpr int kContrastNum = 13;  // 1.3 (eink-image default), pivot 128
+  static constexpr bool kGammaEnabled = false;  // §2.2: stretch owns the range; device tune flips this
+  static constexpr int kContrastNum = 13;       // 1.3 (eink-image default), pivot 128
   static constexpr int kContrastDen = 10;
   static constexpr int kDiffusionNum = 2048;  // 0.8 in 8.8 fixed point (§7)
   static constexpr int kDiffusionDen = 2560;
+  static constexpr int kClipNum = 1;  // percentile clip: ~1% / ~99%
+  static constexpr int kClipDen = 100;
 
   uint8_t gammaLut[256];
   uint8_t contrastLut[256];
+  uint8_t mapLut[256];    // adaptive phase-2 map (stretch ⊙ gamma)
+  bool adaptive = false;  // toneRow uses mapLut once beginRemap() ran
+  uint16_t hist[256];     // saturating bins; cumulative math in u32
+  uint32_t histCount = 0;
+  HalFile grayFile;  // phase-1 gray temp (see beginCollect)
+  char grayPathBuf[280] = {};
+  size_t grayPathLen = 0;
+  bool grayOpen = false;
+  bool grayFailed = false;             // sticky write failure (grayDone refuses)
   std::unique_ptr<int16_t[]> err;      // error carried into this pixel
   std::unique_ptr<int16_t[]> errNext;  // error passed to the next row
   const int width;
@@ -90,8 +109,24 @@ struct ToneBake4 : ToneBaker {
         memset(errNext.get(), 0, (w + 2) * sizeof(int16_t));
       }
     }
+    memset(hist, 0, sizeof(hist));
+    memset(mapLut, 0, sizeof(mapLut));  // valid only after beginRemap()
   }
   bool ok() const { return err != nullptr && errNext != nullptr; }
+
+  // ── adaptive two-phase API (§2.1) ───────────────────────────────────────
+  // The gray temp is a raw row-major 8-bit stream (no header: the caller
+  // knows w×h from the spec). The bake owns the file handle between
+  // beginCollect and grayDone so every decoder routes through one writer.
+  bool beginCollect(const char* grayPath);
+  void collectRow(const uint8_t* gray) override;
+  // Closes the temp. false on a write/close failure — the caller drops the
+  // file and fails the decode; nothing valid can be produced from it.
+  bool grayDone();
+  void grayDiscard();  // close + remove (abort/failure path)
+  const char* grayPath() const { return grayPathBuf; }
+  // Percentiles → mapLut, error state reset. Pure integer; deterministic.
+  void beginRemap();
 
   // Every Floyd–Steinberg term scales by kDiffusionNum/kDiffusionDen:
   // (errVal·k·2048)/(16·2560) = errVal·k/20 for k = 7|3|5|1 (§7).
@@ -104,7 +139,8 @@ struct ToneBake4 : ToneBaker {
   // term always lands on the next-visited pixel (7/20 to x+1 ascending,
   // to x−1 descending). Returns the quantized 4-level tone.
   uint8_t toneDir(const int x, const int gray, const bool reverseScan) {
-    const int v = contrastLut[gammaLut[static_cast<uint8_t>(gray)]] + err[x + 1];
+    const int v = (adaptive ? mapLut[static_cast<uint8_t>(gray)] : contrastLut[gammaLut[static_cast<uint8_t>(gray)]]) +
+                  err[x + 1];
     int t = (v + 42) / 85;  // nearest of {0, 85, 170, 255} in the mapped space
     if (t < 0) t = 0;
     if (t > 3) t = 3;

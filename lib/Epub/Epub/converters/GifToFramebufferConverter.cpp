@@ -48,6 +48,7 @@ struct GifContext {
   std::unique_ptr<uint8_t[]> qGrayRow;  // [dstWidth] averaged luma handed to the bake
   std::unique_ptr<uint8_t[]> qToneRow;  // [dstWidth] baked 4-level tones
   ToneBaker* bake{nullptr};             // not owned; from RenderConfig::toneBake
+  bool collect{false};                  // §2.1 phase 1: feed only, no paint/cache
   int qAccumDstY = -1;                  // dst row currently accumulating (-1 = none)
   int qFlushedRows = 0;                 // next destination row to bake (in order)
 };
@@ -74,8 +75,19 @@ void qResetAccum(GifContext& ctx) {
 }
 
 // Bakes one accumulated destination row (counts == 0 → white) and emits it
-// to the pixel cache and the renderer.
+// to the pixel cache and the renderer. In collect mode (design 2026-11-08
+// §2.1 amendment 2) the row only feeds the bake's phase-1 collection — the
+// engine's remap pass owns tone, cache and paint.
 void qFlushRow(const int dstY, GifContext& ctx) {
+  for (int dstX = 0; dstX < ctx.dstWidth; ++dstX) {
+    const uint32_t avg = ctx.qCounts[dstX] != 0 ? ctx.qSums[dstX] / ctx.qCounts[dstX] : 255;
+    ctx.qGrayRow[dstX] = static_cast<uint8_t>(avg > 255 ? 255 : avg);
+  }
+  if (ctx.collect) {
+    ctx.bake->collectRow(ctx.qGrayRow.get());
+    ++ctx.qFlushedRows;  // qFlushRemainder's loop must still terminate
+    return;
+  }
   const int outY = ctx.config->y + dstY;
   DirectCacheWriter cw;
   const bool caching = ctx.caching;
@@ -93,10 +105,6 @@ void qFlushRow(const int dstY, GifContext& ctx) {
   // band guard tracks the wrong axis for off-panel rows — clip both here.
   const bool paintRow = outY >= 0 && outY < ctx.screenHeight;
   if (paintRow) pw.beginRow(outY);
-  for (int dstX = 0; dstX < ctx.dstWidth; ++dstX) {
-    const uint32_t avg = ctx.qCounts[dstX] != 0 ? ctx.qSums[dstX] / ctx.qCounts[dstX] : 255;
-    ctx.qGrayRow[dstX] = static_cast<uint8_t>(avg > 255 ? 255 : avg);
-  }
   // Serpentine row bake: the bake visits the row in its own scan direction
   // and advances the error state (toneRow contract, design §5.2).
   ctx.bake->toneRow(ctx.qGrayRow.get(), ctx.qToneRow.get());
@@ -488,13 +496,16 @@ bool GifToFramebufferConverter::decodeGifSource(const char* imagePath, uint8_t* 
     // Quality bake state; allocation failure (or a missing injected bake)
     // degrades to the legacy path rather than failing the decode. Partially
     // allocated buffers are released so the fallback's cache band can still
-    // allocate under pressure.
+    // allocate under pressure. In collect mode (§2.1) no tone row buffer is
+    // needed — the remap pass bakes.
     ctx.qSums = makeUniqueNoThrow<uint32_t[]>(ctx.dstWidth);
     ctx.qCounts = makeUniqueNoThrow<uint16_t[]>(ctx.dstWidth);
     ctx.qGrayRow = makeUniqueNoThrow<uint8_t[]>(ctx.dstWidth);
-    ctx.qToneRow = makeUniqueNoThrow<uint8_t[]>(ctx.dstWidth);
-    if (ctx.qSums && ctx.qCounts && ctx.qGrayRow && ctx.qToneRow && config.toneBake != nullptr) {
+    if (!config.toneCollect) ctx.qToneRow = makeUniqueNoThrow<uint8_t[]>(ctx.dstWidth);
+    if (ctx.qSums && ctx.qCounts && ctx.qGrayRow && (config.toneCollect || ctx.qToneRow) &&
+        config.toneBake != nullptr) {
       ctx.bake = config.toneBake;
+      ctx.collect = config.toneCollect;
       ctx.quality = true;
     } else {
       LOG_ERR("GIF", "Quality bake unavailable — falling back to legacy dither");

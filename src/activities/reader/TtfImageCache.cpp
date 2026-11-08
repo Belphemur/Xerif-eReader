@@ -6,6 +6,128 @@
 
 namespace ttfimg {
 
+// ── ToneBake4 adaptive two-phase API (design 2026-11-08 §2.1, amendment 2) ──
+
+bool ToneBake4::beginCollect(const char* grayPath) {
+  if (width <= 0 || !ok()) return false;
+  memset(hist, 0, sizeof(hist));
+  histCount = 0;
+  adaptive = false;
+  grayFailed = false;
+  grayOpen = false;
+  grayPathLen = 0;
+  snprintf(grayPathBuf, sizeof(grayPathBuf), "%s", grayPath);
+  grayPathLen = strlen(grayPathBuf);
+  if (grayPathLen == 0 || grayPathLen >= sizeof(grayPathBuf)) return false;
+  if (!Storage.openFileForWrite("TIMGE", grayPathBuf, grayFile)) {
+    LOG_ERR("TIMGE", "Gray temp open failed: %s", grayPathBuf);
+    return false;
+  }
+  grayOpen = true;
+  return true;
+}
+
+void ToneBake4::collectRow(const uint8_t* gray) {
+  if (width <= 0 || gray == nullptr) return;
+  // Saturating bins: a flat image pins one bin; u32 cumulative math absorbs
+  // the clipped counts (512 bytes of state, no heap).
+  for (int x = 0; x < width; ++x) {
+    const uint16_t c = hist[gray[x]];
+    hist[gray[x]] = c == 0xFFFF ? c : static_cast<uint16_t>(c + 1);
+  }
+  histCount += static_cast<uint32_t>(width);
+  if (grayOpen) {
+    if (grayFile.write(gray, static_cast<uint32_t>(width)) != width) {
+      LOG_ERR("TIMGE", "Gray temp write failed: %s", grayPathBuf);
+      grayFailed = true;  // sticky: grayDone() refuses a short stream
+    }
+  }
+}
+
+bool ToneBake4::grayDone() {
+  if (grayOpen) {
+    grayOpen = false;
+    if (!grayFile.close()) {
+      Storage.remove(grayPathBuf);
+      LOG_ERR("TIMGE", "Gray temp close failed: %s", grayPathBuf);
+      return false;
+    }
+  }
+  if (grayFailed) {
+    grayFailed = false;
+    Storage.remove(grayPathBuf);
+    return false;
+  }
+  return true;
+}
+
+void ToneBake4::grayDiscard() {
+  if (grayOpen) {
+    grayOpen = false;
+    grayFile.close();
+  }
+  if (grayPathLen != 0) Storage.remove(grayPathBuf);
+}
+
+void ToneBake4::beginRemap() {
+  // Percentile clip (integer): the smallest lo with cum(lo) >= ceil-ish(N·1%)
+  // and the smallest hi with cum(hi) >= N·99%. A single flat histogram (hi <=
+  // lo) has no range to stretch — fall back to the fixed contrast 1.3 map
+  // with the gamma stage off.
+  const uint32_t n = histCount;
+  int lo = 0;
+  int hi = 255;
+  if (n > 0) {
+    const uint32_t loTarget = n * kClipNum / kClipDen > 0 ? n * kClipNum / kClipDen : 1;
+    const uint32_t hiTarget = n * (kClipDen - kClipNum) / kClipDen;
+    uint32_t cum = 0;
+    lo = 255;
+    for (int v = 0; v < 256; ++v) {
+      cum += hist[v];
+      if (cum >= loTarget) {
+        lo = v;
+        break;
+      }
+    }
+    cum = 0;
+    for (int v = 0; v < 256; ++v) {
+      cum += hist[v];
+      if (cum >= hiTarget) {
+        hi = v;
+        break;
+      }
+    }
+  }
+  if (n == 0 || hi <= lo) {
+    // Degenerate (flat scan, or an empty collection): fixed contrast, no
+    // gamma — the doc §2.1 fallback.
+    for (int i = 0; i < 256; ++i) {
+      int c = (26 * i - 765) / 20;
+      if (c < 0) c = 0;
+      if (c > 255) c = 255;
+      mapLut[i] = static_cast<uint8_t>(c);
+    }
+  } else {
+    const int range = hi - lo;
+    for (int i = 0; i < 256; ++i) {
+      int s = (i - lo) * 255 / range;
+      if (s < 0) s = 0;
+      if (s > 255) s = 255;
+      // Gamma stage defaults OFF (§2.2): the stretch already uses the full
+      // range; the panel's absolute-gray waveform owns perceptual matching.
+      if (kGammaEnabled) s = gammaLut[s];
+      mapLut[i] = static_cast<uint8_t>(s);
+    }
+  }
+  adaptive = true;
+  // Phase 1 did not diffuse: reset the FS error state and the serpentine.
+  if (err != nullptr && errNext != nullptr) {
+    memset(err.get(), 0, (width + 2) * sizeof(int16_t));
+    memset(errNext.get(), 0, (width + 2) * sizeof(int16_t));
+  }
+  reverse = false;
+}
+
 bool ToneCacheWriter::begin(const char* p, const int w, const int h) {
   snprintf(path, sizeof(path), "%s", p);
   width = w;
@@ -89,8 +211,9 @@ bool readValidCacheHeader(HalFile& cacheFile, const int expectedWidth, const int
 bool cacheNameFor(const ImageSpec& spec, const char* dir, const bool qualityTone, char* out, const size_t cap) {
   // Quality bake revision: bump when the bake algorithm changes so stale
   // caches re-decode. 'q' was the plain Floyd–Steinberg4 bake (2026-11-07);
-  // 'r' is ToneBake4 (2026-11-08 §5.2).
-  constexpr char kQualityCacheRevision = 'r';
+  // 'r' was the fixed ToneBake4 map (2026-11-08 §5.2); 's' is the adaptive
+  // two-phase bake (2026-11-08 §2, amendment 2).
+  constexpr char kQualityCacheRevision = 's';
   // Identity: generation + href + placement (+ the tone policy, so the
   // quality revert switch never mixes bakes in one file). hrefExt (an
   // overlong Page href, paint-side only) IS the href for the identity.

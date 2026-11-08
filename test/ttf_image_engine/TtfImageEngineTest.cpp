@@ -72,8 +72,9 @@ TEST(CacheIdentity, PolicyLetterSeparatesBakes) {
   ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 10, 20, 100, 80), kDir, true, a, sizeof(a)));
   ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 10, 20, 100, 80), kDir, false, b, sizeof(b)));
   EXPECT_STRNE(a, b);
-  // 'r' = the ToneBake4 revision (design 2026-11-08 §5.2); 'l' = legacy.
-  EXPECT_NE(strstr(a, "/ir"), nullptr);
+  // 's' = the adaptive two-phase ToneBake4 (design 2026-11-08 §2, amendment
+  // 2; 'r' was the fixed-map bake); 'l' = legacy.
+  EXPECT_NE(strstr(a, "/is"), nullptr);
   EXPECT_NE(strstr(b, "/il"), nullptr);
 }
 

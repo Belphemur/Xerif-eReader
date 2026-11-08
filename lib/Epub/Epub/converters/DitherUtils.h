@@ -22,6 +22,12 @@ class ToneBaker {
   // direction (the FS kernel mirrors with it) and advancing the error state
   // itself. One call per row replaces the per-pixel loop + nextRow().
   virtual void toneRow(const uint8_t* gray, uint8_t* tones) = 0;
+  // Adaptive-stretch collection (design 2026-11-08 §2.1, amendment 2): phase
+  // 1 of the two-phase bake — the decode feeds EVERY destination gray row
+  // here in raster order (histogram accumulation + the bake's own gray
+  // temp); no tone is emitted and nothing is painted. Default no-op so a
+  // baker without the phase stays valid for single-pass callers.
+  virtual void collectRow(const uint8_t* gray) { (void)gray; }
 };
 
 // 4x4 Bayer matrix for ordered dithering

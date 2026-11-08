@@ -25,18 +25,20 @@
 #include <string>
 #include <vector>
 
+#include "Epub.h"
 #include "Epub/converters/GifToFramebufferConverter.h"
 #include "GfxRenderer.h"
 #include "TtfImageCache.h"
 #include "TtfImageEngine.h"
 
-// decodeBmpRows is engine-internal (used by decodeAndCache's BMP branch);
-// the suite drives it directly so the BMP coverage needs no Epub/ZIP.
+// decodeBmpRows and remapGrayToCache are engine-internal (decodeAndCache's
+// BMP branch); the suite drives them directly so BMP coverage needs no Epub.
 namespace ttfimg {
-DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, size_t size, GfxRenderer* paint,
-                           const char* cachePath, bool caching, bool (*abortPoll)(void*), void* abortCtx,
-                           bool* cacheStreamOk);
-}
+DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, size_t size, ToneBake4* bake,
+                           bool (*abortPoll)(void*), void* abortCtx);
+DecodeResult remapGrayToCache(const ImageSpec& spec, ToneBake4& bake, const char* writePath, bool caching,
+                              GfxRenderer* paint, bool paintToTarget, bool (*abortPoll)(void*), void* abortCtx);
+}  // namespace ttfimg
 
 uint32_t g_fakeMillis = 0;
 
@@ -154,6 +156,21 @@ ttfimg::ImageSpec makeSpec(const int x, const int y, const int w, const int h) {
 
 }  // namespace
 
+// Runs the production two-phase BMP flow for a paint-only decode: phase 1
+// collects into a gray temp (in-memory storage), phase 2 remaps and paints
+// (caching=false — no cache side effects).
+void bmpDecodeRemapPaint(FakeRenderer& r, const ttfimg::ImageSpec& spec, const std::vector<uint8_t>& bmp) {
+  ttfimg::ToneBake4 bake(spec.w);
+  ASSERT_TRUE(bake.ok());
+  ASSERT_TRUE(bake.beginCollect("/t/paint_case.g"));
+  const auto res = ttfimg::decodeBmpRows(spec, bmp.data(), bmp.size(), &bake, nullptr, nullptr);
+  ASSERT_EQ(res, ttfimg::DecodeResult::Ok);
+  ASSERT_TRUE(bake.grayDone());
+  ASSERT_EQ(ttfimg::remapGrayToCache(spec, bake, "/t/paint_case.pxc", /*caching=*/false, &r,
+                                     /*paintToTarget=*/true, nullptr, nullptr),
+            ttfimg::DecodeResult::Ok);
+}
+
 // ── the regression: paint bounds in portrait ────────────────────────────────
 
 TEST(ImageFitPaint, BmpCoversBoxBelowThePhysicalPanelHeight) {
@@ -163,9 +180,7 @@ TEST(ImageFitPaint, BmpCoversBoxBelowThePhysicalPanelHeight) {
   // space; getDisplayHeight() would clip it all).
   const auto bmp = makeBmp(320, 480, 10);
   const auto spec = makeSpec(100, 600, 100, 150);
-  const auto res =
-      ttfimg::decodeBmpRows(spec, bmp.data(), bmp.size(), &r, nullptr, /*caching=*/false, nullptr, nullptr, nullptr);
-  ASSERT_EQ(res, ttfimg::DecodeResult::Ok);
+  bmpDecodeRemapPaint(r, spec, bmp);
   expectBoxCoverage(r, spec);
 }
 
@@ -175,9 +190,7 @@ TEST(ImageFitPaint, BmpCoversBoxStraddlingThePhysicalPanelHeight) {
   // first 40 rows and the cache never noticed.
   const auto bmp = makeBmp(320, 480, 10);
   const auto spec = makeSpec(100, 440, 100, 150);
-  const auto res =
-      ttfimg::decodeBmpRows(spec, bmp.data(), bmp.size(), &r, nullptr, /*caching=*/false, nullptr, nullptr, nullptr);
-  ASSERT_EQ(res, ttfimg::DecodeResult::Ok);
+  bmpDecodeRemapPaint(r, spec, bmp);
   expectBoxCoverage(r, spec);
 }
 
@@ -187,9 +200,7 @@ TEST(ImageFitPaint, BmpCoversNearOneToOneBox) {
   // painted 1:1 — still below the physical height.
   const auto bmp = makeBmp(100, 150, 10);
   const auto spec = makeSpec(50, 620, 100, 150);
-  const auto res =
-      ttfimg::decodeBmpRows(spec, bmp.data(), bmp.size(), &r, nullptr, /*caching=*/false, nullptr, nullptr, nullptr);
-  ASSERT_EQ(res, ttfimg::DecodeResult::Ok);
+  bmpDecodeRemapPaint(r, spec, bmp);
   expectBoxCoverage(r, spec);
 }
 
@@ -439,4 +450,213 @@ TEST(ImageFitGif, ConverterCoversExactDimBoxBelowThePhysicalPanelHeight) {
   ASSERT_TRUE(converter.decodeToFramebuffer(gif.data(), gif.size(), r, config));
   const auto spec = makeSpec(20, 600, 48, 72);
   expectBoxCoverage(r, spec);
+}
+
+// ── adaptive bake pins (design 2026-11-08 §2, amendment 2) ──────────────────
+// Byte-exact, deterministic, pure-integer: the histogram → percentile →
+// stretch map, the degenerate fallback, and the phase-1 gray temp stream.
+
+TEST(AdaptiveBake, MidtoneStaysMidtoneWhenRangeIsFull) {
+  // The defect-A signature pin: the old fixed map sent source 128 → 176
+  // (gamma 2.2 brightening) → 190 (contrast) before quantization, collapsing
+  // midtones into the panel's two lightest levels. A near-uniform histogram
+  // (4 px per bin, N=1024) clips at lo=2 / hi=253 and the stretch keeps the
+  // midtone at 128 — no brightening anywhere in the map.
+  ttfimg::ToneBake4 bake(4);
+  ASSERT_TRUE(bake.ok());
+  ASSERT_TRUE(bake.beginCollect("/t/bake_full.g"));
+  for (int v = 0; v < 256; ++v) {
+    const uint8_t row[4] = {static_cast<uint8_t>(v), static_cast<uint8_t>(v), static_cast<uint8_t>(v),
+                            static_cast<uint8_t>(v)};
+    bake.collectRow(row);
+  }
+  ASSERT_TRUE(bake.grayDone());
+  bake.beginRemap();
+  // lo: cum ≥ 1024·1/100 = 10 first at v=2 (12). hi: cum ≥ 1013 first at
+  // v=253 (1016). Stretch [2,253] → [0,255].
+  EXPECT_EQ(bake.mapLut[2], 0);
+  EXPECT_EQ(bake.mapLut[253], 255);
+  EXPECT_EQ(bake.mapLut[128], static_cast<uint8_t>((128 - 2) * 255 / 251));  // == 128
+  EXPECT_EQ(bake.mapLut[128], 128);
+  EXPECT_EQ(bake.mapLut[1], 0);      // below lo clamps to black
+  EXPECT_EQ(bake.mapLut[254], 255);  // above hi clamps to white
+}
+
+TEST(AdaptiveBake, PaleBandStretchesToTheFullRange) {
+  // The "Insert" case: a low-contrast scan concentrated in a bright band
+  // [50,128], with dust outliers at 0 and 255 that the percentile clip must
+  // ignore. Rows of 100 pixels, one row per band value (50..127), then an
+  // outlier row and one more all-128 row.
+  ttfimg::ToneBake4 bake(100);
+  ASSERT_TRUE(bake.ok());
+  ASSERT_TRUE(bake.beginCollect("/t/bake_pale.g"));
+  std::vector<uint8_t> row(100);
+  for (int v = 50; v <= 127; ++v) {
+    std::fill(row.begin(), row.end(), static_cast<uint8_t>(v));
+    bake.collectRow(row.data());
+  }
+  std::fill(row.begin(), row.end(), static_cast<uint8_t>(128));
+  bake.collectRow(row.data());
+  row[0] = 0;
+  row[1] = 255;
+  bake.collectRow(row.data());
+  ASSERT_TRUE(bake.grayDone());
+  bake.beginRemap();
+  // N=8000: lo target = 80 → cum(0)=1, cum(50)=101 ≥ 80 → lo=50 (the lone 0
+  // is clipped). hi target = 7920 → cum(127)=7801, cum(128)=8001 ≥ 7920 →
+  // hi=128 (the lone 255 is clipped). Stretch [50,128] → [0,255].
+  EXPECT_EQ(bake.mapLut[50], 0);
+  EXPECT_EQ(bake.mapLut[128], 255);
+  EXPECT_EQ(bake.mapLut[89], static_cast<uint8_t>((89 - 50) * 255 / 78));
+  EXPECT_EQ(bake.mapLut[0], 0);      // clipped outlier → black
+  EXPECT_EQ(bake.mapLut[255], 255);  // clipped outlier → white
+}
+
+TEST(AdaptiveBake, DegenerateHistogramFallsBackToFixedContrast) {
+  // A flat scan (single tone) has no range to stretch: the §2.1 fallback is
+  // the fixed contrast 1.3 map — without gamma.
+  ttfimg::ToneBake4 bake(8);
+  ASSERT_TRUE(bake.ok());
+  ASSERT_TRUE(bake.beginCollect("/t/bake_flat.g"));
+  const uint8_t row[8] = {128, 128, 128, 128, 128, 128, 128, 128};
+  for (int i = 0; i < 4; ++i) bake.collectRow(row);
+  ASSERT_TRUE(bake.grayDone());
+  bake.beginRemap();
+  for (int i = 0; i < 256; ++i) {
+    int c = (26 * i - 765) / 20;
+    if (c < 0) c = 0;
+    if (c > 255) c = 255;
+    ASSERT_EQ(bake.mapLut[i], c) << "i=" << i;
+  }
+}
+
+TEST(AdaptiveBake, GrayTempStreamsEveryRowByteExact) {
+  auto& storage = HalStorage::getInstance();
+  storage.files.clear();
+  ttfimg::ToneBake4 bake(6);
+  ASSERT_TRUE(bake.ok());
+  ASSERT_TRUE(bake.beginCollect("/t/bake_stream.g"));
+  std::vector<std::vector<uint8_t>> rows;
+  for (int r = 0; r < 5; ++r) {
+    std::vector<uint8_t> row(6);
+    for (int x = 0; x < 6; ++x) row[x] = static_cast<uint8_t>(r * 40 + x);
+    rows.push_back(row);
+    bake.collectRow(row.data());
+  }
+  ASSERT_TRUE(bake.grayDone());
+  const auto& data = storage.files["/t/bake_stream.g"];
+  ASSERT_EQ(data.size(), 30u);
+  for (int r = 0; r < 5; ++r) {
+    EXPECT_EQ(0, memcmp(data.data() + r * 6, rows[r].data(), 6)) << "row " << r;
+  }
+  // The temp is consumed by the remap pass: no leftover .g after remap.
+  const ttfimg::ImageSpec spec = makeSpec(0, 0, 6, 5);
+  ttfimg::remapGrayToCache(spec, bake, "/t/bake_stream.pxc", /*caching=*/false, nullptr, /*paintToTarget=*/false,
+                           nullptr, nullptr);
+  EXPECT_FALSE(storage.exists("/t/bake_stream.g"));
+}
+
+TEST(AdaptiveBake, TwoPhaseCacheIsDeterministicAcrossRuns) {
+  // Worker/foreground parity: two full two-phase decodes of the same input
+  // produce byte-identical 2bpp caches (same histogram → same LUT → same
+  // serpentine FS sequence). Separate names so neither run overwrites the
+  // other's bytes.
+  auto& storage = HalStorage::getInstance();
+  storage.files.clear();
+  const auto bmp = makeBmp(64, 48, 137);
+  const auto spec = makeSpec(0, 0, 32, 24);
+  for (int run = 0; run < 2; ++run) {
+    char gray[64];
+    char cache[64];
+    snprintf(gray, sizeof(gray), "/t/parity%d.g", run);
+    snprintf(cache, sizeof(cache), "/t/parity%d.pxc", run);
+    ttfimg::ToneBake4 bake(spec.w);
+    ASSERT_TRUE(bake.ok());
+    ASSERT_TRUE(bake.beginCollect(gray));
+    ASSERT_EQ(ttfimg::decodeBmpRows(spec, bmp.data(), bmp.size(), &bake, nullptr, nullptr), ttfimg::DecodeResult::Ok);
+    ASSERT_TRUE(bake.grayDone());
+    ASSERT_EQ(ttfimg::remapGrayToCache(spec, bake, cache, /*caching=*/true, nullptr, /*paintToTarget=*/false, nullptr,
+                                       nullptr),
+              ttfimg::DecodeResult::Ok);
+  }
+  EXPECT_EQ(storage.files["/t/parity0.pxc"], storage.files["/t/parity1.pxc"]);
+  EXPECT_FALSE(storage.files["/t/parity0.pxc"].empty());
+}
+
+// ── end-to-end decodeAndCache pins (the production flow) ────────────────────
+// GIF and BMP through the REAL decodeAndCache: PSRAM extraction (stub Epub
+// with injectable items), collect-only converter/decode, shared remap pass,
+// atomic publish, then a valid cache that blits with full coverage in
+// portrait below the physical height.
+
+// Runs the production decodeAndCache for a GIF/BMP fixture and asserts the
+// published cache is valid and blits with full box coverage in portrait.
+// The Epub stub serves the raw item bytes (read from the fixture dir); the
+// ZIP entry itself only feeds probeImage.
+void expectDecodeCacheBlit(freeink::book::BookSource& source, freeink::book::Book& book, freeink::book::Arena& scratch,
+                           Epub& epub, const char* href, const char* file, const char* kind, const int specX,
+                           const int specY, const int specW, const int specH) {
+  FILE* f = std::fopen(file, "rb");
+  ASSERT_NE(f, nullptr) << kind;
+  std::vector<uint8_t> bytes;
+  uint8_t buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) bytes.insert(bytes.end(), buf, buf + n);
+  std::fclose(f);
+  ASSERT_GT(bytes.size(), 32u) << kind;
+  epub.items[href] = bytes;
+
+  FakeRenderer r;
+  auto& storage = HalStorage::getInstance();
+  storage.files.clear();
+
+  ttfimg::ImageSpec spec = makeSpec(specX, specY, specW, specH);
+  snprintf(spec.href, sizeof(spec.href), "%s", href);
+  spec.generation = 9;
+
+  char cachePath[256];
+  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, cachePath, sizeof(cachePath)));
+  const auto res = ttfimg::decodeAndCache(spec, cachePath, source, book.zip(), scratch, &epub, &r,
+                                          /*qualityTone=*/true, /*caching=*/true, nullptr, nullptr,
+                                          /*paintToTarget=*/true);
+  ASSERT_EQ(res, ttfimg::DecodeResult::Ok) << kind;
+  // The published cache is valid and complete...
+  EXPECT_TRUE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true)) << kind;
+  // ...no temp debris survives the publish...
+  EXPECT_FALSE(storage.exists((std::string(cachePath) + ".t").c_str())) << kind;
+  EXPECT_FALSE(storage.exists((std::string(cachePath) + ".g").c_str())) << kind;
+  // ...and the blit covers the placement box (portrait, below physical height).
+  r.fillWhite();
+  EXPECT_TRUE(ttfimg::blitFromCache(r, spec, "/books/epub_x/ficache", true)) << kind;
+  expectBoxCoverage(r, spec);
+}
+
+TEST(ImageFitEndToEnd, BmpDecodePublishesCacheAndBlits) {
+  static uint8_t bookBuf[1 << 20];
+  static uint8_t scratchBuf[4 << 20];
+  freeink::book::Arena bookArena(bookBuf, sizeof(bookBuf));
+  freeink::book::Arena scratch(scratchBuf, sizeof(scratchBuf));
+  HostFileSource source;
+  ASSERT_TRUE(source.open(FIT_FIXTURES "/fit_fixtures.epub"));
+  freeink::book::Book book;
+  ASSERT_EQ(book.open(source, bookArena, scratch), freeink::book::BookStatus::Ok);
+  Epub epub;
+  // 64x48 BMP into a 2x-downscaled 32x24 box below the physical height.
+  expectDecodeCacheBlit(source, book, scratch, epub, "OEBPS/images/small.bmp", FIT_FIXTURES "/small.bmp", "bmp", 20,
+                        600, 32, 24);
+}
+
+TEST(ImageFitEndToEnd, GifDecodePublishesCacheAndBlits) {
+  static uint8_t bookBuf[1 << 20];
+  static uint8_t scratchBuf[4 << 20];
+  freeink::book::Arena bookArena(bookBuf, sizeof(bookBuf));
+  freeink::book::Arena scratch(scratchBuf, sizeof(scratchBuf));
+  HostFileSource source;
+  ASSERT_TRUE(source.open(FIT_FIXTURES "/fit_fixtures.epub"));
+  freeink::book::Book book;
+  ASSERT_EQ(book.open(source, bookArena, scratch), freeink::book::BookStatus::Ok);
+  Epub epub;
+  // 96x144 GIF into a 3x/6x-downscaled 32x24 box below the physical height.
+  expectDecodeCacheBlit(source, book, scratch, epub, "OEBPS/images/dark.gif", FIT_FIXTURES "/dark.gif", "gif", 20, 600,
+                        32, 24);
 }

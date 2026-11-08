@@ -174,6 +174,40 @@ Compute the used dynamic range **per image** and stretch it to [0, 255]:
   curve (the epdiy 4-bit reader uses 1/0.8 — see resources) without code churn.
 - A/B switch `imageDecodeQuality = 0` keeps today's revert semantics.
 
+#### Amendment 2 (2026-11-08, as-built for the adaptive bake)
+
+- **Gray temp naming**: the phase-1 gray stream lives at `<cachePath>.g` — NOT the `.t`
+  the sketch proposed — because `.t` remains the 2bpp cache's atomic-publish temp; the
+  remap writes `<cache>.t` and publishes onto the final name exactly as before, so the
+  interrupted-decode invariant (a torn write never reaches the final name) is preserved
+  and the two temps cannot collide. The gray stream is a raw row-major 8-bit block (no
+  header — the caller knows w×h from the spec) and is removed on every exit path; a
+  power loss between phases leaves a stale `.g` that the next decode truncates and the
+  book cache sweep collects.
+- **Bake API**: `ToneBake4` gains `beginCollect(path)` / `collectRow(gray)` (phase 1:
+  saturating 256-bin u16 histogram + gray-row append; the bake owns the file handle so
+  every decoder routes through one writer) and `beginRemap()` (percentile clip
+  `n·1%`/`n·99%` in u32 cumulative math → integer stretch LUT ⊙ gamma-when-enabled →
+  `mapLut`; FS error state + serpentine reset). `toneRow()` keeps its signature and uses
+  `mapLut` once `beginRemap()` ran, so the phase-2 loops of all four decoders are the
+  familiar serpentine call. Degenerate histogram (empty or `hi ≤ lo`) falls back to the
+  fixed contrast 1.3 map **without gamma** — a single-tone image has nothing to stretch.
+- **One remap pass for all decoders**: the engine's `remapGrayToCache(spec, bake, …)`
+  streams `.g` back, bakes, appends the 2bpp cache rows and paints — shared by the SDK
+  JPEG/PNG row sink, `decodeBmpRows` (now collect-only) and the GIF converter in a new
+  **collect-only mode** (`RenderConfig::toneCollect`: `qFlushRow` feeds
+  `bake->collectRow()` and writes no cache/paint; `config.cachePath` stays empty so the
+  converter's own PixelCache machinery is bypassed). Worker/foreground parity is one
+  code path by construction.
+- **Gamma configurability** is the compile-time constant `ToneBake4::kGammaEnabled`
+  (default `false`) next to the retained `kGammaNum/kGammaDen` — a device tune flips one
+  constant; no settings storage.
+- **Latency**: identical to the old pipeline on first view (one decode) plus one small
+  disk pass over the gray temp (~0.3 MB for a full-page placement); the paint now happens
+  in the remap pass after the decode — invisible on e-ink (the frame commits once at the
+  end regardless). Steady state is the 2bpp cache as before.
+- **Cache identity**: bake change → `kQualityCacheRevision` `'r'` → `'s'`.
+
 ### 3. Parity requirements (unchanged from PR #301)
 
 - All four decoders (SDK JPEG/PNG rows, BMP decode, GIF converter) route through one bake.

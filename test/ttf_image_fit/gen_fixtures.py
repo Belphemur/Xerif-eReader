@@ -107,9 +107,9 @@ def write_png(path):
 write_progressive_jpeg(os.path.join(OUT, "prog.jpg"))
 write_png(os.path.join(OUT, "pattern.png"))
 def write_gif(path):
-    """Minimal 96x144 GIF87a: 2-color palette, every pixel index 0 (dark).
-    Uncompressed-style LZW: a clear code before every pixel code keeps the
-    code size at the minimum, so no table management is needed."""
+    """Minimal 96x144 GIF87a: 2-color palette, every pixel index 0 (dark),
+    encoded with a real LZW emit loop (constant-index runs grow the standard
+    string table) so stock decoders reproduce the pixels exactly."""
     GW, GH = 96, 144
     out = bytearray(b"GIF87a")
     out += struct.pack("<HH", GW, GH)
@@ -120,15 +120,40 @@ def write_gif(path):
     out += bytes([0])  # no local table, not interlaced
     out += bytes([2])  # LZW min code size
 
+    min_code_size = 2
+    clear = 1 << min_code_size       # 4
+    end = clear + 1                  # 5
     bits = []
 
     def put(val, n):
-        for i in range(n - 1, -1, -1):
+        # GIF LZW packs codes LSB-first into the byte stream.
+        for i in range(n):
             bits.append((val >> i) & 1)
 
-    for _ in range(GW * GH):
-        put(4, 3)  # CLEAR
-        put(0, 3)  # pixel = palette index 0 (dark)
+    code_size = min_code_size + 1
+    next_code = end + 1              # first assignable table code
+    table = {}                       # (prefix_code, index) -> code
+    put(clear, code_size)
+    prefix = 0                       # first pixel: palette index 0
+    for _ in range(GW * GH - 1):
+        key = (prefix, 0)
+        if key in table:
+            prefix = table[key]
+            continue
+        put(prefix, code_size)
+        table[key] = next_code
+        next_code += 1
+        if next_code == (1 << code_size) + 1 and code_size < 12:
+            # Decoder-side convention: the width grows one code late.
+            code_size += 1
+        if next_code >= 4096:
+            put(clear, code_size)
+            table.clear()
+            next_code = end + 1
+            code_size = min_code_size + 1
+        prefix = 0
+    put(prefix, code_size)
+    put(end, code_size)
     while len(bits) % 8:
         bits.append(0)
     data = bytearray()
@@ -150,6 +175,24 @@ def write_gif(path):
 
 write_gif(os.path.join(OUT, "dark.gif"))
 
+
+def write_small_bmp(path, w=64, h=48, gray=137):
+    # 24-bit bottom-up BMP — a real BMP entry for the EPUB fixture.
+    row_bytes = (w * 3 + 3) // 4 * 4
+    payload = 40 + row_bytes * h
+    fh = struct.pack("<2sIHHI", b"BM", 14 + payload, 0, 0, 14 + 40)
+    dib = struct.pack("<IiiHHIIiiII", 40, w, h, 1, 24, 0, payload, 2835, 2835, 0, 0)
+    data = bytearray()
+    for _ in range(h):
+        row = bytearray(bytes((gray, gray, gray)) * w)
+        row += b"\0" * (row_bytes - len(row))
+        data += row
+    with open(path, "wb") as f:
+        f.write(fh + dib + bytes(data))
+
+
+write_small_bmp(os.path.join(OUT, "small.bmp"))
+
 opf = """<?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
@@ -161,6 +204,8 @@ opf = """<?xml version="1.0" encoding="UTF-8"?>
     <item id="ch1" href="text/ch1.xhtml" media-type="application/xhtml+xml"/>
     <item id="i1" href="images/prog.jpg" media-type="image/jpeg"/>
     <item id="i2" href="images/pattern.png" media-type="image/png"/>
+    <item id="i3" href="images/dark.gif" media-type="image/gif"/>
+    <item id="i4" href="images/small.bmp" media-type="image/bmp"/>
   </manifest>
   <spine><itemref idref="ch1"/></spine>
 </package>
@@ -172,6 +217,8 @@ ch1 = ('<?xml version="1.0" encoding="UTF-8"?>\n'
        '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
        '<p><img src="../images/prog.jpg"/></p>'
        '<p><img src="../images/pattern.png"/></p>'
+       '<p><img src="../images/dark.gif"/></p>'
+       '<p><img src="../images/small.bmp"/></p>'
        '</body></html>\n')
 
 epub_path = os.path.join(OUT, "fit_fixtures.epub")
@@ -187,5 +234,7 @@ with zipfile.ZipFile(epub_path, "w") as z:
     z.writestr("OEBPS/text/ch1.xhtml", ch1)
     z.write(os.path.join(OUT, "prog.jpg"), "OEBPS/images/prog.jpg")
     z.write(os.path.join(OUT, "pattern.png"), "OEBPS/images/pattern.png")
+    z.write(os.path.join(OUT, "dark.gif"), "OEBPS/images/dark.gif")
+    z.write(os.path.join(OUT, "small.bmp"), "OEBPS/images/small.bmp")
 
 print("ttf_image_fit fixtures:", epub_path)
