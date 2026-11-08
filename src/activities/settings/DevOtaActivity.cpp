@@ -410,6 +410,14 @@ void DevOtaActivity::loop() {
   }
 }
 
+void DevOtaActivity::keepSelectionVisible() {
+  if (selectedIndex < listScrollTop_) {
+    listScrollTop_ = selectedIndex;
+  } else if (selectedIndex >= listScrollTop_ + listVisibleRows_) {
+    listScrollTop_ = selectedIndex - listVisibleRows_ + 1;
+  }
+}
+
 void DevOtaActivity::render(RenderLock&&) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
