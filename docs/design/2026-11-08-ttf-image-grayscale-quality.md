@@ -112,21 +112,43 @@ gray mode; the routing must follow `grayscaleCapabilities()` exactly as the
 legacy reader does (EpubReaderActivity.cpp:5768-5800), so a panel without
 absolute gray falls back to today's 1bpp dither rather than breaking.
 
-Mechanism (all pieces exist; this is wiring, not new drivers):
+Mechanism (as-built amendment 2026-11-08, implementation run): the route is
+the legacy reader's **two-pass absolute walk** — not a DUAL-target walk.
+As-builts on the original bullets:
 
-- `paintCapturedPage` gains the absolute-gray branch: when the page carries
-  images and the renderer supports absolute gray, the base text pass AND the
-  image blit run into the dual-plane (DUAL) targets, with
-  `grayPlanesAreAbsolute()` true so `grayPlanePixel` (BitmapHelpers.h:24-27)
-  emits the absolute per-plane bits. `DirectPixelWriter` already carries the
-  DUAL + absolute plane semantics (DirectPixelWriter.h:162-189,
-  `dualFb`, `absolute`) — the cache blit (`blitFromCache`) and the
-  worker's paint path write tone values through the same writer.
-- Display-time route mirrors the legacy predicate: image pages with absolute
-  gray support take `displayGrayscaleBase(GrayscaleMode::Absolute, ...)` +
-  plane upload (the two-pass walk the legacy path uses at
-  EpubReaderActivity.cpp:5796-5806), not the text-only `renderTtfGray*`
-  walks, which stay for text-only pages.
+- `DirectPixelWriter`'s GRAYSCALE_DUAL branch is overlay-only (its `dualFb`
+  member exists but never consults `absolute`), and the engine's `FrameTarget`
+  painters can only write the framebuffer — a DUAL-absolute walk would need
+  new plane-mapping code in three places. The two-pass single-mode walk the
+  legacy path already uses needs none: per pass the framebuffer IS the plane
+  source (seeded 0xFF, cleared bit = dark), seeded by `clearScreen(0xFF)` and
+  uploaded via `copyGrayscaleLsbBuffers()`/`copyGrayscaleMsbBuffers()` — the
+  legacy arm at EpubReaderActivity.cpp:6188+ (the two-pass fallback).
+  `grayPlanesAreAbsolute()` is true (set by
+  `displayGrayscaleBase(GrayscaleMode::Absolute, ...)`), so the existing
+  `grayPlanePixel` absolute branch and `DirectPixelWriter`'s existing
+  single-mode absolute branch emit the per-plane bits for image tones with no
+  changes to `DirectPixelWriter`.
+- `paintCapturedPage` gains the absolute-gray branch as a paint-pass
+  parameter (`TtfPaintPass` Base/PlaneLsb/PlaneMsb): the base pass routes text
+  through `PagePaint::paintText` (the shared quantizer's tone≥1 plotting) and
+  the plane passes through the new `PagePaint::paintTextAbsolutePlanes` —
+  the same walk with the absolute tone→plane mapping (tone 1 darkens LSB,
+  tone 2 MSB, tone 3 both, via `grayPlanePixel`). Rules go through the engine
+  (`FrameTarget`), images through the unchanged cache blit / foreground
+  decode — the same writer both passes use, so worker/foreground parity is
+  unchanged. The base image paint carries a Bayer dither
+  (`setDitherImagesInBw(true)` for the base pass only), matching the legacy
+  base snapshot the absolute base display consumes.
+- Display-time route mirrors the legacy predicate (plus the quality path:
+  the revert switch keeps today's 1bpp image display verbatim): image pages
+  with absolute gray support take
+  `displayGrayscaleBase(GrayscaleMode::Absolute, ...)` + `storeBwBuffer()` +
+  the two-pass plane walk + `displayGrayBuffer()` + `restoreBwBuffer()`
+  (EpubReaderActivity `renderTtfImageGrayAbsolute`), not the text-only
+  `renderTtfGray*` walks, which stay for text-only pages. The status bar is
+  re-painted inside each plane pass (the plane upload replaces the whole
+  frame).
 - A page that has images but a panel without absolute gray keeps today's
   1bpp path (no regression on X3-class hardware).
 - The tone→plane mapping uses the existing absolute branch

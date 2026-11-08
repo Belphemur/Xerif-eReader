@@ -70,6 +70,15 @@ class PagePaint {
   // the base carries it, and plotting in the shared strip would corrupt it.
   static void paintPlanes(const Page& page, FontChain& fonts, const GfxRenderer& renderer,
                           int16_t characterSpacingPx = 0, int16_t wordSpacingPx = 0);
+
+  // Absolute-gray plane pass (design 2026-11-08 §5.1): image pages on
+  // absolute-capable panels re-walk the text once per plane with the
+  // framebuffer as the plane source, seeded 0xFF (cleared bit = dark). The
+  // absolute encoding of the shared quantizer's tones decides the writes:
+  // tone 1 darkens the LSB plane, tone 2 the MSB, tone 3 both (grayPlanePixel
+  // absolute branch); tone 0 leaves the seed. `msbPass` selects the plane.
+  static void paintTextAbsolutePlanes(const Page& page, FontChain& fonts, const GfxRenderer& renderer, bool msbPass,
+                                      int16_t characterSpacingPx = 0, int16_t wordSpacingPx = 0);
 };
 
 }  // namespace book

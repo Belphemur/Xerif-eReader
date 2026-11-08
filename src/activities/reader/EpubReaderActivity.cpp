@@ -4535,10 +4535,14 @@ void EpubReaderActivity::ttfCommitFrame(const freeink::book::Page& page, const f
     GUI.drawPopup(renderer, tr(STR_SAVE_PROGRESS_FAILED));
   };
   // Same §11 Q7 predicate paintTtfPage used for the base pass above: images
-  // keep the 1bpp engine path (no plane bits), so the dual-plane block runs
-  // only for text-only AA pages on a panel whose controller supports the
-  // 4-level gray mode at all.
+  // keep the 1bpp engine path EXCEPT on absolute-capable panels (design
+  // 2026-11-08 §5.1), where the image page joins the plane walk through the
+  // legacy reader's absolute arm — same predicate, plus the quality path
+  // (the revert switch keeps today's 1bpp image display verbatim).
   const bool pageHasImages = page.imageCount > 0 && SETTINGS.imageRendering == CrossPointSettings::IMAGES_DISPLAY;
+  const bool absoluteImageGray = pageHasImages && SETTINGS.imageDecodeQuality != 0 && !gpio.deviceIsX3() &&
+                                 display.getController() == HalDisplay::Controller::UC8279 &&
+                                 renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
   const auto grayCaps = renderer.grayscaleCapabilities();
   // Degrade-aware: a build without the mono module paints Smooth planes even
   // when the setting asks for Crisp (the loader degraded the faces).
@@ -4548,9 +4552,9 @@ void EpubReaderActivity::ttfCommitFrame(const freeink::book::Page& page, const f
   const bool smoothText = SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH;
 #endif
   const bool grayParity = smoothText && !pageHasImages && grayCaps.supported();
-  LOG_DBG("GRS", "ttfGrayPath: aa=%d images=%d strip=%d cadence=%d/%d", grayParity, pageHasImages,
-          grayCaps.stripUploads, pagesUntilFullRefresh, SETTINGS.getRefreshFrequency());
-  if (grayParity) {
+  LOG_DBG("GRS", "ttfGrayPath: aa=%d images=%d absolute=%d strip=%d cadence=%d/%d", grayParity, pageHasImages,
+          absoluteImageGray, grayCaps.stripUploads, pagesUntilFullRefresh, SETTINGS.getRefreshFrequency());
+  if (grayParity || absoluteImageGray) {
     // §11 Q7 construction (a): dual-plane gray parity. Base refresh ordering
     // mirrors the legacy AA path: cleanup cycle when due, otherwise the
     // grayscale base waveform; then the plane walks, the gray display, and
@@ -4559,9 +4563,11 @@ void EpubReaderActivity::ttfCommitFrame(const freeink::book::Page& page, const f
     // advertises Overlay gray with stripUploads=false — the full planes go
     // through the same driver's full-plane upload, not a strip flag flip).
     LOG_DBG("GRS", "ttf gray route: transport=%s pagesUntilFullRefresh=%d refreshFrequency=%d images=%d",
-            grayCaps.stripUploads ? "strips" : "full-frame", pagesUntilFullRefresh, SETTINGS.getRefreshFrequency(),
-            pageHasImages);
-    if (grayCaps.stripUploads) {
+            absoluteImageGray ? "absolute-image" : grayCaps.stripUploads ? "strips" : "full-frame",
+            pagesUntilFullRefresh, SETTINGS.getRefreshFrequency(), pageHasImages);
+    if (absoluteImageGray) {
+      renderTtfImageGrayAbsolute(page, params, scratchMark);
+    } else if (grayCaps.stripUploads) {
       renderTtfGrayStrips(page, params, scratchMark);
     } else {
       renderTtfGrayFullFrame(page, params, scratchMark);
@@ -5035,6 +5041,76 @@ void EpubReaderActivity::renderTtfGrayFullFrame(const freeink::book::Page& page,
 #ifdef BOOK_PROFILE
   LOG_DBG("PROF", "phase=ttf_gray transport=full_frame plane_bytes=%u base=%lums planes=%lums gray=%lums cleanup=%lums",
           (unsigned)planeBytes, tBaseMs - renderStartMs, tPlanesMs - tBaseMs, tGrayMs - tPlanesMs, millis() - tGrayMs);
+#endif
+}
+
+void EpubReaderActivity::renderTtfImageGrayAbsolute(const freeink::book::Page& page,
+                                                    const freeink::book::LayoutParams& params, size_t scratchMark) {
+  (void)scratchMark;  // released by the caller after this walk
+#ifdef BOOK_PROFILE
+  const unsigned long renderStartMs = millis();
+#endif
+  // Image page on an absolute-capable panel (design 2026-11-08 §5.1): the
+  // legacy reader's absolute arm — the base display consumes the painted
+  // framebuffer, then the page content is re-walked once per plane with the
+  // framebuffer as the plane source (seeded 0xFF; cleared bit = dark). Text
+  // goes through PagePaint's absolute tone sink, images through the same
+  // cache blit / foreground decode the base pass used — the writer picks up
+  // the absolute plane semantics from the renderer's mode, so worker and
+  // foreground parity is unchanged.
+  const auto baseMode = pagesUntilFullRefresh <= 1 ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH;
+  if (!renderer.displayGrayscaleBase(HalDisplay::GrayscaleMode::Absolute, baseMode)) {
+    LOG_ERR("ERS", "Could not start absolute image page; displaying B/W");
+    ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
+    return;
+  }
+  LOG_DBG("ERS", "TTF image page: absolute quality waveform");
+  pagesUntilFullRefresh = 1;
+
+  if (!renderer.storeBwBuffer()) {
+    // The plane passes overwrite the framebuffer; without the stored base
+    // they cannot be undone — cancel the absolute pass, keep the base.
+    LOG_ERR("ERS", "Failed to store BW buffer for absolute image page; keeping B/W base");
+    renderer.setRenderMode(GfxRenderer::BW);
+    return;
+  }
+
+  const auto paintPlanePass = [&](const bool msbPass) {
+    // Seed both planes' white; the walk clears each plane's dark bits.
+    renderer.clearScreen(0xFF);
+    renderer.setRenderMode(msbPass ? GfxRenderer::GRAYSCALE_MSB : GfxRenderer::GRAYSCALE_LSB);
+    paintCapturedPage(page, params.font, renderer, *ttf_, params.characterSpacingPx, params.wordSpacingPx,
+                      msbPass ? TtfPaintPass::PlaneMsb : TtfPaintPass::PlaneLsb);
+    // The status bar is part of the absolute planes too (legacy parity): the
+    // plane upload replaces the whole frame, the base's chrome would vanish.
+    renderStatusBar();
+    if (msbPass) {
+      renderer.copyGrayscaleMsbBuffers();
+    } else {
+      renderer.copyGrayscaleLsbBuffers();
+    }
+  };
+#ifdef BOOK_PROFILE
+  const unsigned long tBaseMs = millis();
+#endif
+  paintPlanePass(false);
+#ifdef BOOK_PROFILE
+  const unsigned long tLsbMs = millis();
+#endif
+  paintPlanePass(true);
+#ifdef BOOK_PROFILE
+  const unsigned long tMsbMs = millis();
+#endif
+
+  renderer.setRenderMode(GfxRenderer::BW);
+  renderer.displayGrayBuffer();
+#ifdef BOOK_PROFILE
+  const unsigned long tGrayMs = millis();
+#endif
+  renderer.restoreBwBuffer();
+#ifdef BOOK_PROFILE
+  LOG_DBG("PROF", "phase=ttf_gray_absolute base=%lums lsb=%lums msb=%lums gray=%lums total=%lums", tBaseMs - renderStartMs,
+          tLsbMs - tBaseMs, tMsbMs - tLsbMs, tGrayMs - tMsbMs, millis() - renderStartMs);
 #endif
 }
 

@@ -53,14 +53,23 @@ QuickRelayoutResult quickRelayoutPage(freeink::book::TtfBookRuntime& ttf, GfxRen
                                       const uint32_t windowEndChar, const bool autoPageTurn, QuickPageCapture& capture,
                                       PoolBytes& sessionBuffer);
 
+// Which pass of the page paint is running (design 2026-11-08 §5.1). Base is
+// the pre-commit paint into the plain framebuffer. The absolute-gray image
+// route re-walks the page content once per plane: the framebuffer is the
+// plane source each pass (seeded 0xFF, cleared bit = dark), so text and
+// image writes decide per pass which plane's bits they darken.
+enum class TtfPaintPass : uint8_t { Base, PlaneLsb, PlaneMsb };
+
 // Paint a transient engine Page (captured or freshly read) with the reader's
 // TTF page pipeline: text via the shared uniform quantizer when AA gray
-// parity holds, 1bpp engine path otherwise; images per the user's display
-// policy. Extracted from EpubReaderActivity::paintTtfPage — keep this body
-// and the reader member in lockstep (the member now delegates here).
+// parity holds or the page takes the absolute-gray image route, 1bpp engine
+// path otherwise; images per the user's display policy. Extracted from
+// EpubReaderActivity::paintTtfPage — keep this body and the reader member in
+// lockstep (the member now delegates here).
 // spacingPx are the values the page was laid out with; the engine charges them
 // to every glyph advance, so the paint pass must replay them.
 void paintCapturedPage(const freeink::book::Page& page, void* font, GfxRenderer& renderer,
-                       freeink::book::TtfBookRuntime& ttf, int16_t characterSpacingPx = 0, int16_t wordSpacingPx = 0);
+                       freeink::book::TtfBookRuntime& ttf, int16_t characterSpacingPx = 0,
+                       int16_t wordSpacingPx = 0, TtfPaintPass pass = TtfPaintPass::Base);
 
 #endif  // CROSSPOINT_TTF_READER

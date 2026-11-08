@@ -5,6 +5,9 @@
 #include <BookTypes.h>
 #include <Logging.h>
 
+#include <HalDisplay.h>
+#include <HalGPIO.h>
+
 #include "BookFontLoader.h"
 #include "CrossPointSettings.h"
 #include "Epub/blocks/ImageDecodeGate.h"
@@ -117,6 +120,15 @@ void paintTtfPageImages(const freeink::book::Page& page, freeink::book::TtfBookR
 
 }  // namespace
 
+// Design 2026-11-08 §5.1: the absolute-gray image routing predicate, the
+// legacy reader's absoluteImageGrayscale arm (EpubReaderActivity render
+// contents) restricted to the quality path — the revert switch keeps today's
+// 1bpp image display verbatim, and the X3 guard mirrors the legacy arm.
+bool ttfAbsoluteImageGray(const GfxRenderer& renderer) {
+  return !gpio.deviceIsX3() && display.getController() == HalDisplay::Controller::UC8279 &&
+         renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
+}
+
 QuickRelayoutResult quickRelayoutPage(freeink::book::TtfBookRuntime& ttf, GfxRenderer& renderer,
                                       const uint16_t spineIndex, const uint32_t anchorChar,
                                       const uint32_t windowEndChar, const bool autoPageTurn, QuickPageCapture& capture,
@@ -173,34 +185,53 @@ QuickRelayoutResult quickRelayoutPage(freeink::book::TtfBookRuntime& ttf, GfxRen
 
 void paintCapturedPage(const freeink::book::Page& page, void* font, GfxRenderer& renderer,
                        freeink::book::TtfBookRuntime& ttf, const int16_t characterSpacingPx,
-                       const int16_t wordSpacingPx) {
+                       const int16_t wordSpacingPx, const TtfPaintPass pass) {
   // §11 Q7 construction (a): with text AA engaged the paint goes via PagePaint
   // (the tone-1 boundary of the shared uniform quantizer) and a dual plane
   // walk supplies the two gray tones through the panel's AA waveform — the
-  // same 4-level pipeline the bitmap reader uses. Images keep the 1bpp
-  // engine path (no plane bits for image pixels).
+  // same 4-level pipeline the bitmap reader uses. Image pages join it on
+  // absolute-capable panels (design 2026-11-08 §5.1): the commit re-walks the
+  // content once per plane with the baked 4-level tones, so the page no
+  // longer forces the 1bpp engine path there. Panels without absolute gray
+  // keep the 1bpp image path (no plane bits for image pixels).
   const bool pageHasImages = page.imageCount > 0 && SETTINGS.imageRendering == CrossPointSettings::IMAGES_DISPLAY;
+  const bool absoluteImages = pageHasImages && SETTINGS.imageDecodeQuality != 0 && ttfAbsoluteImageGray(renderer);
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
   const bool smoothText = !freeink::book::fontLoader.effectiveMonochrome();
 #else
   const bool smoothText = SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH;
 #endif
-  const bool grayParity = smoothText && !pageHasImages && renderer.grayscaleCapabilities().supported();
+  const bool grayParity = smoothText && (absoluteImages || !pageHasImages) &&
+                          renderer.grayscaleCapabilities().supported();
   auto* chain = static_cast<freeink::book::FontChain*>(font);
-  if (grayParity) {
-    freeink::book::PagePaint::paintText(page, *chain, renderer, characterSpacingPx, wordSpacingPx);
-  } else {
-    const freeink::book::FrameTarget frameTarget = makeFrameTarget(renderer);
-    freeink::book::PageRenderer::renderText(page, *chain, frameTarget, nullptr, characterSpacingPx, wordSpacingPx);
-    // Ruby annotations are engine records — the same pass the engine's own
-    // render() runs; no CrossPoint layout involvement.
-    if (page.rubyCount > 0) {
-      freeink::book::PageRenderer::renderRubies(page, *chain, frameTarget);
+  if (pass == TtfPaintPass::Base) {
+    if (grayParity) {
+      freeink::book::PagePaint::paintText(page, *chain, renderer, characterSpacingPx, wordSpacingPx);
+    } else {
+      const freeink::book::FrameTarget frameTarget = makeFrameTarget(renderer);
+      freeink::book::PageRenderer::renderText(page, *chain, frameTarget, nullptr, characterSpacingPx, wordSpacingPx);
+      // Ruby annotations are engine records — the same pass the engine's own
+      // render() runs; no CrossPoint layout involvement.
+      if (page.rubyCount > 0) {
+        freeink::book::PageRenderer::renderRubies(page, *chain, frameTarget);
+      }
     }
+  } else {
+    // Absolute-gray plane pass: the 0xFF seed is white; the walk clears each
+    // plane's bit where the tone's absolute encoding is dark (tone 1 → LSB,
+    // tone 2 → MSB, tone 3 → both).
+    freeink::book::PagePaint::paintTextAbsolutePlanes(page, *chain, renderer, pass == TtfPaintPass::PlaneMsb,
+                                                      characterSpacingPx, wordSpacingPx);
   }
   freeink::book::PageRenderer::renderRules(page, makeFrameTarget(renderer));
   if (pageHasImages) {
+    // The base snapshot consumed by the absolute base display carries the
+    // image as a Bayer dither (legacy parity); the plane passes overwrite the
+    // rect with the baked 4-level tones through the same writer.
+    const bool baseDither = absoluteImages && pass == TtfPaintPass::Base;
+    if (baseDither) renderer.setDitherImagesInBw(true);
     paintTtfPageImages(page, ttf, renderer);
+    if (baseDither) renderer.setDitherImagesInBw(false);
   } else if (SETTINGS.imageRendering == CrossPointSettings::IMAGES_PLACEHOLDER) {
     // §3.5 item 11: image policy is CrossPoint-side; placeholder mode draws
     // the engine's reserved geometry as an outline instead of decoding.
