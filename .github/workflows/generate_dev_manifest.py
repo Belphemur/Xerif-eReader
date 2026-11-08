@@ -72,12 +72,13 @@ def sort_key(candidate):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Regenerate the dev manifest.json")
+    parser = argparse.ArgumentParser(description="Regenerate the dev manifest.json",
+                                     allow_abbrev=False)
     parser.add_argument("--out", required=True, help="manifest.json output path")
     parser.add_argument("--dev-keep", type=int, default=3)
     parser.add_argument("--pr-keep", type=int, default=6)
-    parser.add_argument("--local", action="append", default=[],
-                        help="directory holding local .bin files available for hashing")
+    parser.add_argument("--local", action="extend", nargs="+", default=[],
+                        help="directories holding local .bin files available for hashing")
     parser.add_argument("--prior", help="previous manifest.json path (sha256 reuse)")
     parser.add_argument("--new-bin",
                         help="local bin published by this run but not yet on the release")

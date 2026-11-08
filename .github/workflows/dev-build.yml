@@ -19,11 +19,14 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # The job below is gated to develop, so only develop runs publish; a same-ref
-  # group already serializes those. cancel-in-progress stays OFF so a newer
-  # push can never kill a run that is publishing — an interrupted publication
-  # is the one state that can degrade the rolling release.
-  group: dev-build-${{ github.workflow }}-${{ github.ref }}
+  # Repo-wide publication lane shared with the PR publish lane
+  # (pr-firmware-links.yml) and the PR delete lane (pr-dev-cleanup.yml);
+  # design docs/design/2026-11-08-dev-ota-pr-firmware.md (D6). Publishers wait
+  # on each other; the delete lane (cancel-in-progress: true) is what may
+  # cancel an in-progress publication — an interrupted publication is the one
+  # state that can degrade the rolling release. Publication itself stays
+  # develop-only via the job's `if`.
+  group: dev-release-manifest
   cancel-in-progress: false
 
 permissions:
@@ -112,107 +115,23 @@ jobs:
             exit 1
           fi
 
-      - name: Regenerate manifest.json (newest 3)
+      - name: Regenerate manifest.json (newest 3 dev + newest 6 PR entries)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEV_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import hashlib, json, os, subprocess
-
-          repo = os.environ["GITHUB_REPOSITORY"]
-          sha = os.environ["DEV_SHA"]
-          dist = "dist"
-          carry = "carry"
-          keep = 3
-
-          # Build date: the commit's committer timestamp (stable, reproducible).
-          date = subprocess.run(["git", "show", "-s", f"--format=%cI", sha], check=True,
-                                capture_output=True, text=True).stdout.strip()
-
-          def entry_from_file(path, when=None):
-              name = os.path.basename(path)
-              with open(path, "rb") as f:
-                  data = f.read()
-              return {
-                  "name": name,
-                  "url": f"https://github.com/{repo}/releases/download/dev/{name}",
-                  "sha256": hashlib.sha256(data).hexdigest(),
-                  # Retained builds are dated by their release asset; an
-                  # unknown asset date stays empty (the device shows no date)
-                  # rather than inheriting this run's commit timestamp. Only
-                  # this run's build — which passes no date — falls back to
-                  # the commit timestamp.
-                  "date": when if when is not None else date,
-              }
-
-          versions = [entry_from_file(os.path.join(dist, f"xerif-dev-{sha}-x4pro.bin"))]
-
-          # Publish timestamps per asset (the release REST JSON saved by the
-          # staging step). Used to date and to order fallback entries — the
-          # file names carry a SHA, not a date, so name order says nothing
-          # about recency.
-          asset_dates = {}
-          if os.path.exists("release.json"):
-              try:
-                  with open("release.json") as f:
-                      release = json.load(f)
-                  for a in release.get("assets", []):
-                      asset_dates[a["name"]] = a.get("created_at") or a.get("updated_at") or ""
-              except (OSError, ValueError) as e:
-                  print(f"release metadata unreadable ({e})")
-
-          # Previous entries: prefer the existing manifest's list (it carries
-          # the original dates); fall back to hashing the downloaded bins.
-          # A retained entry is only kept when its binary is actually present:
-          # the release is never deleted, so its asset keeps serving the URL,
-          # and a missing binary would be a guaranteed 404.
-          prev = []
-          manifest_path = os.path.join(carry, "manifest.json")
-          if os.path.exists(manifest_path):
-              try:
-                  with open(manifest_path) as f:
-                      old = json.load(f)
-                  for v in old.get("versions", []):
-                      if v.get("name") == versions[0]["name"]:
-                          continue  # replaced by this run's build
-                      if not os.path.exists(os.path.join(carry, v.get("name", ""))):
-                          print(f"dropping {v.get('name')}: binary not carried")
-                          continue
-                      prev.append(v)
-              except (OSError, ValueError) as e:
-                  print(f"existing manifest unreadable ({e}); rebuilding from carried bins")
-          if not prev:
-              bins = [n for n in os.listdir(carry)
-                      if n.startswith("xerif-dev-") and n.endswith(".bin") and n != versions[0]["name"]]
-              bins.sort(key=lambda n: asset_dates.get(n, ""), reverse=True)
-              prev = [entry_from_file(os.path.join(carry, n), asset_dates.get(n, "")) for n in bins]
-
-          # Dedupe by name, newest first (this run's entry first), cap at 3.
-          seen = set()
-          merged = []
-          for v in versions + prev:
-              if v["name"] in seen:
-                  continue
-              seen.add(v["name"])
-              merged.append(v)
-          merged = merged[:keep]
-
-          manifest = {"versions": merged}
-          text = json.dumps(manifest, separators=(",", ":")) + "\n"
-          # The device caps the manifest fetch (DevOtaClient MAX_MANIFEST_BYTES).
-          if len(text.encode()) > 4096:
-              raise SystemExit(f"dev manifest is {len(text)} bytes, over the 4096-byte fetch cap")
-          manifest_path = os.path.join(dist, "manifest.json")
-          # Publish via temp + rename so a failed write can never leave a
-          # truncated manifest at the path the upload step reads.
-          tmp_path = manifest_path + ".tmp"
-          with open(tmp_path, "w") as f:
-              f.write(text)
-          os.replace(tmp_path, manifest_path)
-          print(json.dumps(manifest, indent=2))
-          PY
+          # Shared generator (.github/workflows/generate_dev_manifest.py): the
+          # manifest now also lists PR firmware published to this release by
+          # pr-firmware-links.yml. The keep = 3 cap applies to develop builds
+          # only; PR entries (`xerif-pr-*`) are retained up to the N=6 window
+          # (design docs/design/2026-11-08-dev-ota-pr-firmware.md §4.3).
+          python3 .github/workflows/generate_dev_manifest.py \
+            --out dist/manifest.json \
+            --prior carry/manifest.json \
+            --new-bin "dist/xerif-dev-${DEV_SHA}-x4pro.bin" \
+            --new-date "$(git show -s --format=%cI "${DEV_SHA}")" \
+            --local dist carry
 
       - name: Publish the dev release (in place, no delete window)
         env:
@@ -243,7 +162,10 @@ jobs:
           set -euo pipefail
           # Runs AFTER the manifest upload: an interrupted run can only leave
           # extra assets (harmless — the manifest defines the truth), never a
-          # missing one.
+          # missing one. The keep-set covers PR firmware too: a `xerif-pr-*`
+          # asset that fell out of the manifest's N=6 window (or whose PR
+          # close-deletion raced a publish) is pruned here on the next develop
+          # publish.
           python3 - <<'PY'
           import json, os, subprocess
 
