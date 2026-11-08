@@ -9,8 +9,12 @@ bool HalFile::testFailWrite = false;
 bool HalFile::testFailSync = false;
 int HalFile::failWriteAtCall = 0;
 int HalFile::writeCallCount = 0;
+int HalFile::failReadAtCall = 0;
+int HalFile::readCallCount = 0;
 int HalStorage::failOpenForWriteAtCall = 0;
 int HalStorage::openForWriteCallCount = 0;
+int HalStorage::failOpenForReadAtCall = 0;
+int HalStorage::openForReadCallCount = 0;
 
 HalStorage HalStorage::instance;
 
@@ -21,6 +25,9 @@ bool HalStorage::ensureDirectoryExists(const char* path) {
 
 bool HalStorage::openFileForRead(const char* moduleName, const char* path, HalFile& file) {
   (void)moduleName;
+  // Failure injection: read-open call #N fails when failOpenForReadAtCall == N
+  // (phase-2 gray re-open failure coverage).
+  if (failOpenForReadAtCall != 0 && ++openForReadCallCount == failOpenForReadAtCall) return false;
   auto it = files.find(path);
   if (it == files.end()) return false;  // missing file = failed open
   file.data = &it->second;

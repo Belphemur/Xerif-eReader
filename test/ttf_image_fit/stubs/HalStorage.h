@@ -28,6 +28,8 @@ class HalStorage {
   // Failure injection: the Nth openFileForWrite fails when set (0 = off).
   static int failOpenForWriteAtCall;
   static int openForWriteCallCount;
+  static int failOpenForReadAtCall;
+  static int openForReadCallCount;
   bool remove(const char* path);
   bool rename(const char* oldPath, const char* newPath);
   bool replaceFile(const char* tmpPath, const char* path);

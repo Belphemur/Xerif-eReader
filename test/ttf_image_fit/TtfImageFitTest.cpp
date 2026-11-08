@@ -781,3 +781,55 @@ TEST(ImageFitFallback, GrayMidStreamWriteFailureStillPaintsTheImage) {
   expectBoxCoverage(r, spec);
   EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true));
 }
+
+// Phase-2 read-failure fallbacks (review round 3): a failed gray re-open or a
+// failed mid-stream gray read leaves nothing painted — the decode must fall
+// back to the legacy paint (Ok, full coverage, no cache), not a blank box.
+
+namespace {
+// Shared body of the two phase-2 read-failure cases.
+void expectReadFailureStillPaints(const int failReadAtCall, const int failOpenForReadAtCall) {
+  static uint8_t bookBuf[1 << 20];
+  static uint8_t scratchBuf[4 << 20];
+  freeink::book::Arena bookArena(bookBuf, sizeof(bookBuf));
+  freeink::book::Arena scratch(scratchBuf, sizeof(scratchBuf));
+  HostFileSource source;
+  ASSERT_TRUE(source.open(FIT_FIXTURES "/fit_fixtures.epub"));
+  freeink::book::Book book;
+  ASSERT_EQ(book.open(source, bookArena, scratch), freeink::book::BookStatus::Ok);
+  Epub epub;
+  epub.items["OEBPS/images/small.bmp"] = readFixtureFile(FIT_FIXTURES "/small.bmp");
+
+  FakeRenderer r;
+  auto& storage = HalStorage::getInstance();
+  storage.files.clear();
+  HalFile::failReadAtCall = failReadAtCall;
+  HalFile::readCallCount = 0;
+  storage.failOpenForReadAtCall = failOpenForReadAtCall;
+  storage.openForReadCallCount = 0;
+
+  ttfimg::ImageSpec spec = makeSpec(20, 600, 32, 24);
+  snprintf(spec.href, sizeof(spec.href), "OEBPS/images/small.bmp");
+  spec.generation = 13;
+  char cachePath[256];
+  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, cachePath, sizeof(cachePath)));
+  const auto res = ttfimg::decodeAndCache(spec, cachePath, source, book.zip(), scratch, &epub, &r, true, true, nullptr,
+                                          nullptr, true);
+  HalFile::failReadAtCall = 0;
+  storage.failOpenForReadAtCall = 0;
+  EXPECT_EQ(res, ttfimg::DecodeResult::Ok);
+  expectBoxCoverage(r, spec);
+  EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true));
+}
+}  // namespace
+
+TEST(ImageFitFallback, GrayReadOpenFailureStillPaintsTheImage) {
+  // The remap's gray re-open fails (the .t writer's open is write-side, so
+  // the first READ open in the flow is the gray temp).
+  expectReadFailureStillPaints(0, 1);
+}
+
+TEST(ImageFitFallback, GrayMidReadFailureStillPaintsTheImage) {
+  // The third gray-row read fails mid-stream.
+  expectReadFailureStillPaints(3, 0);
+}
