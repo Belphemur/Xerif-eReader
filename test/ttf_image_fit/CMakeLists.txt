@@ -5,6 +5,7 @@
 # on host without a device.
 add_executable(TtfImageFitTest
   TtfImageFitTest.cpp
+  TtfImageTextureTest.cpp
   stubs/Stubs.cpp
   stubs/ImageDecoderFactory.cpp
   ${REPO_ROOT}/src/activities/reader/TtfImageCache.cpp

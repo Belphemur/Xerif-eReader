@@ -141,6 +141,7 @@ void ToneBake4::beginRemap() {
     memset(errNext.get(), 0, (width + 2) * sizeof(int16_t));
   }
   reverse = false;
+  row = 0;
 }
 
 bool ToneCacheWriter::begin(const char* p, const int w, const int h) {
@@ -227,8 +228,10 @@ bool cacheNameFor(const ImageSpec& spec, const char* dir, const bool qualityTone
   // Quality bake revision: bump when the bake algorithm changes so stale
   // caches re-decode. 'q' was the plain Floyd–Steinberg4 bake (2026-11-07);
   // 'r' was the fixed ToneBake4 map (2026-11-08 §5.2); 's' is the adaptive
-  // two-phase bake (2026-11-08 §2, amendment 2).
-  constexpr char kQualityCacheRevision = 's';
+  // two-phase bake (2026-11-08 §2, amendment 2); 't' is the texture bake
+  // (full diffusion, threshold noise, flat-run snap, stroke anchor —
+  // texture design §2.2–§2.4, 2026-11-08).
+  constexpr char kQualityCacheRevision = 't';
   // Identity: generation + href + placement (+ the tone policy, so the
   // quality revert switch never mixes bakes in one file). hrefExt (an
   // overlong Page href, paint-side only) IS the href for the identity.

@@ -62,9 +62,26 @@ struct ToneBake4 : ToneBaker {
   static constexpr bool kGammaEnabled = false;  // §2.2: stretch owns the range; device tune flips this
   static constexpr int kContrastNum = 13;       // 1.3 (eink-image default), pivot 128
   static constexpr int kContrastDen = 10;
-  static constexpr int kDiffusionNum = 2048;  // 0.8 in 8.8 fixed point (§7)
+  static constexpr int kDiffusionNum = 2560;  // 1.0 in 8.8 fixed point (texture §2.3)
   static constexpr int kDiffusionDen = 2560;
-  static constexpr int kClipNum = 1;  // percentile clip: ~1% / ~99%
+  // Zero-mean pseudo-random threshold offset (texture §2.3): breaks the
+  // row-as-mega-pixel mode-locking that drives period-2 banding on smooth
+  // gradients. Deterministic pure function of (x, row) — worker/foreground
+  // parity holds; never enters errVal, so the emitted tone stays true.
+  static constexpr int kMaskAmp = 8;  // offset range −8..+7 (4-bit hash)
+  // Flat-field preservation (texture §2.2/§3): a run of pixels whose mapped
+  // tones are mutually within kFlatTol is locally flat; when such a run sits
+  // within kSnap of one level AND the incoming error is small (no vertical
+  // gradient flowing through), the run bakes as that single level and its
+  // residual error is dropped instead of diffused into texture.
+  static constexpr int kFlatTol = 2;  // mapped-tone variation tolerance
+  static constexpr int kFlatErr = 8;  // max incoming error for a flat run
+  static constexpr int kSnap = 21;    // half the 85/2 step
+  // Thin-stroke anchoring (texture §2.4): a source pixel this dark bakes
+  // level 0 regardless of accumulated error; its full error still diffuses,
+  // so the local tone is preserved and no halo bias is added.
+  static constexpr int kStrokeMap = 42;  // half the first shelf (85/2)
+  static constexpr int kClipNum = 1;     // percentile clip: ~1% / ~99%
   static constexpr int kClipDen = 100;
 
   uint8_t gammaLut[256];
@@ -85,6 +102,7 @@ struct ToneBake4 : ToneBaker {
   std::unique_ptr<int16_t[]> errNext;  // error passed to the next row
   const int width;
   bool reverse = false;  // serpentine: the current row scans right-to-left
+  int row = 0;           // baked row index (threshold-noise key; texture §2.3)
 
   explicit ToneBake4(const int w) : width(w) {
     for (int i = 0; i < 256; ++i) {
@@ -148,13 +166,44 @@ struct ToneBake4 : ToneBaker {
   // a serpentine row is VISITED in its scan direction, so the horizontal
   // term always lands on the next-visited pixel (7/20 to x+1 ascending,
   // to x−1 descending). Returns the quantized 4-level tone.
-  uint8_t toneDir(const int x, const int gray, const bool reverseScan) {
-    const int v = (adaptive ? mapLut[static_cast<uint8_t>(gray)] : contrastLut[gammaLut[static_cast<uint8_t>(gray)]]) +
-                  err[x + 1];
-    int t = (v + 42) / 85;  // nearest of {0, 85, 170, 255} in the mapped space
+  // Mapped tone of one source pixel (the LUT chain the bake quantizes).
+  int mapv(const uint8_t gray) const { return adaptive ? mapLut[gray] : contrastLut[gammaLut[gray]]; }
+
+  uint8_t toneDir(const int x, const int gray, const bool reverseScan, const uint8_t* rowGray = nullptr) {
+    const int mv = mapv(static_cast<uint8_t>(gray));
+    const int v = mv + err[x + 1];
+    // Zero-mean pseudo-random threshold offset (texture §2.3): breaks the
+    // row-as-mega-pixel mode-locking behind period-2 gradient banding.
+    // Integer bit-mix of (x, row); never enters errVal — tone stays true.
+    uint32_t h = (static_cast<uint32_t>(x) + 1) * 374761393u + (static_cast<uint32_t>(row) + 1) * 668265263u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    const int veff = v + (static_cast<int>((h >> 17) & 15) - 8);
+    int t = (veff + 42) / 85;  // nearest of {0, 85, 170, 255} in the mapped space
     if (t < 0) t = 0;
     if (t > 3) t = 3;
     const int errVal = v - t * 85;
+    // Flat-field preservation (texture §2.2/§3): the SOURCE neighborhood is
+    // flat (both horizontal neighbours map within kFlatTol of this pixel;
+    // out-of-image counts as continuing the flat), no vertical gradient is
+    // flowing through (small incoming error), and the mapped tone sits within
+    // kSnap of one level: bake that level uniformly and drop the residual
+    // error instead of diffusing texture the source does not have.
+    if (rowGray != nullptr && errVal >= -kSnap && errVal <= kSnap && err[x + 1] >= -kFlatErr &&
+        err[x + 1] <= kFlatErr) {
+      bool flat = true;
+      if (x > 0 && (mapv(rowGray[x - 1]) - mv > kFlatTol || mv - mapv(rowGray[x - 1]) > kFlatTol)) flat = false;
+      if (flat && x + 1 < width && (mapv(rowGray[x + 1]) - mv > kFlatTol || mv - mapv(rowGray[x + 1]) > kFlatTol))
+        flat = false;
+      if (flat) return static_cast<uint8_t>(t);
+    }
+    // Thin-stroke anchoring (texture §2.4): a source pixel this dark bakes
+    // black even when accumulated neighbour error would push it up a level;
+    // the full error still diffuses, so the local tone is preserved.
+    if (mv <= kStrokeMap && t != 0) return emitDir(x, v, reverseScan, 0);
+    return emitDir(x, errVal, reverseScan, t);
+  }
+  // Diffuse errVal through the serpentine kernel and return the level.
+  uint8_t emitDir(const int x, const int errVal, const bool reverseScan, const uint8_t t) {
     if (!reverseScan) {
       // Ascending visit: 7 right, then 3 below-left, 5 below, 1 below-right.
       if (x + 1 < width) err[x + 2] += diffuse(errVal, 7);
@@ -168,7 +217,10 @@ struct ToneBake4 : ToneBaker {
       errNext[x + 1] += diffuse(errVal, 5);
       errNext[x] += diffuse(errVal, 1);
     }
-    return static_cast<uint8_t>(t);
+    return t;
+  }
+  uint8_t diffuseDir(const int x, const int errVal, const bool reverseScan) {
+    return emitDir(x, errVal, reverseScan, 0);
   }
   // ToneBaker's forward kernel — kept for ascending-x callers and the tests;
   // the quality decodes use toneRow().
@@ -182,7 +234,7 @@ struct ToneBake4 : ToneBaker {
     const bool rev = reverse;
     for (int i = 0; i < width; ++i) {
       const int x = rev ? (width - 1 - i) : i;
-      tones[x] = toneDir(x, gray[x], rev);
+      tones[x] = toneDir(x, gray[x], rev, gray);
     }
     nextRow();
   }
@@ -191,6 +243,7 @@ struct ToneBake4 : ToneBaker {
     memcpy(err.get(), errNext.get(), (width + 2) * sizeof(int16_t));
     memset(errNext.get(), 0, (width + 2) * sizeof(int16_t));
     reverse = !reverse;
+    ++row;
   }
 };
 

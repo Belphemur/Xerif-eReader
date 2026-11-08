@@ -96,3 +96,42 @@ Same battery as the parent campaign: `pio run -e x4pro`, `pio run -e default`, h
 ctest (extend the texture tests), cppcheck, clang-format. Push `--force-with-lease` to
 `feat/ttf-image-quality2` (PR #303); report-first discipline; marker
 `TEXTURE_QUALITY_DONE`.
+
+## 5. As-built (implementation 2026-11-08)
+
+Shipped in `ToneBake4` (`src/activities/reader/TtfImageCache.h`), cache rev 's'→'t':
+
+- **Diffusion factor 0.8 → 1.0** (`kDiffusionNum`/`kDiffusionDen` 2560/2560): the 20%
+  error discard was the F1 origin (small errors never cross the next threshold — flat
+  100 stuck at solid 85, flat 40 lost dither density) and fed the F2 limit cycle.
+- **Zero-mean pseudo-random threshold offset** (±8, integer bit-mix of (x, row); a
+  `row` counter member incremented in `nextRow`, reset in `beginRemap`): breaks the
+  row-as-mega-pixel mode-locking behind period-2 gradient banding. The offset only
+  shifts the quantizer decision — it never enters `errVal`, so emitted tone stays
+  true (pinned by `GradientToneIsPreservedByTheThresholdNoise`). Deterministic pure
+  function: worker/foreground parity holds (pinned by `BakeIsDeterministicAcrossRuns`).
+  Rejected alternatives, measured on the host probes: kSnap-on-error (freezes
+  gradients into plateaus, then jumps bands — worse than baseline), row-invariant
+  column mask (reinforces the resonance, 12.7), row-parity checkerboard mask (9.3),
+  noise amplitude 5 (4.7) and 12 (4.4) — amplitude 8 is the sweet spot (3.7–3.9 vs
+  ideal 2.0; baseline 16.6).
+- **Flat-run snap on the mapped tone** (F1): when both horizontal neighbours map
+  within `kFlatTol` (2) of the pixel, the incoming error is small (`kFlatErr` 8 — no
+  vertical gradient flowing through), and the mapped tone sits within `kSnap` (21) of
+  one level, the pixel bakes that level and drops the residual error instead of
+  diffusing texture into the flat. Out-of-image neighbours count as continuing the
+  flat (deviation from the §3 sketch's "edges fall back to dithering": edge-column
+  speckle on otherwise-uniform fields was judged worse than the deviation).
+- **Flat mid-tones between two levels** (e.g. mapped 127): no single level is within
+  ±kSnap, so the field stays a tone-correct fine-grain dither (asserted 40–60% per
+  side) — the documented 4-level physical limit; the strict 2×2 checkerboard is gone
+  (the noise decorrelates it).
+- **Thin-stroke anchoring** (F3): a source pixel mapping ≤ `kStrokeMap` (42) bakes
+  level 0 even when accumulated neighbour error would push it up a shelf; the FULL
+  error still diffuses, so local tone is preserved (no halo — pinned by
+  `ThinStrokesSurviveTheBake`, which also asserts the neighbour columns stay bright).
+
+Host proof (test/ttf_image_fit/TtfImageTextureTest.cpp, 8 tests): flats near a level
+bake 100% one level; gradient mean |row-to-row L1 delta| 3.9 vs ideal ~2.0 (baseline
+16.6) with no sustained opposite-sign swings; threshold noise tone-neutral and
+deterministic; 1px/2px strokes 100% retained without halos.
