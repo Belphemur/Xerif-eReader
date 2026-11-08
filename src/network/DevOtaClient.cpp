@@ -276,7 +276,7 @@ bool pendingInstallGetKind(PendingKind& kindOut) {
   }
   if (err != ESP_OK) return false;
   kindOut = stored <= static_cast<uint8_t>(PendingKind::StablePicked) ? static_cast<PendingKind>(stored)
-                                                                     : PendingKind::DevChannel;
+                                                                      : PendingKind::DevChannel;
   return true;
 }
 

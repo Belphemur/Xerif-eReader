@@ -1440,7 +1440,7 @@ static void bootFinalize() {
             // consent digest checks.
             auto sdFirmwareUpdateActivity =
                 makeUniqueNoThrow<SdFirmwareUpdateActivity>(renderer, mappedInputManager, /*recoveryMode=*/false,
-                                                           /*autoResume=*/true, kind);
+                                                            /*autoResume=*/true, kind);
             if (sdFirmwareUpdateActivity) {
               activityManager.replaceActivity(std::move(sdFirmwareUpdateActivity));
             } else {
