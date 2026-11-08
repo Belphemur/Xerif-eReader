@@ -235,3 +235,40 @@ apart.
 - NVS shadow copy of installed versions: violates the §3 rule of reading
   straight from image bytes (would diverge exactly like the resume-hook
   marker case).
+
+## 13. Addendum (2026-11-08): the dev lane consumes the CI artifact
+
+### Decision (owner: "the way we build the image — why is it different?")
+
+dev-build.yml rebuilt the x4pro image itself (`pio run -e x4pro`) even though
+ci.yml had just built the identical commit on every develop push and uploaded
+the binary as an artifact (7-day retention). That is a fork of the build
+system: two builds of every commit, and a dev asset that could diverge from
+what CI actually tested — worse, the dev prerelease could receive a commit
+whose full CI matrix (host tests, clang-format, the other boards) would fail.
+
+The dev lane now follows the pr-firmware-links.yml pattern exactly:
+
+- **Trigger**: `workflow_run` on "CI" completed for `develop`
+  (`github.event.workflow_run.conclusion == 'success'`,
+  `head_branch == 'develop'` — the D6 develop-only publication lane). A dev
+  build is published only from a CI-green commit; there is no second build.
+- **Source**: `gh run download <workflow_run.id> --name firmware-x4pro.bin`
+  — the exact artifact ci.yml produced for that commit.
+- **Unchanged**: the stamp (`git_branch.py --print-dev-version` →
+  `patch_dev_version.py`), the `--validate` publish gate, the manifest
+  carry-over/regeneration, and the 3-version prune. The workflow checks out
+  `ref: ${{ github.event.workflow_run.head_sha }}` so the stamp and the
+  manifest date derive from the triggering commit itself.
+- **Trade-off accepted by the owner**: the dev build publishes ~10 minutes
+  later (after the full CI matrix) instead of racing CI with a single-env
+  build.
+
+Rejected: keeping the in-lane build (a forked build system — DRY); gating on
+`esptool image-info` (it exits 0 on checksum-invalid images — reports, does
+not enforce; the script's `--validate` mirrors FirmwareFlasher and is the
+enforcing verifier).
+
+Note: `workflow_run`-triggered workflows execute the workflow file from the
+default branch (develop) — the conversion is effective the moment it lands on
+develop.
