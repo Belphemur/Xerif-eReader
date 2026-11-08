@@ -5,27 +5,28 @@
 // (poolMalloc/poolFree are plain malloc/free on host).
 #pragma once
 
+#include <Memory.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <map>
-#include <memory>
-#include <new>
 #include <string>
 #include <vector>
 
 class Epub {
  public:
-  // RAII allocation; ownership of the released buffer moves to PoolBytes.
+  // The buffer MUST come from the pool allocator: the caller wraps it in
+  // PoolBytes, which releases it through poolFree (new[]/free would be UB).
   uint8_t* extractItemToPsram(const char* href, size_t* outSize) {
     if (outSize != nullptr) *outSize = 0;
     const auto it = items.find(href != nullptr ? href : "");
     if (it == items.end()) return nullptr;
-    std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[it->second.size()]);
+    uint8_t* buf = static_cast<uint8_t*>(poolMalloc(it->second.size()));
     if (buf == nullptr) return nullptr;
-    memcpy(buf.get(), it->second.data(), it->second.size());
+    memcpy(buf, it->second.data(), it->second.size());
     if (outSize != nullptr) *outSize = it->second.size();
-    return buf.release();
+    return buf;
   }
 
   // Test seam: href → raw item bytes.
