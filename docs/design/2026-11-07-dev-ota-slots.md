@@ -344,3 +344,44 @@ normal (non-recovery) SD installs only.
 installs (loses the dev slot on every stable install while running stable);
 refusing stable→stable installs outright (breaks updating an old stable while
 running the newest stable).
+### 16. The swap-slot update strategy (2026-11-08)
+
+**Constraint.** A resident third OTA slot is physically impossible. The flash
+budget: `app0` + `app1` = 2 x 6.25 MB, `spiffs` = 3.375 MB, flash = 16 MB;
+the actual image is 5.45 MB, so three resident slots need >= 16.35 MB even with
+ZERO data partitions. (§3 line: "three resident slots are physically
+impossible on 16 MB".)
+
+**Decision.** The two resident slots keep fixed roles (§3: app0 = stable,
+app1 = dev). The SWAP SLOT is the non-running resident slot acting as the
+swap WORKER: the device restarts into it and its image completes the write of
+the TARGET slot. The worker's own content is NEVER overwritten by the install
+it performs.
+
+Every install path resolves the same way:
+1. TARGET slot = the slot chosen by the §15 source rule (gh_release -> stable;
+   dev/PR channel and dev/pr-classified SD files -> dev).
+2. If TARGET is not the running slot: write it directly.
+3. If TARGET IS the running slot: dance — stage the asset on the SD card
+   (`/.crosspoint`, the swap SPACE), record the pending install, restart into
+   the OTHER slot (the swap worker), and let the boot hook complete the write.
+4. If the swap worker is unavailable (empty slot, or lacks
+   `kResumeHookMarker`): REFUSE with a clear error. NEVER fall back to writing
+   the wrong-role slot.
+
+**Routing matrix.**
+
+| Running | Source                        | Target slot | Path |
+|---------|-------------------------------|-------------|------|
+| stable  | gh_release                    | stable      | dance via dev worker |
+| stable  | SD stable-classified          | stable      | dance via dev worker |
+| stable  | SD dev/pr-classified          | dev         | direct write |
+| dev     | dev channel / PR build        | dev         | dance via stable worker (§5) |
+| dev     | SD dev/pr-classified          | dev         | dance via stable worker (§5) |
+| dev     | SD stable-classified          | stable      | direct write |
+| dev     | gh_release                    | stable      | direct write |
+| any     | swap worker unavailable       | —           | refuse |
+
+**Invariant.** A dev-channel update on an existing dev release NEVER touches
+app0; a gh_release update NEVER touches app1. The only writes into a fixed
+role's slot are installs whose SOURCE rule targets that role.
