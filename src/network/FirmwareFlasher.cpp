@@ -420,8 +420,18 @@ Result flashFromSdPathInto(const char* sdPath, const esp_partition_t* dest, Prog
     mbedtls_sha256_free(&writeSha);
     if (memcmp(writtenDigest, expectedDigest, 32) != 0) {
       LOG_ERR("FLASH", "flashed bytes differ from the consented digest");
+      // Quarantine the TARGET: the bytes that reached flash are unconsented,
+      // and a complete-but-unconsented image must never become bootable
+      // later. otadata was not switched (below), but the slot chooser can
+      // still select this slot — erase its image header so readSlotInfo()
+      // reports an empty slot and FirmwareSlotsActivity refuses the switch
+      // (it re-checks before every boot). otadata never points here, so the
+      // bootloader fallback is not relied on.
+      if (esp_partition_erase_range(dest, 0, SEC) != ESP_OK) {
+        LOG_ERR("FLASH", "quarantine erase failed — the unconsented image stays on flash");
+      }
       // otadata is still on the caller-selected slot: the caller decides the
-      // recovery (the target now holds an unconsented image and must not boot).
+      // recovery (the target now holds no bootable image).
       return Result::DIGEST_MISMATCH;
     }
   }
