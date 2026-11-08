@@ -18,6 +18,7 @@
 #include <HalTiltSensor.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <RecoveryBoot.h>
 #include <SPI.h>
 #include <TrustedTime.h>
 #include <WiFi.h>
@@ -892,6 +893,13 @@ SET_LOOP_TASK_STACK_SIZE(49152)
 
 void setup() {
   BoardConfig::holdPowerRails();
+
+  // ADR 2026-11-07 §14: the SDK recovery hatch — hold the board combo
+  // (Power + Next on the X4 Pro, Back + Up on ADC-ladder boards) at reset and
+  // the bootloader is repointed at the stable slot before any subsystem can
+  // interfere. Self-contained: constructs its own InputManager, no-ops unless
+  // the combo is held, slot 0 holds a valid image, and we are not slot 0.
+  freeink::recovery::checkBootCombo();
 
 #ifdef ENABLE_SERIAL_LOG
 #ifdef CROSSPOINT_WAIT_FOR_USB_SERIAL
