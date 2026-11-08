@@ -199,3 +199,6 @@ if(CROSSPOINT_BUILD_BENCH)
   add_subdirectory(hint_mem_bench)
 endif()
 add_test(NAME recursive_dictionary COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_recursive_dictionary.py)
+add_test(NAME dev_version_stamp COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_dev_version_stamp.py)
+# test_dev_manifest_sort.py shipped unregistered in 44960a493 — pinned here.
+add_test(NAME dev_manifest_sort COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_dev_manifest_sort.py)

@@ -11,6 +11,13 @@ newest --dev-keep `xerif-dev-*` entries plus the newest --pr-keep `xerif-pr-*`
 entries, deduped by name, newest first, capped at the device's 4096-byte fetch
 (DevOtaClient MAX_MANIFEST_BYTES). Design:
 docs/design/2026-11-08-dev-ota-pr-firmware.md §4.4.
+
+Dev entries additionally carry the stamped firmware version (the same string
+the esp_app_desc_t shows) derived by the single version source
+scripts/git_branch.py --print-dev-version <sha>, with the SHA taken from the
+asset name — the just-published asset embeds DEV_SHA, carried assets embed
+their own. PR entries (`xerif-pr-*`) get no `version` field: their branch is
+unknowable from the name and the device falls back to the asset name.
 """
 
 import argparse
@@ -26,6 +33,42 @@ DEV_PREFIX = "xerif-dev-"
 PR_PREFIX = "xerif-pr-"
 NAME_SUFFIX = "-x4pro.bin"
 CAP_BYTES = 4096
+PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def dev_version_for(name):
+    """Stamped dev version for a dev asset, or None when it cannot be derived.
+
+    Single source of truth: scripts/git_branch.py --print-dev-version. A
+    failed lookup only drops the optional field — the device falls back to
+    the asset name.
+    """
+    sha = name[len(DEV_PREFIX):-len(NAME_SUFFIX)]
+    script = os.path.join(PROJECT_DIR, "scripts", "git_branch.py")
+    try:
+        proc = subprocess.run([sys.executable, script, "--print-dev-version", sha],
+                              capture_output=True, cwd=PROJECT_DIR)
+    except OSError as e:
+        print(f"warning: dev version lookup for {name}: {e}", file=sys.stderr)
+        return None
+    if proc.returncode != 0:
+        print(f"warning: dev version lookup for {name}: "
+              f"{proc.stderr.decode(errors='replace').strip()}", file=sys.stderr)
+        return None
+    return proc.stdout.decode().strip()
+
+
+def entry_version(name):
+    """Optional `version` field for a manifest entry.
+
+    Dev assets carry the stamped firmware version (single source:
+    scripts/git_branch.py); PR entries (`xerif-pr-*`) get none — their branch
+    is unknowable from the name — and neither do failed lookups, so the
+    device falls back to the asset name.
+    """
+    if not name.startswith(DEV_PREFIX):
+        return None
+    return dev_version_for(name)
 
 
 def sha256_of(path):
@@ -133,12 +176,16 @@ def main():
             sha256 = download_sha256(repo, asset_id)
         else:
             sys.exit(f"no sha256 available for asset {name}")
-        return {
+        item = {
             "name": name,
             "url": f"https://github.com/{repo}/releases/download/{RELEASE_TAG}/{name}",
             "sha256": sha256,
             "date": date,
         }
+        version = entry_version(name)
+        if version:
+            item["version"] = version
+        return item
 
     new_name = os.path.basename(args.new_bin) if args.new_bin else None
     candidates = [

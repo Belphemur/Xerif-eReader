@@ -185,6 +185,32 @@ try:
     Import('env')           # noqa: F821  # type: ignore[name-defined]
     inject_version(env)     # noqa: F821  # type: ignore[name-defined]
 except NameError:
+    # CLI mode: print the bare dev-version string (optionally for a given
+    # commit SHA) so CI can capture it with a subshell. Reuses the exact
+    # derivation the build middleware uses — no second copy exists.
+    if len(sys.argv) > 1 and sys.argv[1] == '--print-dev-version':
+        if len(sys.argv) > 3:
+            warn('usage: git_branch.py --print-dev-version [commit-sha]')
+            sys.exit(1)
+        _project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if len(sys.argv) == 3:
+            # ^{object} forces an existence check: a plain 40-hex argument is
+            # echoed back abbreviated even when the object is absent (git
+            # 2.53), which would stamp a fake identity.
+            _short_sha = run_git_value(
+                _project_dir, ['rev-parse', '--short', '--verify',
+                               sys.argv[2] + '^{object}'],
+                f'SHA {sys.argv[2]}'
+            )
+        else:
+            _short_sha = get_git_short_sha(_project_dir)
+        _branch = get_git_branch(_project_dir)
+        if 'unknown' in (_short_sha, _branch):
+            warn('git metadata unavailable; refusing to print a version with an unknown component')
+            sys.exit(1)
+        print(f'{get_base_version(_project_dir)}-dev-{_branch}-{_short_sha}')
+        sys.exit(0)
+
     class _Env(dict):
         def AddBuildMiddleware(self, _):
             # Validation mode only reports the computed version.

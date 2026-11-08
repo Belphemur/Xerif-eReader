@@ -9,9 +9,12 @@
 # Note on patching: the design doc names a `patch_firmware_image.py` step;
 # `scripts/patch_dev_version.py` implements it for the dev channel only — the
 # staging step below rewrites the image's esp_app_desc_t version (a constant
-# baked into the prebuilt Arduino core) with `<version>-dev-<sha>`, so the
-# slot chooser can tell dev builds apart (design §12). Release builds stay
-# unstamped: release.yml has no patch step and publishes the pio output as-is.
+# baked into the prebuilt Arduino core) with the dev-version string from
+# scripts/git_branch.py --print-dev-version (the single derivation site),
+# recomputing the image's appended SHA-256 digest, so the slot chooser can
+# tell dev builds apart and the stamped image still passes install/boot
+# verification (design §12). Release builds stay unstamped: release.yml has
+# no patch step and publishes the pio output as-is.
 
 name: Dev build
 
@@ -105,11 +108,14 @@ jobs:
           # chooser could not tell dev builds apart. The stamp lands on the
           # dist copy BEFORE the manifest step computes the asset's sha256, so
           # the manifest hash matches the published, stamped asset.
-          base_version="$(grep -m1 '^version *=' platformio.ini | sed 's/^version *= *//')"
+          # git_branch.py --print-dev-version is the single source of the
+          # dev-version string (the same derivation the build middleware
+          # compiles into CROSSPOINT_VERSION); patch_dev_version.py only
+          # enforces the fit and recomputes the appended digest.
+          base_version="$(python3 scripts/git_branch.py --print-dev-version)"
           python3 scripts/patch_dev_version.py \
             --image "dist/${asset}" \
-            --version "${base_version}" \
-            --sha "${DEV_SHA}"
+            --version "${base_version}"
           python3 scripts/patch_dev_version.py --image "dist/${asset}" --verify
 
           # Carry over the previous builds from the current `dev` release. The
