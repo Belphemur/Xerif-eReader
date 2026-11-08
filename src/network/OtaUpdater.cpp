@@ -228,6 +228,15 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
     LOG_ERR("OTA", "No stable slot (app0) in partition table");
     return INTERNAL_UPDATE_ERROR;
   }
+  // Role rule (design §3), same explicit refusal as flashFromSdPathInto():
+  // the running slot is never a write target. esp_ota_begin() would refuse
+  // with ESP_ERR_OTA_PARTITION_CONFLICT anyway; the explicit check keeps the
+  // two install paths symmetric and independent of that error mapping.
+  const esp_partition_t* runningPartition = esp_ota_get_running_partition();
+  if (runningPartition && runningPartition->address == updatePartition->address) {
+    LOG_ERR("OTA", "Refusing to install into the running partition");
+    return INTERNAL_UPDATE_ERROR;
+  }
 
   esp_ota_handle_t otaHandle = 0;
   esp_err_t esp_err = esp_ota_begin(updatePartition, OTA_SIZE_UNKNOWN, &otaHandle);
