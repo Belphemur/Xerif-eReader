@@ -1,0 +1,79 @@
+# PR firmware cleanup lane (design docs/design/2026-11-08-dev-ota-pr-firmware.md §4.2).
+#
+# When a pull request closes for any reason, its `xerif-pr-<number>-*` firmware
+# assets are removed from the rolling `dev` prerelease and manifest.json is
+# regenerated from the release's remaining assets. The manifest is uploaded
+# last: a failed manifest upload leaves the previous manifest live (D7).
+#
+# Concurrency: the shared repo-wide publication lane with priority (D6) — this
+# job cancels an in-progress publish or develop build rather than waiting.
+# Publishes self-heal on the next push; a closed PR's firmware must not linger.
+#
+# Fork PRs are covered too: `pull_request` closed events fire on the base
+# repository, and the asset name keys on the base repo's PR number.
+
+name: PR dev firmware cleanup
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dev-release-manifest
+  cancel-in-progress: true
+
+jobs:
+  cleanup:
+    name: Remove PR firmware from the dev channel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Remove the PR's firmware assets and republish the manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if ! gh release view dev --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "no dev release; nothing to clean up"
+            exit 0
+          fi
+
+          # Prior manifest first: its entries carry the sha256 of the assets
+          # that remain on the release after the delete.
+          mkdir -p carry
+          gh release download dev --repo "$GITHUB_REPOSITORY" --dir carry \
+            --pattern 'manifest.json' --clobber \
+            || echo "no prior manifest.json on the dev release"
+
+          python3 - <<'PY'
+          import json, os, re, subprocess
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          pr = os.environ["PR_NUMBER"]
+          pattern = re.compile(rf"^xerif-pr-{re.escape(pr)}-.*-x4pro\.bin$")
+          rel = json.loads(subprocess.run(
+              ["gh", "api", f"repos/{repo}/releases/tags/dev"],
+              check=True, capture_output=True, text=True).stdout)
+          for a in rel.get("assets", []):
+              if pattern.match(a["name"]):
+                  subprocess.run(["gh", "api", "-X", "DELETE",
+                                  f"repos/{repo}/releases/assets/{a['id']}"],
+                                 check=True)
+                  print("deleted", a["name"])
+          PY
+
+          # Atomic-publish invariant: the manifest is regenerated from the
+          # release's remaining assets and uploaded last, so a failed upload
+          # leaves the previous manifest live.
+          python3 .github/workflows/generate_dev_manifest.py \
+            --out manifest.json \
+            --prior carry/manifest.json \
+            --local carry
+          gh release upload dev --repo "$GITHUB_REPOSITORY" --clobber manifest.json

@@ -110,12 +110,10 @@ window.
 - No device-side changes: `DevOtaClient` needs nothing.
 - The bot filter covers dependabot-style bots and GitHub Actions bots.
 - Fork PRs: the publish workflow runs on the base repo (write permissions work),
-  so fork PRs are also published — but the PR-close cleanup triggers the delete
-  workflow on the base repo only if the PR is same-repo. For forked PRs, the
-  delete workflow runs on the base repo's default branch (the workflow file that
-  runs is from the merge ref), so the cleanup works for same-repo PRs. Forked
-  PRs: the cleanup works for same-repo PRs; forked PRs are accepted as a
-  residual risk (the asset stays until the next dev-build publish prunes it).
+  so fork PRs are also published. The delete lane triggers on the base repo for
+  every `pull_request.closed` event — fork PRs included — and keys the asset
+  name on the base repo's PR number, so forked PR firmware is removed on close
+  as well.
 
 ## 7. Verification plan
 
