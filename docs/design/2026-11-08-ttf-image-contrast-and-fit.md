@@ -231,6 +231,34 @@ Compute the used dynamic range **per image** and stretch it to [0, 255]:
 - `beginCollect` validates the `snprintf` result before recording the path (a truncated
   path must never be opened).
 
+##### Amendment 4 (2026-11-08, kody sweep on the rebased head)
+
+- **Gray-write failure is sticky and stops the collectors**: `ToneBake4::collectRow`
+  writes/logs at most once (`grayOpen && !grayFailed`); the new `ToneBaker::grayWriteFailed()`
+  probe lets the JPEG/PNG row callback, the BMP row loop and the GIF converter's
+  `qFlushRow` stop feeding rows instead of finishing a decode whose temp is dead. The
+  JPEG/PNG render failure carrying `collectFailed` routes to `legacyPaintPass` (the
+  storage-failure doctrine), and a collect-mode GIF/BMP decode failure now falls through
+  to `legacyPaintPass` too instead of returning Failed with a blank placement (aborts
+  still return `Busy` first; in legacy mode the failed decode already was the paint
+  attempt). Pinned by `ImageFitFallback.GrayWriteFailureStopsRetryingWrites`.
+- **Gray temp handles are released before removal**: `remapGrayToCache` closes the read
+  handle before every `grayDiscard()` (FAT refuses unlink on an open handle), and
+  `grayDone()` keeps `grayOpen` set on a failed close so the engine callers' discard can
+  still close + remove; `grayDone`-false paths in `decodeAndCache` now discard explicitly.
+  The fit-suite `HalStorage` stub gained FAT-faithful open-handle remove refusal, which
+  makes `AdaptiveBake.GrayTempStreamsEveryRowByteExact` and the end-to-end no-`.g`
+  asserts fail without the fix (non-vacuous).
+- **Test scaffolding hygiene**: `HostFileSource` holds its `FILE*` in an RAII
+  `unique_ptr` with the `fclose` deleter; `gen_fixtures.py` writes every fixture through
+  a temp + `os.replace` (atomic generation).
+- **Deferred (kody, perf)**: band-buffering the gray temp (4–8 KB write/read bands to
+  cut HalFile transactions ~16×). Rejected for this PR: SdFat coalesces the contiguous
+  row writes in its sector cache, so physical SD traffic is already per-sector rather
+  than per-row, and the band buffer would add a decode-path heap allocation on the
+  380 KB-RAM baseline this firmware targets. Revisit only if SD-lock telemetry shows
+  real contention.
+
 ## 3. Parity requirements (unchanged from PR #301)
 
 - All four decoders (SDK JPEG/PNG rows, BMP decode, GIF converter) route through one bake.

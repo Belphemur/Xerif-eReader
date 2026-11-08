@@ -724,8 +724,11 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
         if (!publishResult(cachePath, writePath, publishing)) return DecodeResult::Failed;
         return DecodeResult::Ok;
       }
-      // A failed/short gray write: re-decode with the degenerate map and paint.
+      // A failed/short gray write — or a failed close, which keeps the
+      // handle open so the discard below can still release it — falls
+      // through: re-decode with the degenerate map and paint.
     }
+    if (collecting) bake.grayDiscard();  // failed grayDone: release temp + handle
     return legacyPaintPass(spec, info.kind, source, zip, scratch, epub, nullptr, 0, bake, paint, paintToTarget,
                            abortPoll, abortCtx);
   }
@@ -825,9 +828,11 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
     }
     // !collecting: the decode above already painted through the legacy path
     // (converter quality paint / BMP legacy mode) — Ok with no cache.
-    // collecting but a failed/short gray write: re-decode with the
-    // deterministic degenerate map and paint.
+    // collecting but a failed/short gray write — or a failed close, which
+    // keeps the handle open so the discard can still release it — re-decodes
+    // with the deterministic degenerate map and paints.
     if (!collecting) return DecodeResult::Ok;
+    bake.grayDiscard();  // failed grayDone: release temp + handle
     return legacyPaintPass(spec, info.kind, source, zip, scratch, epub, image.get(), imageSize, bake, paint,
                            paintToTarget, abortPoll, abortCtx);
   }

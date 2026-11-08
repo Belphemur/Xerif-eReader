@@ -49,12 +49,14 @@ void ToneBake4::collectRow(const uint8_t* gray) {
 
 bool ToneBake4::grayDone() {
   if (grayOpen) {
-    grayOpen = false;
     if (!grayFile.close()) {
-      Storage.remove(grayPathBuf);
+      // grayOpen stays true: the handle stays reachable so a later
+      // grayDiscard() (engine callers invoke it on this path) can still
+      // close it and remove the temp.
       LOG_ERR("TIMGE", "Gray temp close failed: %s", grayPathBuf);
       return false;
     }
+    grayOpen = false;
   }
   if (grayFailed) {
     grayFailed = false;

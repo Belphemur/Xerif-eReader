@@ -84,12 +84,19 @@ def write_progressive_jpeg(path, source=None):
         if b == 0xFF:
             out.append(0x00)
     out += b"\xff\xd9"
-    with open(path, "wb") as f:
-        f.write(out)
+    atomic_write(path, out)
 
 
 def chunk(tag, data):
     return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+
+def atomic_write(path, data):
+    # kody rule: a failed generation must not leave a partial fixture behind.
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, path)
 
 
 def write_png(path):
@@ -102,8 +109,7 @@ def write_png(path):
     png += chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 0, 0, 0, 0))
     png += chunk(b"IDAT", zlib.compress(bytes(rows), 6))
     png += chunk(b"IEND", b"")
-    with open(path, "wb") as f:
-        f.write(png)
+    atomic_write(path, png)
 
 
 write_progressive_jpeg(os.path.join(OUT, "prog.jpg"))
@@ -175,8 +181,7 @@ def write_gif(path):
         out += part
     out.append(0)
     out += b";"
-    with open(path, "wb") as f:
-        f.write(out)
+    atomic_write(path, out)
 
 
 write_gif(os.path.join(OUT, "dark.gif"))
@@ -193,8 +198,7 @@ def write_small_bmp(path, w=64, h=48, gray=137):
         row = bytearray(bytes((gray, gray, gray)) * w)
         row += b"\0" * (row_bytes - len(row))
         data += row
-    with open(path, "wb") as f:
-        f.write(fh + dib + bytes(data))
+    atomic_write(path, fh + dib + bytes(data))
 
 
 def write_dark_png(path):

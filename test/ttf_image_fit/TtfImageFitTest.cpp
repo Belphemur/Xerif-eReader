@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -242,24 +243,22 @@ namespace {
 
 class HostFileSource : public freeink::book::BookSource {
  public:
-  ~HostFileSource() override {
-    if (file_ != nullptr) std::fclose(file_);
-  }
   bool open(const char* path) {
-    file_ = std::fopen(path, "rb");
+    file_.reset(std::fopen(path, "rb"));
     if (file_ == nullptr) return false;
-    std::fseek(file_, 0, SEEK_END);
-    size_ = static_cast<uint64_t>(std::ftell(file_));
+    std::fseek(file_.get(), 0, SEEK_END);
+    size_ = static_cast<uint64_t>(std::ftell(file_.get()));
     return true;
   }
   int32_t readAt(uint64_t offset, void* dst, uint32_t len) override {
-    if (std::fseek(file_, static_cast<long>(offset), SEEK_SET) != 0) return -1;
-    return static_cast<int32_t>(std::fread(dst, 1, len, file_));
+    if (std::fseek(file_.get(), static_cast<long>(offset), SEEK_SET) != 0) return -1;
+    return static_cast<int32_t>(std::fread(dst, 1, len, file_.get()));
   }
   uint64_t size() const override { return size_; }
 
  private:
-  std::FILE* file_ = nullptr;
+  // RAII handle (kody rule): the fclose deleter releases it on every path.
+  std::unique_ptr<std::FILE, int (*)(std::FILE*)> file_{nullptr, &std::fclose};
   uint64_t size_ = 0;
 };
 
