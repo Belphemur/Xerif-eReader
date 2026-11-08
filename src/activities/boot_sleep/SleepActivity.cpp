@@ -1044,7 +1044,7 @@ void SleepActivity::renderDefaultSleepScreen() const {
   // polarity of the framebuffer, relevant when setInverted() / dark sleep
   // clear paths are involved.
   drawLogo120Inverted(renderer, (pageWidth - 120) / 2, (pageHeight - 120) / 2);
-  renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 70, tr(STR_CROSSPOINT), true, EpdFontFamily::BOLD);
+  renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 70, tr(STR_XERIF), true, EpdFontFamily::BOLD);
   renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 95, tr(STR_SLEEPING));
 
   // Make sleep screen dark unless light is selected in settings
