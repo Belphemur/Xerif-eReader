@@ -282,7 +282,8 @@ Result validateImageFile(const char* sdPath, size_t partitionSize) {
   return Result::OK;
 }
 
-Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, bool alreadyValidated) {
+Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, bool alreadyValidated,
+                       const uint8_t* expectedDigest) {
   // Resolve destination first so we can size-check during validation. The full image-integrity
   // pass below verifies header, segment table, XOR checksum and SHA256 trailer end-to-end before
   // we touch otadata, so a truncated/corrupted .bin can never become the next boot target.
@@ -291,11 +292,11 @@ Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, boo
     LOG_ERR("FLASH", "no next-update partition");
     return Result::NO_PARTITION;
   }
-  return flashFromSdPathInto(sdPath, dest, onProgress, ctx, alreadyValidated);
+  return flashFromSdPathInto(sdPath, dest, onProgress, ctx, alreadyValidated, expectedDigest);
 }
 
 Result flashFromSdPathInto(const char* sdPath, const esp_partition_t* dest, ProgressCb onProgress, void* ctx,
-                           bool alreadyValidated) {
+                           bool alreadyValidated, const uint8_t* expectedDigest) {
   if (!dest) {
     LOG_ERR("FLASH", "no destination partition");
     return Result::NO_PARTITION;
@@ -336,6 +337,14 @@ Result flashFromSdPathInto(const char* sdPath, const esp_partition_t* dest, Prog
     return Result::OOM;
   }
 
+  // §16 dance identity: hash the bytes actually read from SD while they are
+  // written, so the caller can verify the flashed image against the digest
+  // consented at arm time before otadata selects it (a swapped/changed SD
+  // file must not become the boot target).
+  mbedtls_sha256_context writeSha;
+  mbedtls_sha256_init(&writeSha);
+  if (expectedDigest) mbedtls_sha256_starts(&writeSha, /*is224=*/0);
+
   // Interleave erase + write so the progress bar advances 0→100% smoothly
   // rather than stalling for several seconds during a single up-front erase.
   size_t streamPos = 0;
@@ -349,6 +358,7 @@ Result flashFromSdPathInto(const char* sdPath, const esp_partition_t* dest, Prog
         LOG_ERR("FLASH", "erase @%u (len=%u) failed", static_cast<unsigned>(streamPos),
                 static_cast<unsigned>(eraseLen));
         file.close();
+        mbedtls_sha256_free(&writeSha);
         return Result::ERASE_FAIL;
       }
       erasedUpto = streamPos + eraseLen;
@@ -359,18 +369,33 @@ Result flashFromSdPathInto(const char* sdPath, const esp_partition_t* dest, Prog
     if (read <= 0 || static_cast<size_t>(read) != want) {
       LOG_ERR("FLASH", "read @%u: got=%d want=%u", static_cast<unsigned>(streamPos), read, static_cast<unsigned>(want));
       file.close();
+      mbedtls_sha256_free(&writeSha);
       return Result::READ_FAIL;
     }
     if (esp_partition_write(dest, streamPos, buffer.get(), want) != ESP_OK) {
       LOG_ERR("FLASH", "write @%u failed", static_cast<unsigned>(streamPos));
       file.close();
+      mbedtls_sha256_free(&writeSha);
       return Result::WRITE_FAIL;
     }
+    if (expectedDigest) mbedtls_sha256_update(&writeSha, buffer.get(), want);
     streamPos += want;
     if (onProgress) onProgress(streamPos, firmwareSize, ctx);
     delay(1);
   }
   file.close();
+
+  if (expectedDigest) {
+    uint8_t writtenDigest[32];
+    mbedtls_sha256_finish(&writeSha, writtenDigest);
+    mbedtls_sha256_free(&writeSha);
+    if (memcmp(writtenDigest, expectedDigest, 32) != 0) {
+      LOG_ERR("FLASH", "flashed bytes differ from the consented digest");
+      // otadata is still on the caller-selected slot: the caller decides the
+      // recovery (the target now holds an unconsented image and must not boot).
+      return Result::DIGEST_MISMATCH;
+    }
+  }
 
   if (!ota_boot::switchTo(dest)) {
     LOG_ERR("FLASH", "otadata switch failed");

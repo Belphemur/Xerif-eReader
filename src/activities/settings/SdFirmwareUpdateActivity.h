@@ -68,6 +68,12 @@ class SdFirmwareUpdateActivity : public Activity {
   // §15 source rule: the picked file's classification (basename prefix) fixes
   // the target slot for this install. Set in onPickerResult.
   bool sdTargetIsStable = true;
+  // §16 dance identity: SHA-256 of the picked file, computed BEFORE validation
+  // so the recorded digest describes the image that was validated and
+  // consented to, not whatever sits on the SD card at arm time. Set in
+  // onPickerResult.
+  uint8_t pickedDigest_[32] = {};
+  bool pickedDigestValid_ = false;
 
   void launchPicker();
   void onPickerResult(const ActivityResult& result);

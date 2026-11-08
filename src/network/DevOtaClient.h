@@ -94,8 +94,9 @@ PendingKind pendingInstallKind();
 // validated and consented to at dance-arm time. The unattended completion
 // pass re-hashes the file and refuses to flash when it differs — an SD card
 // swapped between consent and the completion boot must never reach flash.
-// Stored under its own NVS key; a DevChannel dance (which re-verifies against
-// the signed manifest at completion) records none.
+// Stored under its own NVS key; a DevChannel dance records none (its
+// completion pass re-fetches the unsigned manifest and checks the downloaded
+// image against the manifest's SHA-256 instead).
 bool pendingInstallSetDigest(const uint8_t digest[32]);
 bool pendingInstallGetDigest(uint8_t digestOut[32]);
 

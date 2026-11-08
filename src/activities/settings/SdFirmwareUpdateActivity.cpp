@@ -179,6 +179,22 @@ void SdFirmwareUpdateActivity::onPickerResult(const ActivityResult& result) {
   sdTargetIsStable = ota_install_routing::targetForSdFile(fileClass) == ota_install_routing::InstallTarget::Stable;
   LOG_INF("FW", "SD install class=%d target=%s", static_cast<int>(fileClass), sdTargetIsStable ? "stable" : "dev");
 
+  // §16 dance identity: hash the file BEFORE validating it, so the digest the
+  // dance records describes the image that was validated and consented to —
+  // a file swapped after consent can no longer imprint its own digest on the
+  // pending record (the completion pass re-hashes against this digest).
+  pickedDigestValid_ = dev_ota::sha256OfFile(firmwarePath.c_str(), pickedDigest_);
+  if (!pickedDigestValid_) {
+    LOG_ERR("FW", "cannot hash the picked file");
+    errorMessage = tr(STR_FIRMWARE_FILE_OPEN_FAILED);
+    {
+      RenderLock lock(*this);
+      state = State::FAILED;
+    }
+    requestUpdate();
+    return;
+  }
+
   {
     RenderLock lock(*this);
     state = State::VALIDATING;
@@ -303,7 +319,23 @@ void SdFirmwareUpdateActivity::performUpdate() {
   // completion pass writes the TARGET slot, which for every dance arm is the
   // non-running slot — the same slot flashFromSdPath() writes.
   if (recoveryMode || autoResume) {
-    const auto result = firmware_flash::flashFromSdPath(firmwarePath.c_str(), progressCb, this);
+    // §16 dance identity, write side: the flashed bytes are hashed during the
+    // write and compared against the consented digest BEFORE otadata selects
+    // the target (FirmwareFlasher). autoResume binds to the digest recorded at
+    // dance-arm time; an interactive pass binds to the digest taken at pick
+    // time. DevChannel resumes carry no recorded digest (DevOtaClient).
+    uint8_t pendingDigest[32];
+    const uint8_t* expected = nullptr;
+    if (autoResume) {
+      if (dev_ota::pendingInstallKind() != dev_ota::PendingKind::DevChannel &&
+          dev_ota::pendingInstallGetDigest(pendingDigest)) {
+        expected = pendingDigest;
+      }
+    } else if (pickedDigestValid_) {
+      expected = pickedDigest_;
+    }
+    const auto result = firmware_flash::flashFromSdPath(firmwarePath.c_str(), progressCb, this,
+                                                        /*alreadyValidated=*/false, expected);
     finishFlash(result);
     return;
   }
@@ -318,7 +350,9 @@ void SdFirmwareUpdateActivity::performUpdate() {
       // The target is not the running slot: write it directly (§16 matrix).
       const esp_partition_t* dest = sdTargetIsStable ? ota_slots::stableSlot() : ota_slots::devSlot();
       LOG_INF("FW", "§16 direct write → %s", dest->label);
-      const auto result = firmware_flash::flashFromSdPathInto(firmwarePath.c_str(), dest, progressCb, this);
+      const auto result =
+          firmware_flash::flashFromSdPathInto(firmwarePath.c_str(), dest, progressCb, this,
+                                              /*alreadyValidated=*/false, pickedDigestValid_ ? pickedDigest_ : nullptr);
       finishFlash(result);
       return;
     }
@@ -387,13 +421,13 @@ void SdFirmwareUpdateActivity::armSwapDance() {
     requestUpdate();
     return;
   }
-  // Pin the picked file's identity (§16 dance identity): the unattended
+  // Pin the picked file's identity (§16 dance identity): the digest was taken
+  // before validation (onPickerResult), so the record describes the image the
+  // user consented to — never a file swapped in after consent. The unattended
   // completion pass re-hashes the file and refuses to flash when the SD card's
   // contents changed between this consent and the completion boot.
-  uint8_t pickedDigest[32];
-  if (!dev_ota::sha256OfFile(firmwarePath.c_str(), pickedDigest) ||
-      !dev_ota::pendingInstallSet(firmwarePath.c_str(), kind) || !dev_ota::pendingInstallSetDigest(pickedDigest) ||
-      !ota_boot::switchTo(worker)) {
+  if (!pickedDigestValid_ || !dev_ota::pendingInstallSet(firmwarePath.c_str(), kind) ||
+      !dev_ota::pendingInstallSetDigest(pickedDigest_) || !ota_boot::switchTo(worker)) {
     LOG_ERR("FW", "§16 dance arm failed; clearing the flag");
     dev_ota::pendingInstallClear();
     errorMessage = tr(STR_FIRMWARE_WRITE_FAILED);
@@ -411,6 +445,24 @@ void SdFirmwareUpdateActivity::armSwapDance() {
 }
 
 void SdFirmwareUpdateActivity::finishFlash(const firmware_flash::Result result) {
+  if (result == firmware_flash::Result::DIGEST_MISMATCH) {
+    // The bytes that reached flash differ from the consented digest: the
+    // TARGET slot now holds an unconsented image and otadata must NOT select
+    // it. unwindDance() would switchTo exactly that slot — keep the worker
+    // (the healthy running firmware) selected instead, clear the flag and
+    // drop the staged file so no boot re-enters the installer.
+    LOG_ERR("FW", "flashed bytes differ from the consented digest; keeping the worker");
+    const bool staged = dev_ota::pendingInstallKind() == dev_ota::PendingKind::StableStaged;
+    dev_ota::pendingInstallClear();
+    if (staged) Storage.remove(firmwarePath.c_str());
+    errorMessage = tr(STR_OTA_FILE_CHANGED);
+    {
+      RenderLock lock(*this);
+      state = State::FAILED;
+    }
+    requestUpdate();
+    return;
+  }
   if (result != firmware_flash::Result::OK) {
     LOG_ERR("FW", "flash failed: %s", firmware_flash::resultName(result));
     // BAD_CHIP / WRONG_BOARD here is the TOCTOU re-validation catching a

@@ -1407,14 +1407,25 @@ static void bootFinalize() {
                 pendingPayload, kDevOtaResumeHookMarker, kDevOtaSwapKindsMarker);
         if (kind == dev_ota::PendingKind::DevChannel) {
           auto devOtaActivity = makeUniqueNoThrow<DevOtaActivity>(renderer, mappedInputManager, /*autoResume=*/true);
-          if (devOtaActivity) activityManager.replaceActivity(std::move(devOtaActivity));
+          if (devOtaActivity) {
+            activityManager.replaceActivity(std::move(devOtaActivity));
+          } else {
+            // Transient allocation failure (fragmented heap): the flag stays
+            // armed so a later boot can still finish the install — by design,
+            // not a retry loop (no flash is attempted on this path).
+            LOG_ERR("MAIN", "pending install resume: allocation failed");
+          }
         } else {
           // SdDev / StableStaged / StablePicked: the §16 SD-file completion
           // pass writes the TARGET slot (the non-running slot) from the staged
           // or user-picked SD file.
           auto sdFirmwareUpdateActivity = makeUniqueNoThrow<SdFirmwareUpdateActivity>(
               renderer, mappedInputManager, /*recoveryMode=*/false, /*autoResume=*/true);
-          if (sdFirmwareUpdateActivity) activityManager.replaceActivity(std::move(sdFirmwareUpdateActivity));
+          if (sdFirmwareUpdateActivity) {
+            activityManager.replaceActivity(std::move(sdFirmwareUpdateActivity));
+          } else {
+            LOG_ERR("MAIN", "pending install resume: allocation failed");
+          }
         }
       }
     }
