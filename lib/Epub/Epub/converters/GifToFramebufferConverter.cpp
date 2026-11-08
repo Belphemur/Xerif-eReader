@@ -45,6 +45,7 @@ struct GifContext {
   bool quality{false};
   std::unique_ptr<uint32_t[]> qSums;    // [dstWidth] gray accumulation
   std::unique_ptr<uint16_t[]> qCounts;  // [dstWidth] samples per column
+  std::unique_ptr<uint8_t[]> qGrayRow;  // [dstWidth] averaged luma handed to the bake
   std::unique_ptr<uint8_t[]> qToneRow;  // [dstWidth] baked 4-level tones
   ToneBaker* bake{nullptr};             // not owned; from RenderConfig::toneBake
   int qAccumDstY = -1;                  // dst row currently accumulating (-1 = none)
@@ -94,13 +95,17 @@ void qFlushRow(const int dstY, GifContext& ctx) {
   if (paintRow) pw.beginRow(outY);
   for (int dstX = 0; dstX < ctx.dstWidth; ++dstX) {
     const uint32_t avg = ctx.qCounts[dstX] != 0 ? ctx.qSums[dstX] / ctx.qCounts[dstX] : 255;
-    const uint8_t tone = ctx.bake->tone(dstX, avg > 255 ? 255 : static_cast<int>(avg));
-    ctx.qToneRow[dstX] = tone;
+    ctx.qGrayRow[dstX] = static_cast<uint8_t>(avg > 255 ? 255 : avg);
+  }
+  // Serpentine row bake: the bake visits the row in its own scan direction
+  // and advances the error state (toneRow contract, design §5.2).
+  ctx.bake->toneRow(ctx.qGrayRow.get(), ctx.qToneRow.get());
+  for (int dstX = 0; dstX < ctx.dstWidth; ++dstX) {
+    const uint8_t tone = ctx.qToneRow[dstX];
     const int outX = ctx.config->x + dstX;
     if (paintRow && outX >= 0 && outX < ctx.screenWidth) pw.writePixel(outX, tone);
     if (caching) cw.writePixel(outX, tone);
   }
-  ctx.bake->nextRow();
   if (dstY == ctx.qFlushedRows) ++ctx.qFlushedRows;
 }
 
@@ -486,14 +491,16 @@ bool GifToFramebufferConverter::decodeGifSource(const char* imagePath, uint8_t* 
     // allocate under pressure.
     ctx.qSums = makeUniqueNoThrow<uint32_t[]>(ctx.dstWidth);
     ctx.qCounts = makeUniqueNoThrow<uint16_t[]>(ctx.dstWidth);
+    ctx.qGrayRow = makeUniqueNoThrow<uint8_t[]>(ctx.dstWidth);
     ctx.qToneRow = makeUniqueNoThrow<uint8_t[]>(ctx.dstWidth);
-    if (ctx.qSums && ctx.qCounts && ctx.qToneRow && config.toneBake != nullptr) {
+    if (ctx.qSums && ctx.qCounts && ctx.qGrayRow && ctx.qToneRow && config.toneBake != nullptr) {
       ctx.bake = config.toneBake;
       ctx.quality = true;
     } else {
       LOG_ERR("GIF", "Quality bake unavailable — falling back to legacy dither");
       ctx.qSums.reset();
       ctx.qCounts.reset();
+      ctx.qGrayRow.reset();
       ctx.qToneRow.reset();
     }
   }

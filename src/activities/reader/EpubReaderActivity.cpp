@@ -4540,9 +4540,10 @@ void EpubReaderActivity::ttfCommitFrame(const freeink::book::Page& page, const f
   // legacy reader's absolute arm — same predicate, plus the quality path
   // (the revert switch keeps today's 1bpp image display verbatim).
   const bool pageHasImages = page.imageCount > 0 && SETTINGS.imageRendering == CrossPointSettings::IMAGES_DISPLAY;
-  const bool absoluteImageGray = pageHasImages && SETTINGS.imageDecodeQuality != 0 && !gpio.deviceIsX3() &&
-                                 display.getController() == HalDisplay::Controller::UC8279 &&
-                                 renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
+  // One shared predicate (design 2026-11-08 §5.1): the same decision
+  // paintCapturedPage's base style follows — base paint and commit cannot
+  // disagree within a pass (settings/controller are frozen for the render).
+  const bool absoluteImageGray = ttfAbsoluteImageGray(renderer, pageHasImages);
   const auto grayCaps = renderer.grayscaleCapabilities();
   // Degrade-aware: a build without the mono module paints Smooth planes even
   // when the setting asks for Crisp (the loader degraded the faces).
@@ -5104,11 +5105,15 @@ void EpubReaderActivity::renderTtfImageGrayAbsolute(const freeink::book::Page& p
   const unsigned long tMsbMs = millis();
 #endif
 
-  renderer.setRenderMode(GfxRenderer::BW);
+  // displayGrayBuffer BEFORE setRenderMode(BW) — the legacy arm's exact
+  // order: setRenderMode(BW) while absoluteGrayPlanes is set cancels the
+  // unfinished absolute pass (cleanupGrayscaleBuffers(nullptr)), which would
+  // drop every image page's gray planes.
   renderer.displayGrayBuffer();
 #ifdef BOOK_PROFILE
   const unsigned long tGrayMs = millis();
 #endif
+  renderer.setRenderMode(GfxRenderer::BW);
   renderer.restoreBwBuffer();
 #ifdef BOOK_PROFILE
   LOG_DBG("PROF", "phase=ttf_gray_absolute base=%lums lsb=%lums msb=%lums gray=%lums total=%lums",

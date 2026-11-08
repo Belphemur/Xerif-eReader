@@ -60,6 +60,13 @@ QuickRelayoutResult quickRelayoutPage(freeink::book::TtfBookRuntime& ttf, GfxRen
 // image writes decide per pass which plane's bits they darken.
 enum class TtfPaintPass : uint8_t { Base, PlaneLsb, PlaneMsb };
 
+// The absolute-gray image routing decision (design 2026-11-08 §5.1) — the
+// ONE production predicate: page/quality policy through the host-tested
+// ttfimg::absoluteGrayImageRoute plus the runtime probes (X3 guard, UC8279
+// controller, Absolute capability). The commit route and the paint's base
+// style both call this, so they cannot disagree within a pass.
+bool ttfAbsoluteImageGray(const GfxRenderer& renderer, bool pageHasImages);
+
 // Paint a transient engine Page (captured or freshly read) with the reader's
 // TTF page pipeline: text via the shared uniform quantizer when AA gray
 // parity holds or the page takes the absolute-gray image route, 1bpp engine

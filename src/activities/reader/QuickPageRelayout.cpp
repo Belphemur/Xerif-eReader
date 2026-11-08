@@ -10,6 +10,7 @@
 #include "BookFontLoader.h"
 #include "CrossPointSettings.h"
 #include "Epub/blocks/ImageDecodeGate.h"
+#include "TtfImageCache.h"
 #include "TtfImageEngine.h"
 #include "adapters/FrameTargetFactory.h"
 #include "adapters/PagePaint.h"
@@ -119,13 +120,16 @@ void paintTtfPageImages(const freeink::book::Page& page, freeink::book::TtfBookR
 
 }  // namespace
 
-// Design 2026-11-08 §5.1: the absolute-gray image routing predicate, the
+// Design 2026-11-08 §5.1: the absolute-gray image routing predicate — the
 // legacy reader's absoluteImageGrayscale arm (EpubReaderActivity render
-// contents) restricted to the quality path — the revert switch keeps today's
-// 1bpp image display verbatim, and the X3 guard mirrors the legacy arm.
-bool ttfAbsoluteImageGray(const GfxRenderer& renderer) {
-  return !gpio.deviceIsX3() && display.getController() == HalDisplay::Controller::UC8279 &&
-         renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
+// contents) restricted to the quality path (the revert switch keeps today's
+// 1bpp image display verbatim), expressed through the host-tested pure
+// decision table in the ttfimg core.
+bool ttfAbsoluteImageGray(const GfxRenderer& renderer, const bool pageHasImages) {
+  return ttfimg::absoluteGrayImageRoute(
+      pageHasImages, SETTINGS.imageDecodeQuality != 0, gpio.deviceIsX3(),
+      display.getController() == HalDisplay::Controller::UC8279,
+      renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported());
 }
 
 QuickRelayoutResult quickRelayoutPage(freeink::book::TtfBookRuntime& ttf, GfxRenderer& renderer,
@@ -194,7 +198,7 @@ void paintCapturedPage(const freeink::book::Page& page, void* font, GfxRenderer&
   // longer forces the 1bpp engine path there. Panels without absolute gray
   // keep the 1bpp image path (no plane bits for image pixels).
   const bool pageHasImages = page.imageCount > 0 && SETTINGS.imageRendering == CrossPointSettings::IMAGES_DISPLAY;
-  const bool absoluteImages = pageHasImages && SETTINGS.imageDecodeQuality != 0 && ttfAbsoluteImageGray(renderer);
+  const bool absoluteImages = ttfAbsoluteImageGray(renderer, pageHasImages);
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
   const bool smoothText = !freeink::book::fontLoader.effectiveMonochrome();
 #else

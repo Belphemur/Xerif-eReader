@@ -181,7 +181,15 @@ the GIF/BMP converter paths) with a `ToneBake4` that layers, in order:
    left-to-right on even rows, right-to-left on odd rows (the FS kernel
    mirrors). Error state stays row-sequential over image-local columns
    (preserving the placement-independence invariant of the 2026-11-07
-   design).
+   design). As-built (review round 1): the scan direction is driven by the
+   row-level `ToneBaker::toneRow(gray, tones)` API — one call bakes a whole
+   row, visiting it in the bake's own direction (the mirrored kernel's
+   horizontal term always lands on the next-visited pixel) and advancing
+   the error state itself; the per-pixel `tone()` stays the FORWARD kernel
+   (the interface keeps it for ascending-x callers and the A/B reference).
+   The production decodes (SDK row sink, BMP row loop, GIF qFlushRow)
+   call `toneRow` — a per-pixel serpentine flag callers ignore would
+   discard 7/20 of the error on every odd row (review round-1 finding).
 
 As-built amendment 2026-11-08 (implementation run):
 

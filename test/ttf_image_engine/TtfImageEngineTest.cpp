@@ -305,27 +305,54 @@ TEST(ToneBake4, DiffusionWeightScalesEveryKernelTerm) {
 }
 
 TEST(ToneBake4, SerpentineMirrorsTheKernel) {
-  // A mirror-symmetric input row scanned forward on a fresh bake equals the
-  // same row scanned backward on a reverse-seeded fresh bake — the FS kernel
-  // mirrors with the scan direction.
+  // toneRow drives the scan direction itself: a mirror-symmetric row baked
+  // ascending (row 0) equals the same row baked on a reverse-seeded bake —
+  // the FS kernel mirrors with the visit direction, so the horizontal error
+  // term always lands on the next-visited pixel.
   const int w = 16;
   uint8_t gray[w];
   for (int i = 0; i < w; ++i) gray[i] = static_cast<uint8_t>(60 + (i < w - 1 - i ? i : w - 1 - i) * 15);
   ttfimg::ToneBake4 forward(w);
   ttfimg::ToneBake4 backward(w);
   ASSERT_TRUE(forward.ok() && backward.ok());
-  backward.reverse = true;  // row 0 scans right-to-left
+  backward.reverse = true;  // row 0 visits right-to-left
   uint8_t fwd[w];
   uint8_t rev[w];
-  for (int x = 0; x < w; ++x) fwd[x] = forward.tone(x, gray[x]);
-  for (int x = w - 1; x >= 0; --x) rev[x] = backward.tone(x, gray[x]);
+  forward.toneRow(gray, fwd);
+  backward.toneRow(gray, rev);
   for (int x = 0; x < w; ++x) EXPECT_EQ(fwd[x], rev[w - 1 - x]) << "column " << x;
-  // And the serpentine state flips per row: a second forward row of the same
-  // bake is NOT identical to the first (direction-aware error flow).
-  forward.nextRow();
+  // And the serpentine state flips per row: row 1 of the same bake (visited
+  // descending) differs from row 0 — direction-aware error flow.
   uint8_t row2[w];
-  for (int x = 0; x < w; ++x) row2[x] = forward.tone(x, gray[x]);
+  forward.toneRow(gray, row2);
   EXPECT_NE(memcmp(fwd, row2, sizeof(fwd)), 0);
+}
+
+TEST(ToneBake4, PerPixelToneStaysForwardForAscendingCallers) {
+  // The ToneBaker per-pixel kernel is ALWAYS ascending (the callers' raster
+  // order): a reverse-flagged bake's tone() must not mirror the kernel —
+  // the serpentine lives in toneRow's visit order, not in tone().
+  const int w = 8;
+  ttfimg::ToneBake4 a(w);
+  ttfimg::ToneBake4 b(w);
+  ASSERT_TRUE(a.ok() && b.ok());
+  b.reverse = true;  // must not change tone()'s kernel
+  for (int x = 0; x < w; ++x) EXPECT_EQ(a.tone(x, 128), b.tone(x, 128));
+}
+
+TEST(ToneBake4, ToneRowDeterministicAcrossRuns) {
+  // Worker/foreground parity through the row API (the production path).
+  const int w = 37;
+  uint8_t gray[37];
+  for (int i = 0; i < w; ++i) gray[i] = static_cast<uint8_t>(i * 7);
+  uint8_t run1[3][37];
+  uint8_t run2[3][37];
+  for (int pass = 0; pass < 2; ++pass) {
+    ttfimg::ToneBake4 bake(w);
+    ASSERT_TRUE(bake.ok());
+    for (int r = 0; r < 3; ++r) bake.toneRow(gray, (pass == 0 ? run1 : run2)[r]);
+  }
+  EXPECT_EQ(memcmp(run1, run2, sizeof(run1)), 0);
 }
 
 TEST(ToneBake4, FlatInputsPinEndpointsAndMidtones) {

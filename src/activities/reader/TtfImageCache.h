@@ -99,28 +99,46 @@ struct ToneBake4 : ToneBaker {
     return static_cast<int16_t>(errVal * k * kDiffusionNum / (16 * kDiffusionDen));
   }
 
-  // x is image-local (0-based). Returns the quantized 4-level tone.
-  uint8_t tone(const int x, const int gray) override {
+  // x is image-local (0-based). `reverseScan` selects the mirrored kernel:
+  // a serpentine row is VISITED in its scan direction, so the horizontal
+  // term always lands on the next-visited pixel (7/20 to x+1 ascending,
+  // to x−1 descending). Returns the quantized 4-level tone.
+  uint8_t toneDir(const int x, const int gray, const bool reverseScan) {
     const int v = contrastLut[gammaLut[static_cast<uint8_t>(gray)]] + err[x + 1];
     int t = (v + 42) / 85;  // nearest of {0, 85, 170, 255} in the mapped space
     if (t < 0) t = 0;
     if (t > 3) t = 3;
     const int errVal = v - t * 85;
-    if (!reverse) {
-      // Forward row: 7 right, then 3 below-left, 5 below, 1 below-right.
+    if (!reverseScan) {
+      // Ascending visit: 7 right, then 3 below-left, 5 below, 1 below-right.
       if (x + 1 < width) err[x + 2] += diffuse(errVal, 7);
       errNext[x] += diffuse(errVal, 3);
       errNext[x + 1] += diffuse(errVal, 5);
       errNext[x + 2] += diffuse(errVal, 1);
     } else {
-      // Mirrored serpentine row: 7 left, then 3 below-right, 5 below,
-      // 1 below-left.
+      // Descending visit: 7 left, then 3 below-right, 5 below, 1 below-left.
       if (x > 0) err[x] += diffuse(errVal, 7);
       errNext[x + 2] += diffuse(errVal, 3);
       errNext[x + 1] += diffuse(errVal, 5);
       errNext[x] += diffuse(errVal, 1);
     }
     return static_cast<uint8_t>(t);
+  }
+  // ToneBaker's forward kernel — kept for ascending-x callers and the tests;
+  // the quality decodes use toneRow().
+  uint8_t tone(const int x, const int gray) override { return toneDir(x, gray, false); }
+
+  // Row bake (the serpentine contract): visits even rows ascending and odd
+  // rows descending so the mirrored kernel's horizontal term always lands
+  // on the next-visited pixel, and advances the error state itself.
+  void toneRow(const uint8_t* gray, uint8_t* tones) override {
+    if (!ok() || width <= 0) return;
+    const bool rev = reverse;
+    for (int i = 0; i < width; ++i) {
+      const int x = rev ? (width - 1 - i) : i;
+      tones[x] = toneDir(x, gray[x], rev);
+    }
+    nextRow();
   }
   void nextRow() override {
     if (err == nullptr || errNext == nullptr) return;

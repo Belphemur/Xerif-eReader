@@ -90,8 +90,10 @@ struct RenderConfig {
   // there; the flag only turns on inside the TTF image decode paths.
   bool qualityTone = false;
   // The bake the quality path quantizes through (design 2026-11-08 §5.2).
-  // Null keeps the converter's own FS math (the revert switch's verbatim
-  // path); the TTF quality path injects the ttfimg::ToneBake4.
+  // Null with qualityTone set: the converter falls back to nearest + Bayer
+  // (the legacy dither) — no per-converter error-diffusion bake exists.
+  // The TTF quality path injects ttfimg::ToneBake4; the revert switch
+  // (qualityTone false) never reaches the converters (decodeAndCache Skip).
   ToneBaker* toneBake = nullptr;
 };
 
