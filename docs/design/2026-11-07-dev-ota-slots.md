@@ -272,3 +272,35 @@ enforcing verifier).
 Note: `workflow_run`-triggered workflows execute the workflow file from the
 default branch (develop) — the conversion is effective the moment it lands on
 develop.
+
+## 14. Addendum (2026-11-08): PR firmware is stamped too — one manifest schema
+
+### Decision (owner: "the change to CI should also be present for PR — PR updates the manifest")
+
+PR firmware installs through the same dev picker into the same dev slot as
+develop builds, so it must get the identical treatment:
+
+- **Stamping**: `pr-firmware-links.yml` stamps the PR asset with the SAME
+  `git_branch.py --print-dev-version <head_sha>` derivation, with the branch
+  taken from `github.event.workflow_run.head_branch` (the PR head branch —
+  the publish lane's own checkout is on develop, so the branch is passed
+  explicitly; git_branch.py gains an optional `--branch` override, its only
+  new parameter). The stamp runs BEFORE the `--validate` gate and before the
+  manifest hashes the asset.
+- **Manifest**: `xerif-pr-*` entries carry a `version` field exactly like
+  `xerif-dev-*` entries — the "PR entries get no version" exception is
+  deleted. One manifest schema: every entry has name, url, sha256, date,
+  version. The device display needs no change (it already prefers `version`
+  and falls back to the name).
+- **Fit rule unchanged**: a long PR branch name drops out of the stamped
+  descriptor first (`<base>-dev-<sha>`), never the SHA tail.
+
+### Superseded
+§12 "dev channel only" stamping scope and the generator's
+"PR entries get no version field" exception. Supersede reason: the slot
+descriptor must match About for EVERY installable image, and the manifest is
+one schema — per-entry exceptions are the DRY violation this addendum closes.
+
+### Rejected
+Pseudo-versions from the asset name (the device's name-fallback already
+covers manifests that predate this change; new entries are real).
