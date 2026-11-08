@@ -9,13 +9,17 @@
 #include <cstring>
 
 #include "HalPowerManager.h"
+#include "HapticFeedback.h"
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
+#include "components/UiAppHelpers.h"
 #include "network/OtaBootSwitch.h"
 #include "network/OtaSlots.h"
 #include "util/MemoryClaimGateDevice.h"
+
+namespace fui = freeink::ui;
 
 namespace {
 // Same battery gate as the release OTA path (OtaUpdateActivity): a brownout
@@ -309,7 +313,55 @@ void DevOtaActivity::onInstallProgress(const int percent, const bool writing) {
   requestUpdate(true);
 }
 
+// Touch path for the hand-rendered states. X4 Pro-class boards expose no
+// physical Confirm/Back (both arrive synthesized from the GT911 touch only),
+// so without this the version picker cannot be operated at all.
+bool DevOtaActivity::handleHandRenderedTouch() {
+  if (state != LIST && state != FAILED) return false;
+  const freeink::ui::InputSnapshot snap = touchSnapshotFrom(mappedInput);
+  if (!snap.touchPressed && !snap.touchHeld && !snap.touchReleased) return false;
+
+  // Route only against a table this state published; while it is stale (the
+  // state just changed and the next render has not run yet) the touch is
+  // absorbed without action, never misfired.
+  freeink::ui::ActionEvent event{};
+  if (touchReady) event = touchInteractions.routePublished(snap);
+
+  if (snap.touchPressed) {
+    // Move the selection outline to the contacted row right away so the
+    // contact is visibly alive before the release.
+    const int16_t idx = touchInteractions.activeIndex();
+    if (state == LIST && idx >= 0) {
+      const freeink::ui::Interaction& hit = touchInteractions.publishedData()[idx];
+      if (hit.action == TOUCH_ACTION_ROW && hit.value != selectedIndex) {
+        selectedIndex = hit.value;
+        requestUpdate();
+      }
+    }
+    return true;
+  }
+  if (snap.touchHeld) return true;
+
+  // Release: act only when the lift landed on a registered rect (a tap that
+  // dragged off a row does nothing, matching OptionPopup's release rule).
+  if (event && event.action == TOUCH_ACTION_ROW && state == LIST) {
+    promptInstall(event.value);
+    haptic_feedback::touchAction();
+    return true;
+  }
+  if (event && event.action == TOUCH_ACTION_DISMISS && state == FAILED) {
+    finish();
+    haptic_feedback::touchAction();
+    return true;
+  }
+  return true;
+}
+
 void DevOtaActivity::loop() {
+  // Touch first: LIST/FAILED take taps through the interaction table, the
+  // CONFIRMING popup routes its own touches inside OptionPopup::handleInput.
+  if (handleHandRenderedTouch()) return;
+
   if (state == CONFIRMING) {
     if (confirmPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return;
     // Dismissed without a selection: back to the list.
@@ -350,6 +402,9 @@ void DevOtaActivity::render(RenderLock&&) {
   const auto pageHeight = renderer.getScreenHeight();
 
   renderer.clearScreen();
+  // Closed unless the state below re-publishes a touch table that matches
+  // what is on screen; loop() routes taps only while it is open.
+  touchReady = false;
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_DEV_CHANNEL));
   const auto height = renderer.getLineHeight(UI_10_FONT_ID);
   const auto top = (pageHeight - height) / 2;
@@ -374,6 +429,10 @@ void DevOtaActivity::render(RenderLock&&) {
     renderer.drawText(UI_10_FONT_ID, side, metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing,
                       runningLine);
     int y = top + height + metrics.verticalSpacing;
+    // Row hit bands reuse the drawing geometry so the tap targets can never
+    // drift from the rows on screen; adjacent bands stay contiguous.
+    fui::Rect rowRects[dev_ota::kMaxVersions];
+    int rowCount = 0;
     for (int i = 0; i < entries.count; ++i) {
       char label[40];
       if (!devNameLabel(entries.items[i].name, label, sizeof(label))) {
@@ -392,7 +451,24 @@ void DevOtaActivity::render(RenderLock&&) {
           renderer.drawText(UI_10_FONT_ID, dateX, y, compact);
         }
       }
+      rowRects[rowCount++] = fui::Rect{static_cast<int16_t>(side - 4), static_cast<int16_t>(y - 2),
+                                       static_cast<int16_t>(pageWidth - (side - 4) * 2),
+                                       static_cast<int16_t>(height + metrics.verticalSpacing)};
       y += height + metrics.verticalSpacing;
+    }
+    if (rowCount > 0) {
+      // Publish on this (render) task; loop() routes against the published
+      // generation, never the one being rebuilt — the OptionPopup handshake.
+      touchInteractions.beginPublishCycle();
+      fui::GfxRendererTarget target = makeUiTarget(renderer);
+      const fui::DeviceContext device = target.deviceContext();
+      const fui::InputSnapshot noInput{};
+      fui::Frame<dev_ota::kMaxVersions + 1> frame(target, device, noInput, touchInteractions);
+      for (int i = 0; i < rowCount; ++i) {
+        frame.hit(rowRects[i], TOUCH_ACTION_ROW, static_cast<int16_t>(i), fui::InputTouch);
+      }
+      touchInteractions.publish();
+      touchReady = true;
     }
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_CONFIRM), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
@@ -412,6 +488,20 @@ void DevOtaActivity::render(RenderLock&&) {
     }
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    // Touch has no Back key on X4 Pro-class boards: the whole screen is the
+    // dismiss target.
+    touchInteractions.beginPublishCycle();
+    {
+      fui::GfxRendererTarget target = makeUiTarget(renderer);
+      const fui::DeviceContext device = target.deviceContext();
+      const fui::InputSnapshot noInput{};
+      fui::Frame<dev_ota::kMaxVersions + 1> frame(target, device, noInput, touchInteractions);
+      frame.hit(fui::Rect{static_cast<int16_t>(0), static_cast<int16_t>(0), static_cast<int16_t>(pageWidth),
+                          static_cast<int16_t>(pageHeight)},
+                TOUCH_ACTION_DISMISS, 0, fui::InputTouch);
+    }
+    touchInteractions.publish();
+    touchReady = true;
   }
 
   renderer.displayBuffer();

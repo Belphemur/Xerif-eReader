@@ -1,5 +1,6 @@
 #pragma once
 
+#include <FreeInkUICore.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
 
@@ -70,4 +71,23 @@ class DevOtaActivity : public Activity {
   int installPercent = -1;
   bool installWriting = false;
   OptionPopup<> confirmPopup;
+
+  // Touch for the hand-rendered LIST and FAILED screens (boards like the
+  // X4 Pro drive Confirm/Back only through the GT911, so without this the
+  // picker is a dead end): render() registers the hit rects on the render
+  // task, loop() routes touch snapshots against the published generation —
+  // the same cross-task pattern OptionPopup uses for the confirm dialog,
+  // which routes its own buffer.
+  static constexpr freeink::ui::ActionId TOUCH_ACTION_ROW = 1;      // value = entry index
+  static constexpr freeink::ui::ActionId TOUCH_ACTION_DISMISS = 2;  // FAILED: tap anywhere leaves
+  freeink::ui::InteractionBuffer<dev_ota::kMaxVersions + 1> touchInteractions;
+  // Set by render() once the published table matches the on-screen state;
+  // read by loop() so a tap never routes against a stale table.
+  bool touchReady = false;
+
+  // Consumes every touch frame while LIST/FAILED is on screen (a swallowed
+  // tap must not also reach the button path) and acts on a release that
+  // lands on a registered rect. Never blocks the input loop: routing is an
+  // O(rows) hit test against the already-published table.
+  bool handleHandRenderedTouch();
 };
