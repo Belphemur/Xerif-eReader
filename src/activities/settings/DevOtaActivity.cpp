@@ -428,9 +428,34 @@ void DevOtaActivity::render(RenderLock&&) {
   } else if (state == LIST) {
     renderer.drawText(UI_10_FONT_ID, side, metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing,
                       runningLine);
-    int y = top + height + metrics.verticalSpacing;
-    // Row hit bands reuse the drawing geometry so the tap targets can never
-    // drift from the rows on screen; adjacent bands stay contiguous.
+    // Settings-menu row geometry (design docs/design/2026-11-07-dev-ota-slots.md
+    // §12): the settings list resolves its rows through
+    // FreeInkApp::resolveListProps() — body font, theme touch row padding, then
+    // the touch minimums — so its tap bands are finger-sized. Derive the same
+    // values from the same shared tokens; the hit bands below reuse exactly
+    // this geometry so they cannot drift from the rows.
+    // Non-const: the touch publish Frame below binds a DrawTarget&.
+    fui::GfxRendererTarget uiTarget = makeUiTarget(renderer);
+    const fui::ThemeTokens& tokens = refreshSharedUiThemeTokens(uiTarget);
+    const bool touch = uiTarget.deviceContext().hasTouch;
+    const int rowFont = uiScaleSpec().bodyFontId;
+    const int16_t labelLine = uiTarget.lineHeight(tokens.bodyText.font);
+    const int16_t padY = touch ? tokens.listTouchRowPaddingY : tokens.listRowPaddingY;
+    int16_t rowHeight = static_cast<int16_t>(labelLine + 2 * (padY < 0 ? 0 : padY));
+    if (rowHeight < tokens.listMinRowHeight) rowHeight = tokens.listMinRowHeight;
+    if (touch) {
+      const int16_t deviceMin = uiTarget.deviceContext().minTouchSize;
+      const int16_t touchMin = deviceMin > tokens.minTouchSize ? deviceMin : tokens.minTouchSize;
+      if (rowHeight < touchMin) rowHeight = touchMin;
+      if (rowHeight < tokens.listTouchMinRowHeight) rowHeight = tokens.listTouchMinRowHeight;
+    }
+    int16_t rowGap = tokens.listRowGap;
+    if (touch && rowGap < tokens.listTouchRowGap) rowGap = tokens.listTouchRowGap;
+
+    // Rows flow down from the running line like the settings list flows from
+    // its header; three dev rows fit above the button hints in either
+    // orientation at this geometry.
+    int y = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + height + rowGap;
     fui::Rect rowRects[dev_ota::kMaxVersions];
     int rowCount = 0;
     for (int i = 0; i < entries.count; ++i) {
@@ -438,32 +463,34 @@ void DevOtaActivity::render(RenderLock&&) {
       if (!devNameLabel(entries.items[i].name, label, sizeof(label))) {
         snprintf(label, sizeof(label), "%s", entries.items[i].name);
       }
+      // The selection outline is the row rect itself: the hit band registered
+      // below is this exact rectangle, so the tap target never drifts.
       if (i == selectedIndex) {
-        renderer.drawRect(side - 4, y - 2, pageWidth - (side - 4) * 2, height + 4);
+        renderer.drawRect(side, y, pageWidth - side * 2, rowHeight);
       }
-      renderer.drawText(UI_10_FONT_ID, side, y, label);
+      // Center the label's line box in the row like the fui list does.
+      const int textY = y + (rowHeight - labelLine) / 2;
+      renderer.drawText(rowFont, side, textY, label);
       char compact[16];
       if (compactDevDate(entries.items[i].date, compact, sizeof(compact))) {
-        const int dateX = pageWidth - side - renderer.getTextWidth(UI_10_FONT_ID, compact);
+        const int dateX = pageWidth - side - renderer.getTextWidth(rowFont, compact);
         // Right-align the compact timestamp; drop it rather than overprint
         // the label on a narrow screen.
-        if (dateX > side + renderer.getTextWidth(UI_10_FONT_ID, label) + 4) {
-          renderer.drawText(UI_10_FONT_ID, dateX, y, compact);
+        if (dateX > side + renderer.getTextWidth(rowFont, label) + 4) {
+          renderer.drawText(rowFont, dateX, textY, compact);
         }
       }
-      rowRects[rowCount++] = fui::Rect{static_cast<int16_t>(side - 4), static_cast<int16_t>(y - 2),
-                                       static_cast<int16_t>(pageWidth - (side - 4) * 2),
-                                       static_cast<int16_t>(height + metrics.verticalSpacing)};
-      y += height + metrics.verticalSpacing;
+      rowRects[rowCount++] = fui::Rect{static_cast<int16_t>(side), static_cast<int16_t>(y),
+                                       static_cast<int16_t>(pageWidth - side * 2), rowHeight};
+      y += rowHeight + rowGap;
     }
     if (rowCount > 0) {
       // Publish on this (render) task; loop() routes against the published
       // generation, never the one being rebuilt — the OptionPopup handshake.
       touchInteractions.beginPublishCycle();
-      fui::GfxRendererTarget target = makeUiTarget(renderer);
-      const fui::DeviceContext device = target.deviceContext();
+      const fui::DeviceContext device = uiTarget.deviceContext();
       const fui::InputSnapshot noInput{};
-      fui::Frame<dev_ota::kMaxVersions + 1> frame(target, device, noInput, touchInteractions);
+      fui::Frame<dev_ota::kMaxVersions + 1> frame(uiTarget, device, noInput, touchInteractions);
       for (int i = 0; i < rowCount; ++i) {
         frame.hit(rowRects[i], TOUCH_ACTION_ROW, static_cast<int16_t>(i), fui::InputTouch);
       }
