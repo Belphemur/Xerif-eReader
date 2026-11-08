@@ -21,7 +21,7 @@ class Epub {
   uint8_t* extractItemToPsram(const char* href, size_t* outSize) {
     if (outSize != nullptr) *outSize = 0;
     const auto it = items.find(href != nullptr ? href : "");
-    if (it == items.end()) return nullptr;
+    if (it == items.end() || it->second.empty()) return nullptr;
     uint8_t* buf = static_cast<uint8_t*>(poolMalloc(it->second.size()));
     if (buf == nullptr) return nullptr;
     memcpy(buf, it->second.data(), it->second.size());
