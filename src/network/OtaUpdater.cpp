@@ -17,6 +17,7 @@
 #include "FirmwareBoardTag.h"
 #include "FirmwareFlasher.h"
 #include "OtaJson.h"
+#include "OtaSlots.h"
 #include "OtaSignature.h"
 
 namespace {
@@ -215,9 +216,16 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   // ourselves and stream the firmware through HttpDownloader, which runs over
   // wolfSSL when FREEINK_NET_WOLFSSL is set, reusing its redirect handling for the
   // GitHub -> CDN hop.
-  const esp_partition_t* updatePartition = esp_ota_get_next_update_partition(nullptr);
+  // §15 source rule: a gh_release install ALWAYS targets the stable slot
+  // (app0). The former esp_ota_get_next_update_partition(nullptr) wrote the
+  // INACTIVE slot, so running stable silently destroyed the dev install in
+  // app1. The caller (OtaUpdateActivity) routes the §16 stable→stable dance;
+  // this function runs in the completion pass (the running slot is the dev
+  // worker) or the direct-write path (running dev). The host-buildable
+  // routing decision points are pinned in ota_install_routing::.
+  const esp_partition_t* updatePartition = ota_slots::stableSlot();
   if (!updatePartition) {
-    LOG_ERR("OTA", "No OTA partition available");
+    LOG_ERR("OTA", "No stable slot (app0) in partition table");
     return INTERNAL_UPDATE_ERROR;
   }
 
