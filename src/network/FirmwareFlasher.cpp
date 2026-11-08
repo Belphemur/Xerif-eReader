@@ -181,8 +181,10 @@ Result validateImageFile(const char* sdPath, size_t partitionSize, uint8_t* outS
   // exit alongside shaCtx; started only when the caller asks for a digest.
   mbedtls_sha256_context fileSha;
   mbedtls_sha256_init(&fileSha);
-  if (outSha256) mbedtls_sha256_starts(&fileSha, /*is224=*/0);
-  if (outSha256) mbedtls_sha256_update(&fileSha, header, HEADER_SIZE);
+  if (outSha256) {
+    mbedtls_sha256_starts(&fileSha, /*is224=*/0);
+    mbedtls_sha256_update(&fileSha, header, HEADER_SIZE);
+  }
   mbedtls_sha256_update(&shaCtx, header, HEADER_SIZE);
 
   uint8_t xorAccum = CHECKSUM_SEED;
