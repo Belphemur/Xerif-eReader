@@ -42,6 +42,14 @@ namespace ttfimg {
 struct ImageSpec {
   static constexpr size_t kHrefCap = 112;  // zip item href, NUL included
   char href[kHrefCap] = {};
+  // Not owned; PAINT-SIDE ONLY (the cache name and the decode probe hash/
+  // read it while the Page lives — the worker queue stores specs by value,
+  // so a pointer there would dangle; sightings skip overlong hrefs). A Page
+  // href past kHrefCap cannot fit `href`, but the cache identity is a hash
+  // of the string and the decode stack takes the href by pointer with no
+  // length cap — so an overlong href decodes and caches like any other
+  // (review round 2: instead of an uncached special case).
+  const char* hrefExt = nullptr;
   uint32_t generation = 0;  // layout generation the placement came from
   uint16_t spine = 0;
   uint16_t page = 0;
@@ -92,11 +100,9 @@ enum class DecodeResult : uint8_t {
 DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freeink::book::BookSource& source,
                             const freeink::book::ZipCatalog& zip, freeink::book::Arena& scratch, Epub* epub,
                             GfxRenderer* paint, bool qualityTone, bool caching, bool (*abortPoll)(void* ctx),
-                            void* abortCtx, bool paintToTarget = true, const char* hrefOverride = nullptr);
-// `hrefOverride` (optional): probe/extract run against this href instead of
-// spec.href — the decode stack itself takes the href by pointer with no
-// length cap, so a PageImage href past ImageSpec::kHrefCap can still decode
-// (uncached: no cache key is possible for an unkeyable href).
+                            void* abortCtx, bool paintToTarget = true);
+// The probe/extract run against spec.hrefExt when set (overlong href — see
+// ImageSpec), else spec.href.
 
 // Full decode gates for a worker job (the #292 heap-gate precedents).
 bool decodeGatesOk();

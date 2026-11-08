@@ -42,8 +42,17 @@ void paintTtfPageImages(const freeink::book::Page& page, freeink::book::TtfBookR
     if (img.href == nullptr || img.width == 0 || img.height == 0) continue;
 
     ttfimg::ImageSpec spec{};
-    const bool overlongHref = strlen(img.href) >= ttfimg::ImageSpec::kHrefCap;
-    if (!overlongHref) {
+    if (strlen(img.href) >= ttfimg::ImageSpec::kHrefCap) {
+      // An href past ImageSpec::kHrefCap cannot fit the spec's copy, but the
+      // cache identity is a hash of the string and the decode stack takes
+      // the href by pointer with no length cap: key it through hrefExt
+      // (paint-side only — the Page outlives all three passes here; worker
+      // sightings skip overlong hrefs and its queue stores specs by value,
+      // so no queued spec ever carries a pointer). Overlong images decode
+      // and cache like any other — plane-aware tones on every pass, gated
+      // like the rest (review round 3).
+      spec.hrefExt = img.href;
+    } else {
       strncpy(spec.href, img.href, ttfimg::ImageSpec::kHrefCap - 1);
     }
     spec.generation = ttf.cacheGeneration();
@@ -55,26 +64,6 @@ void paintTtfPageImages(const freeink::book::Page& page, freeink::book::TtfBookR
     spec.w = static_cast<int16_t>(img.width);
     spec.h = static_cast<int16_t>(img.height);
     spec.orientation = static_cast<uint8_t>(renderer.getOrientation());
-
-    if (overlongHref) {
-      // An href past ImageSpec::kHrefCap cannot key the tone cache, but the
-      // decode stack takes the href by pointer with no length cap: decode
-      // UNCACHED so every pass paints plane-aware tones instead of the SDK
-      // renderer's 1bpp dither (which would land raw in the plane source —
-      // review round 2). A failed decode falls back to the whole-page SDK
-      // render, which also covers the missing href case.
-      if (ttfimg::decodeAndCache(spec, nullptr, ttf.source(), ttf.catalog().zip(), ttf.scratch(), ttf.decodeEpub(),
-                                 &renderer, qualityTone, /*caching=*/false, nullptr, nullptr, /*paintToTarget=*/true,
-                                 img.href) == ttfimg::DecodeResult::Ok) {
-        continue;
-      }
-      const freeink::book::BookStatus st = freeink::book::PageRenderer::renderImages(
-          page, ttf.source(), ttf.catalog().zip(), ttf.scratch(), makeFrameTarget(renderer));
-      if (st != freeink::book::BookStatus::Ok) {
-        LOG_DBG("QPR", "TTF image render failed: %s", freeink::book::bookStatusName(st));
-      }
-      continue;
-    }
 
     if (ttfimg::hasValidCache(spec, dir, qualityTone) && ttfimg::blitFromCache(renderer, spec, dir, qualityTone)) {
       continue;
@@ -115,7 +104,8 @@ void paintTtfPageImages(const freeink::book::Page& page, freeink::book::TtfBookR
                                  &renderer, qualityTone, /*caching=*/true, nullptr, nullptr);
       ttf.scratch().release(scratchMark);
       if (res != ttfimg::DecodeResult::Ok) {
-        LOG_DBG("QPR", "TTF image decode: kind=%d %s", static_cast<int>(res), spec.href);
+        LOG_DBG("QPR", "TTF image decode: kind=%d %s", static_cast<int>(res),
+                spec.hrefExt != nullptr ? spec.hrefExt : spec.href);
       }
     }
   }

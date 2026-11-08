@@ -214,7 +214,12 @@ As-built amendment 2026-11-08 (implementation run):
 - **Cache identity.** The quality cache letter moves 'q' → 'r'
   (TtfImageCache.cpp `kQualityCacheRevision`): the bake change would
   otherwise re-use tone caches produced by the old quantizer. Stale 'q'
-  files live until the book cache sweep.
+  files live until the book cache sweep. As-built (review round 3): a Page
+  href past `ImageSpec::kHrefCap` keys its cache through `spec.hrefExt`
+  (paint-side pointer into the live Page) — the cache identity is a hash of
+  the href STRING, so an overlong href caches and decodes like any other;
+  worker sightings skip overlong hrefs and its queue stores specs by value,
+  so no queued spec ever carries a live pointer.
 
 Quantization remains nearest-of-{0, 85, 170, 255} in the *mapped* space —
 the thresholds move from the sRGB-uniform 85-step to the LUT-mapped

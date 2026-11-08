@@ -92,9 +92,11 @@ bool cacheNameFor(const ImageSpec& spec, const char* dir, const bool qualityTone
   // 'r' is ToneBake4 (2026-11-08 §5.2).
   constexpr char kQualityCacheRevision = 'r';
   // Identity: generation + href + placement (+ the tone policy, so the
-  // quality revert switch never mixes bakes in one file).
+  // quality revert switch never mixes bakes in one file). hrefExt (an
+  // overlong Page href, paint-side only) IS the href for the identity.
+  const char* const href = (spec.hrefExt != nullptr && spec.hrefExt[0] != '\0') ? spec.hrefExt : spec.href;
   uint64_t hash = 14695981039346656037ull;
-  for (const char* p = spec.href; *p != '\0'; ++p) {
+  for (const char* p = href; *p != '\0'; ++p) {
     hash ^= static_cast<uint8_t>(*p);
     hash *= 1099511628211ull;
   }

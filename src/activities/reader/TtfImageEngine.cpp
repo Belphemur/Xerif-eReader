@@ -478,9 +478,8 @@ bool blitFromCache(GfxRenderer& renderer, const ImageSpec& spec, const char* dir
 DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freeink::book::BookSource& source,
                             const freeink::book::ZipCatalog& zip, freeink::book::Arena& scratch, Epub* epub,
                             GfxRenderer* paint, const bool qualityTone, const bool caching,
-                            bool (*abortPoll)(void* ctx), void* abortCtx, const bool paintToTarget,
-                            const char* hrefOverride) {
-  const char* const href = (hrefOverride != nullptr && hrefOverride[0] != '\0') ? hrefOverride : spec.href;
+                            bool (*abortPoll)(void* ctx), void* abortCtx, const bool paintToTarget) {
+  const char* const href = (spec.hrefExt != nullptr && spec.hrefExt[0] != '\0') ? spec.hrefExt : spec.href;
   const ZipEntry* entry = zip.find(href);
   if (entry == nullptr) return DecodeResult::Skip;
 
