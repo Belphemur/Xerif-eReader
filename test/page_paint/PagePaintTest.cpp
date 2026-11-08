@@ -200,6 +200,61 @@ TEST(PagePaintEquivalence, StripBandsMatchFullFrame) {
   EXPECT_EQ(std::memcmp(fullMsb, bandMsb, GfxRenderer::kPlaneBytes), 0);
 }
 
+// Absolute-gray plane passes (design 2026-11-08 §5.1): the pass-specific
+// tone→plane mapping — tone 1 darkens LSB, tone 2 MSB, tone 3 both, tone 0
+// neither. The stub's drawPixel(true) marks the calls; on device a true
+// drawPixel clears the plane bit (the 0xFF seed is white).
+TEST(PagePaintAbsolutePlanes, TonesDarkenExactlyTheirPlane) {
+  using freeink::book::pagepaint::grayTone;
+  freeink::book::FontChain chain;
+  FakeRenderFont face;
+  chain.add(&face, freeink::book::StyleNone);
+
+  GfxRenderer renderer;
+  const freeink::book::Page page = makeTestPage();
+
+  uint8_t lsbCalls[GfxRenderer::kPlaneBytes] = {};
+  uint8_t msbCalls[GfxRenderer::kPlaneBytes] = {};
+  freeink::book::PagePaint::paintTextAbsolutePlanes(page, chain, renderer, /*msbPass=*/false);
+  std::memcpy(lsbCalls, renderer.base, sizeof(lsbCalls));
+  std::memset(renderer.base, 0, sizeof(renderer.base));
+  freeink::book::PagePaint::paintTextAbsolutePlanes(page, chain, renderer, /*msbPass=*/true);
+  std::memcpy(msbCalls, renderer.base, sizeof(msbCalls));
+
+  for (int y = 0; y < GfxRenderer::kPanelH; ++y) {
+    for (int x = 0; x < GfxRenderer::kPanelW; ++x) {
+      int sampleIdx = -1;
+      const uint8_t coverage = inTestGlyph(x, y, sampleIdx) ? kCoverage[sampleIdx] : 0;
+      const uint8_t tone = grayTone(coverage);
+      EXPECT_EQ(bitAt(lsbCalls, x, y), tone == 1 || tone == 3) << x << "," << y;
+      EXPECT_EQ(bitAt(msbCalls, x, y), tone == 2 || tone == 3) << x << "," << y;
+    }
+  }
+}
+
+// Tone 0 (white) must leave the 0xFF seed alone: the absolute planes carry
+// the whole frame, so a white write would be redundant and a dark write on a
+// white sample would speckle the panel.
+TEST(PagePaintAbsolutePlanes, WhiteToneLeavesThePlaneSeed) {
+  using freeink::book::pagepaint::grayTone;
+  freeink::book::FontChain chain;
+  FakeRenderFont face;
+  chain.add(&face, freeink::book::StyleNone);
+
+  GfxRenderer renderer;
+  const freeink::book::Page page = makeTestPage();
+  freeink::book::PagePaint::paintTextAbsolutePlanes(page, chain, renderer, /*msbPass=*/false);
+
+  for (int y = 0; y < GfxRenderer::kPanelH; ++y) {
+    for (int x = 0; x < GfxRenderer::kPanelW; ++x) {
+      int sampleIdx = -1;
+      const uint8_t coverage = inTestGlyph(x, y, sampleIdx) ? kCoverage[sampleIdx] : 0;
+      const uint8_t tone = grayTone(coverage);
+      if (tone == 0) EXPECT_FALSE(bitAt(renderer.base, x, y)) << x << "," << y;
+    }
+  }
+}
+
 // The base pass (paintText) is band-independent by construction (no filter);
 // assert it plots the tone >= 1 rule for the same page.
 TEST(PagePaintEquivalence, BasePlotsToneOneBoundary) {
