@@ -19,6 +19,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 
 RELEASE_TAG = "dev"
 DEV_PREFIX = "xerif-dev-"
@@ -65,10 +66,21 @@ def download_sha256(repo, asset_id):
 
 
 def sort_key(candidate):
-    # Newest first by asset date; undated assets sort last; name breaks ties
-    # deterministically.
+    # Newest first by asset date; undated/unparseable assets sort last; name
+    # breaks ties deterministically.
+    # Dates mix formats: release asset created_at is UTC ("Z"), while
+    # dev-build.yml passes a commit date (%cI) in the author's local offset
+    # (e.g. "-05:00"). String comparison misorders mixed formats
+    # ("12:52:30Z" > "07:54:08-05:00" as strings although the latter is the
+    # newer instant: 12:54:08Z), so compare parsed UTC instants instead.
     name, _, date = candidate
-    return (bool(date), date, name)
+    try:
+        instant = datetime.fromisoformat(date.replace("Z", "+00:00"))
+        if instant.tzinfo is None:
+            instant = instant.replace(tzinfo=timezone.utc)
+    except ValueError:
+        instant = datetime.min.replace(tzinfo=timezone.utc)
+    return (bool(date), instant, name)
 
 
 def main():
