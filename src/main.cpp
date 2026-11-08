@@ -18,6 +18,7 @@
 #include <HalTiltSensor.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <Memory.h>
 // The recovery hatch repoints otadata at slot 0 — an ESP32 boot-ROM concept
 // with no simulator counterpart, and the sim env's lib_deps carry no
 // RecoveryBoot include path (platformio.ini [env:simulator]).
@@ -1335,6 +1336,12 @@ extern "C" bool verifyRollbackLater() { return true; }
 // literal is repeated here and pinned to the header constant at compile time.
 constexpr const char kDevOtaResumeHookMarker[] __attribute__((used)) = "XERIF-DEVOTA-RESUME-HOOK-V1";
 
+// Flash-scannable marker (design §16): proves the slot image's boot hook
+// understands the §16 pending kinds (SdDev / StableStaged / StablePicked),
+// not only the §5 DevChannel dance. Referenced in the resume log below so
+// the linker keeps it.
+constexpr const char kDevOtaSwapKindsMarker[] __attribute__((used)) = "XERIF-DEVOTA-SWAP-KINDS-V1";
+
 constexpr bool devOtaMarkerMatchesHeader() {
   const char* embedded = kDevOtaResumeHookMarker;
   const char* header = ota_slots::kResumeHookMarker;
@@ -1344,6 +1351,16 @@ constexpr bool devOtaMarkerMatchesHeader() {
   return true;
 }
 static_assert(devOtaMarkerMatchesHeader(), "embedded resume marker must match ota_slots::kResumeHookMarker");
+
+constexpr bool devOtaKindsMarkerMatchesHeader() {
+  const char* embedded = kDevOtaSwapKindsMarker;
+  const char* header = ota_slots::kSwapKindsMarker;
+  for (size_t i = 0; i < sizeof(ota_slots::kSwapKindsMarker); ++i) {
+    if (embedded[i] != header[i]) return false;
+  }
+  return true;
+}
+static_assert(devOtaKindsMarkerMatchesHeader(), "embedded swap kinds marker must match ota_slots::kSwapKindsMarker");
 
 // Runs once at the top of the first loop() pass (see bootFinalized there).
 // Silent boots have already painted their first frame synchronously in
@@ -1358,15 +1375,24 @@ static void bootFinalize() {
     esp_ota_mark_app_valid_cancel_rollback();
   }
 
-  // Pending dev install (design §5). Only ever armed by a dev build's dance;
-  // release builds see an empty flag and skip at the first branch.
-  char pendingVersion[64];
-  if (dev_ota::pendingInstallGet(pendingVersion, sizeof(pendingVersion))) {
+  // Pending install (design §5/§16). The dance is the ONE pending-install
+  // mechanism: the running slot stages the asset on SD, records a pending
+  // install, restarts into the OTHER slot (the swap worker), and THIS boot
+  // hook completes the write of the TARGET slot. The pending kind fixes both
+  // the completion slot (the slot OPPOSITE the target — the slot the dance
+  // rebooted into) and the completion activity. A boot into the target slot
+  // itself means the flag is stale (the dance completed, or was armed by a
+  // build that never rebooted); clear it so a boot never re-enters the
+  // installer uninvited.
+  char pendingPayload[dev_ota::kPendingPayloadCap];
+  if (dev_ota::pendingInstallGet(pendingPayload, sizeof(pendingPayload))) {
+    const dev_ota::PendingKind kind = dev_ota::pendingInstallKind();
+    const bool targetIsStable =
+        kind == dev_ota::PendingKind::StableStaged || kind == dev_ota::PendingKind::StablePicked;
     const esp_partition_t* slot = ota_slots::runningSlot();
-    if (ota_slots::sameSlot(slot, ota_slots::devSlot())) {
-      // Stale flag: the dance only completes from the stable slot. Clear it so
-      // a dev boot never re-enters the installer uninvited.
-      LOG_INF("MAIN", "stale pending dev install; clearing");
+    const esp_partition_t* completionSlot = targetIsStable ? ota_slots::devSlot() : ota_slots::stableSlot();
+    if (!ota_slots::sameSlot(slot, completionSlot)) {
+      LOG_INF("MAIN", "stale pending install; clearing");
       dev_ota::pendingInstallClear();
     } else if (slot != nullptr) {
       if (bootRecoveryFirmwareMode || bootRebootedFromPanic) {
@@ -1374,12 +1400,33 @@ static void bootFinalize() {
         // flag stays armed so the next clean boot can still finish the
         // install, and a crash during a retry shows the report instead of
         // re-entering the installer on every boot.
-        LOG_INF("MAIN", "pending dev install deferred (recovery=%d panic=%d)", bootRecoveryFirmwareMode ? 1 : 0,
+        LOG_INF("MAIN", "pending install deferred (recovery=%d panic=%d)", bootRecoveryFirmwareMode ? 1 : 0,
                 bootRebootedFromPanic ? 1 : 0);
       } else {
-        LOG_INF("MAIN", "resuming pending dev install (%s, hook %.27s)", pendingVersion, kDevOtaResumeHookMarker);
-        activityManager.replaceActivity(std::make_unique<DevOtaActivity>(renderer, mappedInputManager,
-                                                                         /*autoResume=*/true));
+        LOG_INF("MAIN", "resuming pending install (kind=%d, %s, hook %.27s, kinds %.26s)", static_cast<int>(kind),
+                pendingPayload, kDevOtaResumeHookMarker, kDevOtaSwapKindsMarker);
+        if (kind == dev_ota::PendingKind::DevChannel) {
+          auto devOtaActivity = makeUniqueNoThrow<DevOtaActivity>(renderer, mappedInputManager, /*autoResume=*/true);
+          if (devOtaActivity) {
+            activityManager.replaceActivity(std::move(devOtaActivity));
+          } else {
+            // Transient allocation failure (fragmented heap): the flag stays
+            // armed so a later boot can still finish the install — by design,
+            // not a retry loop (no flash is attempted on this path).
+            LOG_ERR("MAIN", "pending install resume: allocation failed");
+          }
+        } else {
+          // SdDev / StableStaged / StablePicked: the §16 SD-file completion
+          // pass writes the TARGET slot (the non-running slot) from the staged
+          // or user-picked SD file.
+          auto sdFirmwareUpdateActivity = makeUniqueNoThrow<SdFirmwareUpdateActivity>(
+              renderer, mappedInputManager, /*recoveryMode=*/false, /*autoResume=*/true);
+          if (sdFirmwareUpdateActivity) {
+            activityManager.replaceActivity(std::move(sdFirmwareUpdateActivity));
+          } else {
+            LOG_ERR("MAIN", "pending install resume: allocation failed");
+          }
+        }
       }
     }
   }

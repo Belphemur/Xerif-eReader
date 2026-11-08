@@ -18,6 +18,7 @@
 #include "FirmwareFlasher.h"
 #include "OtaJson.h"
 #include "OtaSignature.h"
+#include "OtaSlots.h"
 
 namespace {
 // This fork (Xerif) publishes its firmware as GitHub releases on the
@@ -215,9 +216,25 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   // ourselves and stream the firmware through HttpDownloader, which runs over
   // wolfSSL when FREEINK_NET_WOLFSSL is set, reusing its redirect handling for the
   // GitHub -> CDN hop.
-  const esp_partition_t* updatePartition = esp_ota_get_next_update_partition(nullptr);
+  // §15 source rule: a gh_release install ALWAYS targets the stable slot
+  // (app0). The former esp_ota_get_next_update_partition(nullptr) wrote the
+  // INACTIVE slot, so running stable silently destroyed the dev install in
+  // app1. The caller (OtaUpdateActivity) routes the §16 stable→stable dance;
+  // this function runs in the completion pass (the running slot is the dev
+  // worker) or the direct-write path (running dev). The host-buildable
+  // routing decision points are pinned in ota_install_routing::.
+  const esp_partition_t* updatePartition = ota_slots::stableSlot();
   if (!updatePartition) {
-    LOG_ERR("OTA", "No OTA partition available");
+    LOG_ERR("OTA", "No stable slot (app0) in partition table");
+    return INTERNAL_UPDATE_ERROR;
+  }
+  // Role rule (design §3), same explicit refusal as flashFromSdPathInto():
+  // the running slot is never a write target. esp_ota_begin() would refuse
+  // with ESP_ERR_OTA_PARTITION_CONFLICT anyway; the explicit check keeps the
+  // two install paths symmetric and independent of that error mapping.
+  const esp_partition_t* runningPartition = esp_ota_get_running_partition();
+  if (runningPartition && runningPartition->address == updatePartition->address) {
+    LOG_ERR("OTA", "Refusing to install into the running partition");
     return INTERNAL_UPDATE_ERROR;
   }
 
@@ -325,5 +342,92 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   }
 
   LOG_INF("OTA", "Update completed");
+  return OK;
+}
+
+OtaUpdater::OtaUpdaterError OtaUpdater::stageUpdateToSd(const char* stagingPath, uint8_t* outDigest,
+                                                        ProgressCallback onProgress, void* ctx) {
+  if (!isUpdateNewer()) {
+    return UPDATE_OLDER_ERROR;
+  }
+  // The signed manifest pinned the expected SHA-256; without it the staged
+  // bytes could never be verified. Fail closed (the §4 rule).
+  if (!haveExpectedSha) {
+    LOG_ERR("OTA", "no manifest SHA-256 pinned; refusing to stage");
+    return SIGNATURE_ERROR;
+  }
+
+  // The SDK file-write API does not create parent directories: a fresh SD
+  // card has no /.crosspoint yet (same prerequisite as the dev installer).
+  if (!Storage.ensureDirectoryExists("/.crosspoint")) {
+    LOG_ERR("OTA", "cannot create staging directory");
+    return INTERNAL_UPDATE_ERROR;
+  }
+
+  // Stream the asset to the staging file while computing the manifest
+  // SHA-256 — one pass, no second read of the 5 MB image. The chip/board-tag
+  // stream guards of installUpdate() are deliberately not repeated here: the
+  // completion pass runs the full validateImageFile() (chip + board tag
+  // included) before any byte reaches flash, and a wrong-device image cannot
+  // pass the signed-manifest SHA-256 check below in the first place.
+  // Write to a temp file first and publish with replaceFile() only after the
+  // download and SHA-256 verification succeed: a power loss or a failed flush
+  // must never leave a partial image at the path the completion pass flashes.
+  const std::string tmpPath = std::string(stagingPath) + ".tmp";
+  Storage.remove(tmpPath.c_str());
+  HalFile file;
+  if (!Storage.openFileForWrite("OTA", tmpPath.c_str(), file) || !file) {
+    LOG_ERR("OTA", "cannot open staging file %s", tmpPath.c_str());
+    return INTERNAL_UPDATE_ERROR;
+  }
+  ota_signature::Sha256Stream sha;
+  processedSize = 0;
+  int lastReportedPct = -1;
+  const auto fetchOk = HttpDownloader::fetchUrl(otaUrl, [&](const uint8_t* data, size_t len) {
+    if (file.write(data, len) != len) {
+      LOG_ERR("OTA", "staging write failed");
+      return false;  // abort the transfer
+    }
+    sha.update(data, len);
+    processedSize += len;
+    if (onProgress && totalSize > 0) {
+      const int pct = static_cast<int>(static_cast<uint64_t>(processedSize) * 100 / totalSize);
+      if (pct != lastReportedPct) {
+        lastReportedPct = pct;
+        onProgress(ctx);
+      }
+    }
+    return true;
+  });
+  const bool closed = file.close();
+  if (!fetchOk) {
+    LOG_ERR("OTA", "staging download failed");
+    Storage.remove(tmpPath.c_str());
+    return HTTP_ERROR;
+  }
+  if (!closed) {
+    LOG_ERR("OTA", "staging file close failed; image may be incomplete");
+    Storage.remove(tmpPath.c_str());
+    return INTERNAL_UPDATE_ERROR;
+  }
+
+  uint8_t computedSha[32];
+  sha.finish(computedSha);
+  if (memcmp(computedSha, expectedSha, 32) != 0) {
+    LOG_ERR("OTA", "staged firmware SHA-256 does not match signed manifest");
+    Storage.remove(tmpPath.c_str());
+    return SIGNATURE_ERROR;
+  }
+  // Handed out only after the manifest verification above: the caller pins
+  // the dance identity with it instead of re-hashing the file from SD.
+  if (outDigest) {
+    memcpy(outDigest, computedSha, 32);
+  }
+  if (!Storage.replaceFile(tmpPath.c_str(), stagingPath)) {
+    LOG_ERR("OTA", "staging publish failed");
+    Storage.remove(tmpPath.c_str());
+    return INTERNAL_UPDATE_ERROR;
+  }
+  LOG_INF("OTA", "Firmware staged to %s (SHA-256 verified)", stagingPath);
   return OK;
 }

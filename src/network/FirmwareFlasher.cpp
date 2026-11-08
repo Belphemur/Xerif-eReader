@@ -99,14 +99,16 @@ namespace {
 // Stream `length` bytes from `file` starting at the current read offset, feeding them through
 // both the XOR-checksum and SHA256 accumulators. Used by validateImageFile so the whole image
 // is verified end-to-end without holding it in RAM (ESP32-C3 only has ~380 KB).
+// `wholeFileSha` optionally receives every byte too (the caller's whole-file digest).
 Result feedHashAndChecksum(HalFile& file, size_t length, uint8_t* xorAccum, mbedtls_sha256_context* sha, uint8_t* buf,
-                           board_tag::Scanner* tagScanner) {
+                           board_tag::Scanner* tagScanner, mbedtls_sha256_context* wholeFileSha = nullptr) {
   size_t remaining = length;
   while (remaining > 0) {
     const size_t want = std::min<size_t>(CHUNK, remaining);
     const int got = file.read(buf, want);
     if (got <= 0 || static_cast<size_t>(got) != want) return Result::READ_FAIL;
     if (sha) mbedtls_sha256_update(sha, buf, want);
+    if (wholeFileSha) mbedtls_sha256_update(wholeFileSha, buf, want);
     if (tagScanner) tagScanner->feed(buf, want);
     if (xorAccum) {
       uint8_t acc = *xorAccum;
@@ -119,7 +121,7 @@ Result feedHashAndChecksum(HalFile& file, size_t length, uint8_t* xorAccum, mbed
 }
 }  // namespace
 
-Result validateImageFile(const char* sdPath, size_t partitionSize) {
+Result validateImageFile(const char* sdPath, size_t partitionSize, uint8_t* outSha256) {
   HalFile file;
   if (!Storage.openFileForRead("FLASH", sdPath, file) || !file) {
     LOG_ERR("FLASH", "validate: open failed: %s", sdPath);
@@ -173,6 +175,16 @@ Result validateImageFile(const char* sdPath, size_t partitionSize) {
   mbedtls_sha256_context shaCtx;
   mbedtls_sha256_init(&shaCtx);
   mbedtls_sha256_starts(&shaCtx, /*is224=*/0);
+  // Whole-file digest for the caller (§16 dance identity): fed at every read
+  // site below — including the SHA trailer the image hash excludes — so it
+  // covers exactly the bytes this validation pass judged. Free runs on every
+  // exit alongside shaCtx; started only when the caller asks for a digest.
+  mbedtls_sha256_context fileSha;
+  mbedtls_sha256_init(&fileSha);
+  if (outSha256) {
+    mbedtls_sha256_starts(&fileSha, /*is224=*/0);
+    mbedtls_sha256_update(&fileSha, header, HEADER_SIZE);
+  }
   mbedtls_sha256_update(&shaCtx, header, HEADER_SIZE);
 
   uint8_t xorAccum = CHECKSUM_SEED;
@@ -186,15 +198,18 @@ Result validateImageFile(const char* sdPath, size_t partitionSize) {
     if (pos + SEG_HEADER_SIZE > fileSize) {
       LOG_ERR("FLASH", "validate: seg %u header overruns EOF at %u", i, static_cast<unsigned>(pos));
       mbedtls_sha256_free(&shaCtx);
+      mbedtls_sha256_free(&fileSha);
       file.close();
       return Result::BAD_SEGMENTS;
     }
     uint8_t segHdr[SEG_HEADER_SIZE];
     if (file.read(segHdr, SEG_HEADER_SIZE) != static_cast<int>(SEG_HEADER_SIZE)) {
       mbedtls_sha256_free(&shaCtx);
+      mbedtls_sha256_free(&fileSha);
       file.close();
       return Result::READ_FAIL;
     }
+    if (outSha256) mbedtls_sha256_update(&fileSha, segHdr, SEG_HEADER_SIZE);
     mbedtls_sha256_update(&shaCtx, segHdr, SEG_HEADER_SIZE);
     pos += SEG_HEADER_SIZE;
 
@@ -204,13 +219,16 @@ Result validateImageFile(const char* sdPath, size_t partitionSize) {
       LOG_ERR("FLASH", "validate: seg %u data overruns EOF (%u + %u > %u)", i, static_cast<unsigned>(pos),
               static_cast<unsigned>(dataLen), static_cast<unsigned>(fileSize));
       mbedtls_sha256_free(&shaCtx);
+      mbedtls_sha256_free(&fileSha);
       file.close();
       return Result::BAD_SEGMENTS;
     }
 
-    const Result feedRes = feedHashAndChecksum(file, dataLen, &xorAccum, &shaCtx, buf.get(), &tagScanner);
+    const Result feedRes =
+        feedHashAndChecksum(file, dataLen, &xorAccum, &shaCtx, buf.get(), &tagScanner, outSha256 ? &fileSha : nullptr);
     if (feedRes != Result::OK) {
       mbedtls_sha256_free(&shaCtx);
+      mbedtls_sha256_free(&fileSha);
       file.close();
       return feedRes;
     }
@@ -221,6 +239,7 @@ Result validateImageFile(const char* sdPath, size_t partitionSize) {
     LOG_ERR("FLASH", "validate: wrong board: image=%s device=%.*s", tagScanner.foundName(),
             static_cast<int>(board_tag::boardNameLen()), board_tag::boardName());
     mbedtls_sha256_free(&shaCtx);
+    mbedtls_sha256_free(&fileSha);
     file.close();
     return Result::WRONG_BOARD;
   }
@@ -233,6 +252,7 @@ Result validateImageFile(const char* sdPath, size_t partitionSize) {
             static_cast<unsigned>(hashAppended ? SHA_TRAILER : 0), static_cast<unsigned>(expectedTotal),
             static_cast<unsigned>(fileSize));
     mbedtls_sha256_free(&shaCtx);
+    mbedtls_sha256_free(&fileSha);
     file.close();
     return Result::BAD_SIZE;
   }
@@ -242,20 +262,24 @@ Result validateImageFile(const char* sdPath, size_t partitionSize) {
   uint8_t padBuf[16];
   if (padLen > sizeof(padBuf)) {
     mbedtls_sha256_free(&shaCtx);
+    mbedtls_sha256_free(&fileSha);
     file.close();
     return Result::BAD_SIZE;
   }
   if (padLen > 0 && file.read(padBuf, padLen) != static_cast<int>(padLen)) {
     mbedtls_sha256_free(&shaCtx);
+    mbedtls_sha256_free(&fileSha);
     file.close();
     return Result::READ_FAIL;
   }
   mbedtls_sha256_update(&shaCtx, padBuf, padLen);
+  if (outSha256) mbedtls_sha256_update(&fileSha, padBuf, padLen);
 
   const uint8_t storedChecksum = padBuf[padLen - 1];
   if ((xorAccum & 0xFF) != storedChecksum) {
     LOG_ERR("FLASH", "validate: checksum mismatch computed=0x%02X stored=0x%02X", xorAccum, storedChecksum);
     mbedtls_sha256_free(&shaCtx);
+    mbedtls_sha256_free(&fileSha);
     file.close();
     return Result::BAD_CHECKSUM;
   }
@@ -266,23 +290,29 @@ Result validateImageFile(const char* sdPath, size_t partitionSize) {
     uint8_t stored[SHA_TRAILER];
     if (file.read(stored, SHA_TRAILER) != static_cast<int>(SHA_TRAILER)) {
       mbedtls_sha256_free(&shaCtx);
+      mbedtls_sha256_free(&fileSha);
       file.close();
       return Result::READ_FAIL;
     }
+    if (outSha256) mbedtls_sha256_update(&fileSha, stored, SHA_TRAILER);
     if (std::memcmp(computed, stored, SHA_TRAILER) != 0) {
       LOG_ERR("FLASH", "validate: SHA256 mismatch");
       mbedtls_sha256_free(&shaCtx);
+      mbedtls_sha256_free(&fileSha);
       file.close();
       return Result::BAD_SHA;
     }
   }
 
+  if (outSha256) mbedtls_sha256_finish(&fileSha, outSha256);
   mbedtls_sha256_free(&shaCtx);
+  mbedtls_sha256_free(&fileSha);
   file.close();
   return Result::OK;
 }
 
-Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, bool alreadyValidated) {
+Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, bool alreadyValidated,
+                       const uint8_t* expectedDigest) {
   // Resolve destination first so we can size-check during validation. The full image-integrity
   // pass below verifies header, segment table, XOR checksum and SHA256 trailer end-to-end before
   // we touch otadata, so a truncated/corrupted .bin can never become the next boot target.
@@ -291,11 +321,11 @@ Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, boo
     LOG_ERR("FLASH", "no next-update partition");
     return Result::NO_PARTITION;
   }
-  return flashFromSdPathInto(sdPath, dest, onProgress, ctx, alreadyValidated);
+  return flashFromSdPathInto(sdPath, dest, onProgress, ctx, alreadyValidated, expectedDigest);
 }
 
 Result flashFromSdPathInto(const char* sdPath, const esp_partition_t* dest, ProgressCb onProgress, void* ctx,
-                           bool alreadyValidated) {
+                           bool alreadyValidated, const uint8_t* expectedDigest) {
   if (!dest) {
     LOG_ERR("FLASH", "no destination partition");
     return Result::NO_PARTITION;
@@ -336,6 +366,14 @@ Result flashFromSdPathInto(const char* sdPath, const esp_partition_t* dest, Prog
     return Result::OOM;
   }
 
+  // §16 dance identity: hash the bytes actually read from SD while they are
+  // written, so the caller can verify the flashed image against the digest
+  // consented at arm time before otadata selects it (a swapped/changed SD
+  // file must not become the boot target).
+  mbedtls_sha256_context writeSha;
+  mbedtls_sha256_init(&writeSha);
+  if (expectedDigest) mbedtls_sha256_starts(&writeSha, /*is224=*/0);
+
   // Interleave erase + write so the progress bar advances 0→100% smoothly
   // rather than stalling for several seconds during a single up-front erase.
   size_t streamPos = 0;
@@ -349,6 +387,7 @@ Result flashFromSdPathInto(const char* sdPath, const esp_partition_t* dest, Prog
         LOG_ERR("FLASH", "erase @%u (len=%u) failed", static_cast<unsigned>(streamPos),
                 static_cast<unsigned>(eraseLen));
         file.close();
+        mbedtls_sha256_free(&writeSha);
         return Result::ERASE_FAIL;
       }
       erasedUpto = streamPos + eraseLen;
@@ -359,18 +398,33 @@ Result flashFromSdPathInto(const char* sdPath, const esp_partition_t* dest, Prog
     if (read <= 0 || static_cast<size_t>(read) != want) {
       LOG_ERR("FLASH", "read @%u: got=%d want=%u", static_cast<unsigned>(streamPos), read, static_cast<unsigned>(want));
       file.close();
+      mbedtls_sha256_free(&writeSha);
       return Result::READ_FAIL;
     }
     if (esp_partition_write(dest, streamPos, buffer.get(), want) != ESP_OK) {
       LOG_ERR("FLASH", "write @%u failed", static_cast<unsigned>(streamPos));
       file.close();
+      mbedtls_sha256_free(&writeSha);
       return Result::WRITE_FAIL;
     }
+    if (expectedDigest) mbedtls_sha256_update(&writeSha, buffer.get(), want);
     streamPos += want;
     if (onProgress) onProgress(streamPos, firmwareSize, ctx);
     delay(1);
   }
   file.close();
+
+  if (expectedDigest) {
+    uint8_t writtenDigest[32];
+    mbedtls_sha256_finish(&writeSha, writtenDigest);
+    mbedtls_sha256_free(&writeSha);
+    if (memcmp(writtenDigest, expectedDigest, 32) != 0) {
+      LOG_ERR("FLASH", "flashed bytes differ from the consented digest");
+      // otadata is still on the caller-selected slot: the caller decides the
+      // recovery (the target now holds an unconsented image and must not boot).
+      return Result::DIGEST_MISMATCH;
+    }
+  }
 
   if (!ota_boot::switchTo(dest)) {
     LOG_ERR("FLASH", "otadata switch failed");

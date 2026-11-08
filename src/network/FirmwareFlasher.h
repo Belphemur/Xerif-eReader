@@ -34,6 +34,7 @@ enum class Result {
   ERASE_FAIL,
   WRITE_FAIL,
   OTADATA_FAIL,
+  DIGEST_MISMATCH,  // bytes read from SD during the flash differ from the caller's expected digest
 };
 
 // Progress callback: called after every chunk write. `written`/`total` are bytes.
@@ -49,14 +50,21 @@ using ProgressCb = void (*)(size_t written, size_t total, void* ctx);
 // the user the confirmation prompt) skip the redundant second pass. Defaults
 // to false so callers without prior validation (any future entry point) keep
 // the defense-in-depth check.
-Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, bool alreadyValidated = false);
+//
+// `expectedDigest` (§16 dance identity): when non-null, the SHA-256 of the
+// bytes actually read from SD during the write is compared against it BEFORE
+// otadata is switched, so a file changed after the caller's consent digest
+// check can never become the boot target. Returns DIGEST_MISMATCH and leaves
+// the boot selection untouched on a mismatch.
+Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, bool alreadyValidated = false,
+                       const uint8_t* expectedDigest = nullptr);
 
 // Role-targeted variant (design §3): streams into `dest` explicitly instead of
 // "whatever isn't running". The dev installer uses this to pin its target to
 // the dev slot (app1) regardless of which slot is booted. `dest` must be a
 // non-running OTA app partition; the running slot is never a legal target.
 Result flashFromSdPathInto(const char* sdPath, const esp_partition_t* dest, ProgressCb onProgress, void* ctx,
-                           bool alreadyValidated = false);
+                           bool alreadyValidated = false, const uint8_t* expectedDigest = nullptr);
 
 // Full-image integrity check that mirrors the bootloader's verification:
 // header magic, segment table walk, XOR checksum, and SHA256 trailer (when
@@ -69,7 +77,12 @@ Result flashFromSdPathInto(const char* sdPath, const esp_partition_t* dest, Prog
 // skip the size-fits-partition check (e.g. when validating ahead of partition
 // lookup). Streams the file in CHUNK-sized reads; the file is rewound on
 // success so the caller can immediately reread it for flashing.
-Result validateImageFile(const char* sdPath, size_t partitionSize);
+//
+// When `outSha256` is non-null it receives the SHA-256 of the WHOLE file as
+// read during this validation pass — the same bytes the header/segment/
+// checksum/trailer verdicts above were computed from — so a caller can bind
+// a consent record to the validated bytes instead of re-reading the file.
+Result validateImageFile(const char* sdPath, size_t partitionSize, uint8_t* outSha256 = nullptr);
 
 const char* resultName(Result r);
 

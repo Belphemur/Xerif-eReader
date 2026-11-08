@@ -32,6 +32,11 @@ class OtaUpdateActivity : public Activity {
 
   void onWifiSelectionComplete(bool success);
   void runUpdateInstall();
+  // §16 stable→stable dance (design §15/§16): stage the gh_release asset on
+  // SD, record the pending install, restart into the dev slot (the swap
+  // worker); the boot hook completes the write of app0. Never returns on
+  // success.
+  void armStableDance();
 
  public:
   explicit OtaUpdateActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)

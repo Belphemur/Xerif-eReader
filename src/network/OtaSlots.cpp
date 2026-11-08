@@ -28,10 +28,12 @@ constexpr size_t kImageHeaderSize = 24;
 constexpr size_t kSegmentHeaderSize = 8;
 constexpr size_t kMaxSegments = 17;  // IDF caps images at 16 segments
 constexpr size_t kScanChunk = 2048;
-constexpr size_t kMarkerLen = sizeof(kResumeHookMarker) - 1;
 }  // namespace
 
-bool imageHasResumeMarker(const esp_partition_t* app) {
+// Shared scan: walks `app`'s segment chain to bound the search to the real
+// image extent, then chunk-scans with overlapping reads so a marker straddling
+// a chunk boundary is still found.
+bool imageContainsMarker(const esp_partition_t* app, const char* marker, size_t markerLen) {
   if (!app || app->size < kImageHeaderSize + kSegmentHeaderSize) return false;
 
   uint8_t header[kImageHeaderSize];
@@ -57,17 +59,26 @@ bool imageHasResumeMarker(const esp_partition_t* app) {
   // chunk's tail (markerLen - 1 bytes) so a marker straddling a chunk
   // boundary is still found. The final partial chunk never needs an overlap
   // because the marker cannot extend past the image.
-  static_assert(kMarkerLen < kScanChunk, "scan chunk must exceed the marker length");
-  constexpr size_t kStep = kScanChunk - kMarkerLen + 1;
+  static_assert(kScanChunk > 0, "scan chunk must be positive");
+  if (markerLen == 0 || markerLen >= kScanChunk) return false;
+  const size_t step = kScanChunk - markerLen + 1;
+  const uint8_t* markerBytes = reinterpret_cast<const uint8_t*>(marker);
   uint8_t buf[kScanChunk];
-  for (size_t start = 0; start < extent; start += kStep) {
+  for (size_t start = 0; start < extent; start += step) {
     size_t len = extent - start;
     if (len > kScanChunk) len = kScanChunk;
     if (esp_partition_read(app, start, buf, len) != ESP_OK) return false;
-    const uint8_t* marker = reinterpret_cast<const uint8_t*>(kResumeHookMarker);
-    if (std::search(buf, buf + len, marker, marker + kMarkerLen) != buf + len) return true;
+    if (std::search(buf, buf + len, markerBytes, markerBytes + markerLen) != buf + len) return true;
   }
   return false;
+}
+
+bool imageHasResumeMarker(const esp_partition_t* app) {
+  return imageContainsMarker(app, kResumeHookMarker, sizeof(kResumeHookMarker) - 1);
+}
+
+bool imageHasSwapKindsMarker(const esp_partition_t* app) {
+  return imageContainsMarker(app, kSwapKindsMarker, sizeof(kSwapKindsMarker) - 1);
 }
 
 const esp_partition_t* stableSlot() { return findOtaAppSlot(ESP_PARTITION_SUBTYPE_APP_OTA_0); }

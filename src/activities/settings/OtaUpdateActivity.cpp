@@ -11,6 +11,10 @@
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/DevOtaClient.h"
+#include "network/OtaBootSwitch.h"
+#include "network/OtaInstallRouting.h"
+#include "network/OtaSlots.h"
 #include "network/OtaUpdater.h"
 #include "util/MemoryClaimGateDevice.h"
 
@@ -20,6 +24,11 @@ namespace {
 // way. Boards that report no battery telemetry (BatteryMonitor unsupported)
 // skip the check rather than wrongly blocking the update.
 constexpr uint16_t OTA_MIN_BATTERY_PCT = 20;
+
+// §16 stable→stable dance staging path (the swap space, design §16). A fixed
+// name: overwritten on every dance, removed by the completion pass after the
+// flash (the pending kind tells the pass it is a staged file, not the user's).
+constexpr char kStableStagingPath[] = "/.crosspoint/stable_ota.bin";
 
 // Shared mapping from an OtaUpdaterError to the user-facing detail string, so
 // both the check-time and install-time failure paths surface the same message.
@@ -88,6 +97,23 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
     {
       RenderLock lock(*this);
       state = NO_UPDATE;
+    }
+    return;
+  }
+
+  // §16 (design §15/§16): running stable, a gh_release install dances through
+  // the dev worker, and the dance's staging pass is fail-closed on the signed
+  // manifest digest — without it the completion pass could never verify the
+  // staged bytes are the ones that were checked. A release without a signed
+  // manifest therefore cannot be installed from the stable slot; say so before
+  // asking the user to confirm, not after staging 5 MB. (Running dev writes
+  // app0 directly and keeps its pre-§16 no-manifest behavior.)
+  if (ota_slots::sameSlot(ota_slots::runningSlot(), ota_slots::stableSlot()) && !updater.isManifestPinned()) {
+    LOG_INF("OTA", "running stable and the release carries no signed manifest; refusing");
+    {
+      RenderLock lock(*this);
+      failedDetail = tr(STR_OTA_SIGNATURE_FAILED);
+      state = FAILED;
     }
     return;
   }
@@ -236,6 +262,35 @@ void OtaUpdateActivity::runUpdateInstall() {
     state = UPDATE_IN_PROGRESS;
   }
   requestUpdateAndWait();
+
+  // §16 routing (design §15/§16): the gh_release source ALWAYS targets the
+  // stable slot. When the running slot IS the stable slot, the §16 dance
+  // applies: stage the asset on SD, record the pending install, restart into
+  // the dev slot (the swap worker), and let the boot hook complete the write
+  // of app0. Running dev writes app0 directly (the intended role replacement).
+  const bool runningIsStable = ota_slots::sameSlot(ota_slots::runningSlot(), ota_slots::stableSlot());
+  // The §16 dance worker must understand the §16 pending kinds: the §5 V1 hook
+  // marker alone also matches PR #298-era images whose boot hook would drop
+  // the StableStaged request (design §16, swap-worker capability).
+  const auto route = ota_install_routing::routeForInstall(runningIsStable, /*targetIsStable=*/true,
+                                                          ota_slots::imageHasSwapKindsMarker(ota_slots::devSlot()));
+  if (route == ota_install_routing::InstallRoute::Dance) {
+    armStableDance();
+    return;
+  }
+  if (route == ota_install_routing::InstallRoute::RefuseNoWorker) {
+    // §16: the swap worker (dev slot) is empty or lacks the resume hook —
+    // REFUSE, never write the wrong-role slot merely because it is free.
+    LOG_ERR("OTA", "§16 swap worker (dev slot) unavailable; refusing the install");
+    {
+      RenderLock lock(*this);
+      failedDetail = tr(STR_SLOT_DEV_WORKER_TOO_OLD);
+      state = FAILED;
+    }
+    requestUpdate();
+    return;
+  }
+
   // The cheap memory claim for the download itself (§4): same floor and
   // non-arbiter contract as the update check above. The claim ends at the
   // block scope, records-only (the deferred radio restore rule, §3.3).
@@ -306,4 +361,61 @@ void OtaUpdateActivity::loop() {
   if (state == SHUTTING_DOWN) {
     ESP.restart();
   }
+}
+
+void OtaUpdateActivity::armStableDance() {
+  // §16 stable→stable dance (design §15/§16): the running slot is never a
+  // write target, so the gh_release asset is staged on SD (the swap space),
+  // the pending install is recorded, and the device restarts into the dev
+  // slot — the swap worker — whose boot hook completes the write of app0.
+  // Fail-safe order: stage → flag → otadata. A failed otadata switch leaves
+  // at most a stale flag (cleared by the boot hook) plus the staging file.
+  OtaUpdater::OtaUpdaterError res;
+  uint8_t stagedDigest[32];
+  {
+    memclaim::DeviceClaim claim(renderer, "OTA");
+    claim.runCheap();
+    res = updater.stageUpdateToSd(
+        kStableStagingPath, stagedDigest,
+        [](void* ctx) {
+          // immediate=true: the deferred path is consumed by
+          // ActivityManager::loop(), which never runs while the download
+          // blocks this task.
+          static_cast<OtaUpdateActivity*>(ctx)->requestUpdate(true);
+        },
+        this);
+  }
+  if (res != OtaUpdater::OK) {
+    LOG_ERR("OTA", "§16 staging failed: %d", static_cast<int>(res));
+    {
+      RenderLock lock(*this);
+      failedDetail = describeOtaError(res);
+      state = FAILED;
+    }
+    requestUpdate();
+    return;
+  }
+
+  // Pin the staged file's identity (§16 dance identity): the digest comes
+  // straight from the staging pass (already verified against the signed
+  // manifest — no second 5 MB SD read here). The unattended completion pass
+  // re-hashes the staging file and refuses to flash when the SD card's
+  // contents changed between this arm and the completion boot.
+  if (!dev_ota::pendingInstallSet(kStableStagingPath, dev_ota::PendingKind::StableStaged) ||
+      !dev_ota::pendingInstallSetDigest(stagedDigest) || !ota_boot::switchTo(ota_slots::devSlot())) {
+    LOG_ERR("OTA", "§16 dance arm failed; clearing the flag");
+    dev_ota::pendingInstallClear();
+    Storage.remove(kStableStagingPath);
+    {
+      RenderLock lock(*this);
+      failedDetail = tr(STR_FIRMWARE_WRITE_FAILED);
+      state = FAILED;
+    }
+    requestUpdate();
+    return;
+  }
+  LOG_INF("OTA", "§16 dance armed → dev worker");
+  GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
+  delay(50);
+  ESP.restart();
 }
