@@ -83,6 +83,42 @@ produce exactly `spec.w × spec.h` rows/cols, or by rejecting/falling back when 
 A host test must pin this invariant (decode a known image at a fitted placement, assert
 full coverage of the box).
 
+#### Amendment 1 (2026-11-08, root cause found — C1/C2 refuted, paint bounds were the defect)
+
+Host coverage pins through the real decode stack (suite `test/ttf_image_fit`, EPUB
+fixtures `test_jpeg_images.epub`/`test_mixed_images.epub` + a generated progressive-JPEG
+EPUB) **refute C1 and C2 as crop mechanisms**: for every probed-correct placement the SDK
+decoders emit exactly the placement grid — `renderJpeg`'s scale selection cannot exit with
+a source dimension below the placement (both dims are checked ≥ placement *before* each
+increment, so `min()` at :268-269 always selects the placement), and the progressive
+DC resampler emits all `dstH` rows (feed loop + `finish()`), with the engine's
+width-mismatch guard aborting the decode (not short-painting) in the impossible case.
+`ToneCacheWriter::finalize` additionally refuses any short row count, and
+`readValidCacheHeader` enforces dims ±1 — a short **cache** is impossible; a short
+**paint** was the defect:
+
+- **Actual root cause — the engine painted/clipped with the PHYSICAL panel dims.**
+  `TtfImageEngine.cpp`'s `paintRowOnScreen`/`paintColOnScreen` (rowBakeFn) and the
+  `blitFromCache` row/column guards used `getDisplayWidth()/getDisplayHeight()` — the
+  800×480 panel geometry — while the reader runs in `Portrait`: **480×800 logical
+  coordinates** (`GfxRenderer.h:40`). Every image row at logical y ≥ 480 was silently
+  dropped, in the fresh decode paint and the cache blit alike: the illustration shows only
+  its top portion, content is missing at the clipped edge(s), the rest of the placement is
+  blank — the reported defect, portrait-only and only for placements reaching below
+  logical y = 480 (i.e. exactly the large images). The worker path is unaffected
+  (`paintToTarget=false`), and the cache itself is complete and valid, so every pass
+  re-blits and re-drops the same rows — a stable crop.
+- The correct bounds are the orientation-aware **logical** screen dims
+  `getScreenWidth()/getScreenHeight()` — the same accessors `ImageBlock::render` (legacy
+  reader, `ImageBlock.cpp:367-368`) and the GIF converter (`GifContext.screenWidth/Height`)
+  already use. Fix: switch the two helpers and the blit guards to the logical accessors.
+  The legacy bitmap reader never had the bug and is untouched.
+- Pins: `ImageFitPaint.*` (BMP decode paint: ≥2x downscale, near-1x, boxes below and
+  straddling the physical height — fail pre-fix on exactly the dropped rows),
+  `ImageFitBlit.*` (cache blit, same), `ImageFitSdk.*` (baseline JPEG ×3 sources, PNG,
+  progressive JPEG DC path — full-grid invariant at ≥2x / 1:1 / near-1x / placeImage-fit
+  placements), `ImageFitGif.*` (converter exact-dimension box below the physical height).
+
 ## 2. Design
 
 ### Phase B-first: full-fit guarantee (defect B)

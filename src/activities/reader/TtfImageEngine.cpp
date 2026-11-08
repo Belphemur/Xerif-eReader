@@ -51,9 +51,15 @@ struct RowBakeCtx {
 // Placement bounds against the live panel: PortraitInverted swaps the axes
 // inside DirectPixelWriter (phyY = logical x), so its only internal guard
 // cannot catch an off-panel row — the callers must clip both coordinates.
-bool paintRowOnScreen(const GfxRenderer& paint, const int outY) { return outY >= 0 && outY < paint.getDisplayHeight(); }
+// The bounds are the orientation-aware LOGICAL screen dims
+// (getScreenWidth/Height, 480x800 in portrait), NOT the panel accessors:
+// getDisplayHeight() is the physical 480, so a panel-dims clip silently
+// dropped every image row at logical y >= 480 in portrait — the cropped-
+// illustration defect (ImageBlock::render and the GIF converter clip with
+// the logical accessors; pinned by ImageFitPaint.*).
+bool paintRowOnScreen(const GfxRenderer& paint, const int outY) { return outY >= 0 && outY < paint.getScreenHeight(); }
 
-bool paintColOnScreen(const GfxRenderer& paint, const int outX) { return outX >= 0 && outX < paint.getDisplayWidth(); }
+bool paintColOnScreen(const GfxRenderer& paint, const int outX) { return outX >= 0 && outX < paint.getScreenWidth(); }
 
 bool rowBakeFn(void* user, const uint16_t rowIdx, const uint8_t* grayRow, const uint16_t width) {
   RowBakeCtx* ctx = static_cast<RowBakeCtx*>(user);
@@ -463,13 +469,13 @@ bool blitFromCache(GfxRenderer& renderer, const ImageSpec& spec, const char* dir
     const uint8_t* rowBytes = bulk + static_cast<size_t>(bufferRow) * static_cast<size_t>(bytesPerRow);
     ++bufferRow;
     const int outY = spec.y + row;
-    if (outY < 0 || outY >= renderer.getDisplayHeight()) continue;
+    if (outY < 0 || outY >= renderer.getScreenHeight()) continue;  // logical bounds (see paintRowOnScreen)
     pw.beginRow(outY);
     for (int col = 0; col < cachedWidth; ++col) {
       const int bitShift = 6 - (col & 3) * 2;  // MSB first within byte
       const uint8_t tone = (rowBytes[col >> 2] >> bitShift) & 0x03;
       const int outX = spec.x + col;
-      if (outX >= 0 && outX < renderer.getDisplayWidth()) pw.writePixel(outX, tone);
+      if (outX >= 0 && outX < renderer.getScreenWidth()) pw.writePixel(outX, tone);
     }
   }
   return true;
