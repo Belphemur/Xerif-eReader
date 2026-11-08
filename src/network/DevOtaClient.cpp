@@ -257,18 +257,27 @@ bool pendingInstallSet(const char* payload, const PendingKind kind) {
 }
 
 PendingKind pendingInstallKind() {
+  PendingKind kind = PendingKind::DevChannel;
+  pendingInstallGetKind(kind);
+  return kind;
+}
+
+bool pendingInstallGetKind(PendingKind& kindOut) {
   nvs_handle_t handle;
-  if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return PendingKind::DevChannel;
+  if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return false;
   uint8_t stored = 0;
-  if (nvs_get_u8(handle, NVS_PENDING_KIND_KEY, &stored) != ESP_OK) {
+  const esp_err_t err = nvs_get_u8(handle, NVS_PENDING_KIND_KEY, &stored);
+  nvs_close(handle);
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
     // No kind key: the flag was written by pre-§16 firmware whose only dance
     // was the §5 dev dance.
-    nvs_close(handle);
-    return PendingKind::DevChannel;
+    kindOut = PendingKind::DevChannel;
+    return true;
   }
-  nvs_close(handle);
-  return stored <= static_cast<uint8_t>(PendingKind::StablePicked) ? static_cast<PendingKind>(stored)
-                                                                   : PendingKind::DevChannel;
+  if (err != ESP_OK) return false;
+  kindOut = stored <= static_cast<uint8_t>(PendingKind::StablePicked) ? static_cast<PendingKind>(stored)
+                                                                     : PendingKind::DevChannel;
+  return true;
 }
 
 bool pendingInstallClear() {

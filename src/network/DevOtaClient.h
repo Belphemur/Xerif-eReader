@@ -92,8 +92,16 @@ bool pendingInstallGet(char* payloadOut, size_t cap);
 // Record the pending install before rebooting into the swap worker.
 bool pendingInstallSet(const char* payload, PendingKind kind);
 
-// The §16 kind of the stored pending install (DevChannel when the stored flag
-// predates kind stamping).
+// Read the stored kind. False means the NVS record could not be read at all:
+// the dance's TARGET slot and completion activity are then unknown and the
+// caller MUST NOT resume (a DevChannel fallback would send an SD dance to the
+// wrong activity, flashing an unconsented image or the wrong slot). A record
+// without a kind key predates kind stamping and is the §5 DevChannel dance.
+bool pendingInstallGetKind(PendingKind& kindOut);
+
+// Legacy convenience: the stored kind, with DevChannel on any read failure
+// (the pre-§16 §5 dance). New resume paths should use pendingInstallGetKind
+// and refuse to resume on failure.
 PendingKind pendingInstallKind();
 
 // §16 dance identity (design §16): the SHA-256 of the exact SD image that was

@@ -51,11 +51,23 @@ void SdFirmwareUpdateActivity::onEnter() {
       requestUpdate();
       return;
     }
-    // The pending kind is the authoritative record of the target slot: it was
-    // fixed by the §15 classification at dance-arm time. Deriving the target
-    // from it (not from re-classifying the basename) keeps the completion
-    // pass honest even if the staged file was renamed on SD.
-    const dev_ota::PendingKind kind = dev_ota::pendingInstallKind();
+    // The dispatched kind is the authoritative record of the target slot: it
+    // was fixed by the §15 classification at dance-arm time and read by the
+    // boot hook. Re-deriving it here from a second NVS read would, on read
+    // failure, fall back to DevChannel and silently skip both consent digest
+    // checks. DevChannel itself cannot reach this activity (the boot hook
+    // dispatches the §5 dance to DevOtaActivity): refuse rather than guess.
+    if (dispatchedKind_ == dev_ota::PendingKind::DevChannel) {
+      LOG_ERR("FW", "autoResume: DevChannel kind cannot resume an SD dance");
+      dev_ota::pendingInstallClear();
+      {
+        RenderLock lock(*this);
+        state = State::FAILED;
+      }
+      requestUpdate();
+      return;
+    }
+    const dev_ota::PendingKind kind = dispatchedKind_;
     sdTargetIsStable = kind == dev_ota::PendingKind::StableStaged || kind == dev_ota::PendingKind::StablePicked;
     LOG_INF("FW", "autoResume: dance kind=%d target=%s path=%s", static_cast<int>(kind),
             sdTargetIsStable ? "stable" : "dev", dancePath);
@@ -117,11 +129,13 @@ void SdFirmwareUpdateActivity::onEnter() {
       return;
     }
     pickedDigestValid_ = true;
-    // §16 dance identity check: the digest of the bytes the validation pass
-    // just read must match the digest recorded at dance-arm time. A file
-    // swapped on the SD card between the arm and this unattended boot must
-    // not reach flash.
-    if (kind != dev_ota::PendingKind::DevChannel) {
+    // §16 dance identity: EVERY §16 dance records the consented digest at arm
+    // time (armSwapDance), so the check is unconditional — an SD resume
+    // without a recorded digest must never reach flash. The digest of the
+    // bytes the validation pass just read must match the digest recorded at
+    // dance-arm time: a file swapped on the SD card between the arm and this
+    // unattended boot must not reach flash.
+    {
       uint8_t expectedDigest[32];
       if (!dev_ota::pendingInstallGetDigest(expectedDigest)) {
         LOG_ERR("FW", "autoResume: no recorded digest; refusing to flash");
@@ -425,7 +439,7 @@ void SdFirmwareUpdateActivity::unwindDance() {
   if (!ota_boot::switchTo(sdTargetIsStable ? ota_slots::stableSlot() : ota_slots::devSlot())) {
     LOG_ERR("FW", "§16 unwind: otadata restore failed; device keeps booting the worker");
   }
-  const bool staged = dev_ota::pendingInstallKind() == dev_ota::PendingKind::StableStaged;
+  const bool staged = dispatchedKind_ == dev_ota::PendingKind::StableStaged;
   dev_ota::pendingInstallClear();
   if (staged) Storage.remove(firmwarePath.c_str());
 }
@@ -483,7 +497,7 @@ void SdFirmwareUpdateActivity::finishFlash(const firmware_flash::Result result) 
     // (the healthy running firmware) selected instead, clear the flag and
     // drop the staged file so no boot re-enters the installer.
     LOG_ERR("FW", "flashed bytes differ from the consented digest; keeping the worker");
-    const bool staged = dev_ota::pendingInstallKind() == dev_ota::PendingKind::StableStaged;
+    const bool staged = dispatchedKind_ == dev_ota::PendingKind::StableStaged;
     if (!dev_ota::pendingInstallClear()) {
       LOG_ERR("FW", "pending-install clear failed; the record stays armed (resume re-checks the digest)");
     }
@@ -514,7 +528,7 @@ void SdFirmwareUpdateActivity::finishFlash(const firmware_flash::Result result) 
       // strictly pre-write (validation phase) and the full unwind stays safe.
       if (dev_ota::pendingInstallWriteStarted()) {
         LOG_ERR("FW", "§16 post-write failure: keeping the worker selected");
-        const bool staged = dev_ota::pendingInstallKind() == dev_ota::PendingKind::StableStaged;
+        const bool staged = dispatchedKind_ == dev_ota::PendingKind::StableStaged;
         dev_ota::pendingInstallClear();
         if (staged) Storage.remove(firmwarePath.c_str());
       } else {
@@ -533,7 +547,7 @@ void SdFirmwareUpdateActivity::finishFlash(const firmware_flash::Result result) 
     // pending request and start the dance all over again. A staged gh_release
     // install also drops its 5 MB staging file here; a user-picked file is
     // never removed.
-    const bool staged = dev_ota::pendingInstallKind() == dev_ota::PendingKind::StableStaged;
+    const bool staged = dispatchedKind_ == dev_ota::PendingKind::StableStaged;
     if (!dev_ota::pendingInstallClear()) {
       LOG_ERR("FW", "pending-install clear failed; the record stays armed (the target booted and is valid)");
     }

@@ -1386,45 +1386,59 @@ static void bootFinalize() {
   // installer uninvited.
   char pendingPayload[dev_ota::kPendingPayloadCap];
   if (dev_ota::pendingInstallGet(pendingPayload, sizeof(pendingPayload))) {
-    const dev_ota::PendingKind kind = dev_ota::pendingInstallKind();
-    const bool targetIsStable =
-        kind == dev_ota::PendingKind::StableStaged || kind == dev_ota::PendingKind::StablePicked;
-    const esp_partition_t* slot = ota_slots::runningSlot();
-    const esp_partition_t* completionSlot = targetIsStable ? ota_slots::devSlot() : ota_slots::stableSlot();
-    if (!ota_slots::sameSlot(slot, completionSlot)) {
-      LOG_INF("MAIN", "stale pending install; clearing");
+    dev_ota::PendingKind kind = dev_ota::PendingKind::DevChannel;
+    if (!dev_ota::pendingInstallGetKind(kind)) {
+      // The kind fixes the target slot and the completion activity; a resume
+      // without it cannot know either. Clearing disarms the unusable record
+      // (a failed DevChannel dispatch would re-fetch the manifest and install
+      // without consent; a failed SD dispatch would guess the slot). An SD
+      // dance's fixed staging file is removed by the stale-cleanup below.
+      LOG_ERR("MAIN", "pending install kind unreadable; clearing");
       dev_ota::pendingInstallClear();
-    } else if (slot != nullptr) {
-      if (bootRecoveryFirmwareMode || bootRebootedFromPanic) {
-        // Recovery picker and crash-report routes outrank the resume; the
-        // flag stays armed so the next clean boot can still finish the
-        // install, and a crash during a retry shows the report instead of
-        // re-entering the installer on every boot.
-        LOG_INF("MAIN", "pending install deferred (recovery=%d panic=%d)", bootRecoveryFirmwareMode ? 1 : 0,
-                bootRebootedFromPanic ? 1 : 0);
-      } else {
-        LOG_INF("MAIN", "resuming pending install (kind=%d, %s, hook %.27s, kinds %.26s)", static_cast<int>(kind),
-                pendingPayload, kDevOtaResumeHookMarker, kDevOtaSwapKindsMarker);
-        if (kind == dev_ota::PendingKind::DevChannel) {
-          auto devOtaActivity = makeUniqueNoThrow<DevOtaActivity>(renderer, mappedInputManager, /*autoResume=*/true);
-          if (devOtaActivity) {
-            activityManager.replaceActivity(std::move(devOtaActivity));
-          } else {
-            // Transient allocation failure (fragmented heap): the flag stays
-            // armed so a later boot can still finish the install — by design,
-            // not a retry loop (no flash is attempted on this path).
-            LOG_ERR("MAIN", "pending install resume: allocation failed");
-          }
+    } else {
+      const bool targetIsStable =
+          kind == dev_ota::PendingKind::StableStaged || kind == dev_ota::PendingKind::StablePicked;
+      const esp_partition_t* slot = ota_slots::runningSlot();
+      const esp_partition_t* completionSlot = targetIsStable ? ota_slots::devSlot() : ota_slots::stableSlot();
+      if (!ota_slots::sameSlot(slot, completionSlot)) {
+        LOG_INF("MAIN", "stale pending install; clearing");
+        dev_ota::pendingInstallClear();
+      } else if (slot != nullptr) {
+        if (bootRecoveryFirmwareMode || bootRebootedFromPanic) {
+          // Recovery picker and crash-report routes outrank the resume; the
+          // flag stays armed so the next clean boot can still finish the
+          // install, and a crash during a retry shows the report instead of
+          // re-entering the installer on every boot.
+          LOG_INF("MAIN", "pending install deferred (recovery=%d panic=%d)", bootRecoveryFirmwareMode ? 1 : 0,
+                  bootRebootedFromPanic ? 1 : 0);
         } else {
-          // SdDev / StableStaged / StablePicked: the §16 SD-file completion
-          // pass writes the TARGET slot (the non-running slot) from the staged
-          // or user-picked SD file.
-          auto sdFirmwareUpdateActivity = makeUniqueNoThrow<SdFirmwareUpdateActivity>(
-              renderer, mappedInputManager, /*recoveryMode=*/false, /*autoResume=*/true);
-          if (sdFirmwareUpdateActivity) {
-            activityManager.replaceActivity(std::move(sdFirmwareUpdateActivity));
+          LOG_INF("MAIN", "resuming pending install (kind=%d, %s, hook %.27s, kinds %.26s)", static_cast<int>(kind),
+                  pendingPayload, kDevOtaResumeHookMarker, kDevOtaSwapKindsMarker);
+          if (kind == dev_ota::PendingKind::DevChannel) {
+            auto devOtaActivity = makeUniqueNoThrow<DevOtaActivity>(renderer, mappedInputManager, /*autoResume=*/true);
+            if (devOtaActivity) {
+              activityManager.replaceActivity(std::move(devOtaActivity));
+            } else {
+              // Transient allocation failure (fragmented heap): the flag stays
+              // armed so a later boot can still finish the install — by design,
+              // not a retry loop (no flash is attempted on this path).
+              LOG_ERR("MAIN", "pending install resume: allocation failed");
+            }
           } else {
-            LOG_ERR("MAIN", "pending install resume: allocation failed");
+            // SdDev / StableStaged / StablePicked: the §16 SD-file completion
+            // pass writes the TARGET slot (the non-running slot) from the
+            // staged or user-picked SD file. The dispatched kind fixes the
+            // target — the activity must not re-derive it from a second NVS
+            // read whose failure would fall back to DevChannel and skip the
+            // consent digest checks.
+            auto sdFirmwareUpdateActivity =
+                makeUniqueNoThrow<SdFirmwareUpdateActivity>(renderer, mappedInputManager, /*recoveryMode=*/false,
+                                                           /*autoResume=*/true, kind);
+            if (sdFirmwareUpdateActivity) {
+              activityManager.replaceActivity(std::move(sdFirmwareUpdateActivity));
+            } else {
+              LOG_ERR("MAIN", "pending install resume: allocation failed");
+            }
           }
         }
       }

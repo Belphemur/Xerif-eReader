@@ -3,6 +3,7 @@
 #include <string>
 
 #include "activities/Activity.h"
+#include "network/DevOtaClient.h"
 #include "network/FirmwareFlasher.h"
 
 /**
@@ -41,10 +42,17 @@ class SdFirmwareUpdateActivity : public Activity {
   // §16 dance completion pass (design §15/§16): the boot hook (main.cpp)
   // launches this activity with autoResume=true after the dance restart; the
   // staged SD path is read from the pending-install flag and the pass writes
-  // the TARGET slot (the non-running slot). Not for recovery mode.
+  // the TARGET slot (the non-running slot). Not for recovery mode. The
+  // dispatched kind is the boot hook's read of the pending record: re-reading
+  // it here could fail into the DevChannel fallback and skip the consent
+  // digest checks, so the dispatched value is authoritative.
   explicit SdFirmwareUpdateActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool recoveryMode,
-                                    bool autoResume)
-      : Activity("SdFirmwareUpdate", renderer, mappedInput), recoveryMode(recoveryMode), autoResume(autoResume) {}
+                                    bool autoResume,
+                                    dev_ota::PendingKind dispatchedKind = dev_ota::PendingKind::DevChannel)
+      : Activity("SdFirmwareUpdate", renderer, mappedInput),
+        recoveryMode(recoveryMode),
+        autoResume(autoResume),
+        dispatchedKind_(dispatchedKind) {}
 
   void onEnter() override;
   void loop() override;
@@ -57,8 +65,12 @@ class SdFirmwareUpdateActivity : public Activity {
   bool recoveryMode = false;
   // §16 dance completion pass: the boot hook (main.cpp) launches this
   // activity with autoResume=true; the target slot is encoded by the
-  // pending-install kind and the staged SD path is read from the flag.
+  // dispatched kind (read by the boot hook from the pending record) and the
+  // staged SD path is read from the flag.
   bool autoResume = false;
+  // The §16 kind the boot hook dispatched (autoResume only). DevChannel never
+  // reaches this activity — the §5 dance dispatches to DevOtaActivity.
+  const dev_ota::PendingKind dispatchedKind_ = dev_ota::PendingKind::DevChannel;
 
   std::string firmwarePath;
   size_t firmwareSize = 0;
