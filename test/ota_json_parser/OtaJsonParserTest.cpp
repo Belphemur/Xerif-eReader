@@ -4,6 +4,7 @@
 #include <string_view>
 
 #include "OtaJson.h"
+#include "DevOtaClient.h"
 
 namespace {
 
@@ -673,4 +674,27 @@ TEST(OtaDevManifestParse, OverlongVersionClampsToFieldCapacity) {
   for (size_t i = 0; i < sizeof(entries[0].version) - 1; ++i) {
     EXPECT_EQ(entries[0].version[i], 'a');
   }
+}
+
+TEST(OtaDevManifestParse, FullWindowDevAndPrEntriesParse) {
+  // CI's rolling window is 3 dev builds + up to 6 PR entries (design §4). The
+  // device cap must hold the whole window — a picker showing only the dev
+  // rows hides installable PR builds (owner report: "only 3 choices").
+  constexpr char kFive[] = R"({"versions":[
+    {"name":"xerif-dev-aaaa-x4pro.bin","url":"https://e/1.bin","date":"2026-11-08","version":"2.14.0-dev-develop-aaaa","sha256":"1111111111111111111111111111111111111111111111111111111111111111"},
+    {"name":"xerif-dev-bbbb-x4pro.bin","url":"https://e/2.bin","date":"2026-11-08","version":"2.14.0-dev-develop-bbbb","sha256":"2222222222222222222222222222222222222222222222222222222222222222"},
+    {"name":"xerif-dev-cccc-x4pro.bin","url":"https://e/3.bin","date":"2026-11-08","version":"2.14.0-dev-develop-cccc","sha256":"3333333333333333333333333333333333333333333333333333333333333333"},
+    {"name":"xerif-pr-305-dddd-x4pro.bin","url":"https://e/4.bin","date":"2026-11-08"},
+    {"name":"xerif-pr-305-eeee-x4pro.bin","url":"https://e/5.bin","date":"2026-11-08"}
+  ]})";
+  OtaDevVersionEntry entries[dev_ota::kMaxVersions];
+  int count = -1;
+
+  ASSERT_TRUE(parseOtaDevManifest(kFive, strlen(kFive), entries, dev_ota::kMaxVersions, &count));
+  EXPECT_EQ(count, 5);
+  EXPECT_STREQ(entries[3].name, "xerif-pr-305-dddd-x4pro.bin");
+  EXPECT_STREQ(entries[4].name, "xerif-pr-305-eeee-x4pro.bin");
+  // PR entries carried without a stamped version leave the field empty — the
+  // device UI falls back to the asset name for them.
+  EXPECT_EQ(entries[4].version[0], '\0');
 }

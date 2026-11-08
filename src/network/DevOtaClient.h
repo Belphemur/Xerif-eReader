@@ -29,8 +29,10 @@ enum class Error {
   FLASH_FAILED,      // validation or write failed (see FirmwareFlasher logs)
 };
 
-// CI publishes the newest 3 dev builds (design §4).
-constexpr int kMaxVersions = 3;
+// CI's rolling window: 3 dev builds + up to 6 PR entries (design §4; the
+// manifest prune keeps the newest of each). The device must list the whole
+// window — a cap below it hides installable versions from the picker.
+constexpr int kMaxVersions = 9;
 
 // Fixed-capacity manifest buffer: one activity-held copy of the dev versions
 // (POD array, no heap, no owning pointers).
