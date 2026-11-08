@@ -3,8 +3,8 @@
 #include <cstring>
 #include <string_view>
 
-#include "OtaJson.h"
 #include "DevOtaClient.h"
+#include "OtaJson.h"
 
 namespace {
 
