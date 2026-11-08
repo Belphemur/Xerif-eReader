@@ -6,10 +6,12 @@
 # fetches this release, parses the manifest, and installs a build into the dev
 # slot (app1) after verifying the SHA-256 (unsigned manifest, SHA-pinned only).
 #
-# Note on patching: the design doc names a `patch_firmware_image.py` step,
-# but this repository ships no such script and release.yml has none either —
-# the pio build output (post: extra scripts already applied) is published
-# as-is, identical to the release flow's `cp firmware.bin` asset step.
+# Note on patching: the design doc names a `patch_firmware_image.py` step;
+# `scripts/patch_dev_version.py` implements it for the dev channel only — the
+# staging step below rewrites the image's esp_app_desc_t version (a constant
+# baked into the prebuilt Arduino core) with `<version>-dev-<sha>`, so the
+# slot chooser can tell dev builds apart (design §12). Release builds stay
+# unstamped: release.yml has no patch step and publishes the pio output as-is.
 
 name: Dev build
 
@@ -96,6 +98,19 @@ jobs:
           mkdir -p dist carry
           asset="xerif-dev-${DEV_SHA}-x4pro.bin"
           cp .pio/build/x4pro/firmware.bin "dist/${asset}"
+
+          # Stamp the dev version into the image's esp_app_desc_t (design
+          # docs/design/2026-11-07-dev-ota-slots.md §12): the prebuilt Arduino
+          # core bakes a constant version into every image, so the slot
+          # chooser could not tell dev builds apart. The stamp lands on the
+          # dist copy BEFORE the manifest step computes the asset's sha256, so
+          # the manifest hash matches the published, stamped asset.
+          base_version="$(grep -m1 '^version *=' platformio.ini | sed 's/^version *= *//')"
+          python3 scripts/patch_dev_version.py \
+            --image "dist/${asset}" \
+            --version "${base_version}" \
+            --sha "${DEV_SHA}"
+          python3 scripts/patch_dev_version.py --image "dist/${asset}" --verify
 
           # Carry over the previous builds from the current `dev` release. The
           # existing manifest is the authoritative newest-first list — its top
