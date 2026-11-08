@@ -772,8 +772,8 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
                 decoder->decodeToFramebuffer(image.get(), imageSize, *paint, config);
       aborted = tracker.fired;
     } else {
-      const DecodeResult bmpRes =
-          decodeBmpRows(spec, image.get(), imageSize, &bake, collecting ? nullptr : paint, abortPoll, abortCtx);
+      const DecodeResult bmpRes = decodeBmpRows(spec, image.get(), imageSize, &bake,
+                                                collecting || !paintToTarget ? nullptr : paint, abortPoll, abortCtx);
       decoded = bmpRes == DecodeResult::Ok;
       aborted = bmpRes == DecodeResult::Busy;
     }
@@ -785,7 +785,12 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
       bool cacheStreamOk = false;
       const DecodeResult remap =
           remapGrayToCache(spec, bake, writePath, caching, paint, paintToTarget, abortPoll, abortCtx, &cacheStreamOk);
-      if (remap != DecodeResult::Ok) return remap;
+      if (remap == DecodeResult::Busy) return remap;  // foreground takeover: stay out of the way
+      if (remap != DecodeResult::Ok) {
+        // Phase-2 storage failure (gray re-open/read): still paint.
+        return legacyPaintPass(spec, info.kind, source, zip, scratch, epub, image.get(), imageSize, bake, paint,
+                               paintToTarget, abortPoll, abortCtx);
+      }
       // Degraded cache stream: rows painted, no cache — skip the publish.
       if (publishing && !cacheStreamOk) return DecodeResult::Ok;
       if (!publishResult(cachePath, writePath, publishing)) return DecodeResult::Failed;

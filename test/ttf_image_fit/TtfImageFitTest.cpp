@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -156,6 +157,12 @@ ttfimg::ImageSpec makeSpec(const int x, const int y, const int w, const int h) {
 }
 
 }  // namespace
+
+// RAII fixture reader (kody rule): the raw-item bytes decodeAndCache extracts.
+std::vector<uint8_t> readFixtureFile(const char* path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
 
 // Runs the production two-phase BMP flow for a paint-only decode: phase 1
 // collects into a gray temp (in-memory storage), phase 2 remaps and paints
@@ -424,13 +431,7 @@ TEST(ImageFitSdk, ProgressiveJpegDcPathCoversEveryPlacement) {
 TEST(ImageFitGif, ConverterCoversExactDimBoxBelowThePhysicalPanelHeight) {
   FakeRenderer r;
   // Load the configure-time generated all-dark 96x144 GIF (palette index 0).
-  std::FILE* f = std::fopen(FIT_FIXTURES "/dark.gif", "rb");
-  ASSERT_NE(f, nullptr);
-  std::vector<uint8_t> gif;
-  uint8_t buf[4096];
-  size_t n;
-  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) gif.insert(gif.end(), buf, buf + n);
-  std::fclose(f);
+  std::vector<uint8_t> gif = readFixtureFile(FIT_FIXTURES "/dark.gif");
   ASSERT_GT(gif.size(), 32u);
 
   ttfimg::ToneBake4 bake(48);
@@ -599,13 +600,7 @@ TEST(AdaptiveBake, TwoPhaseCacheIsDeterministicAcrossRuns) {
 void expectDecodeCacheBlit(freeink::book::BookSource& source, freeink::book::Book& book, freeink::book::Arena& scratch,
                            Epub& epub, const char* href, const char* file, const char* kind, const int specX,
                            const int specY, const int specW, const int specH) {
-  FILE* f = std::fopen(file, "rb");
-  ASSERT_NE(f, nullptr) << kind;
-  std::vector<uint8_t> bytes;
-  uint8_t buf[4096];
-  size_t n;
-  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) bytes.insert(bytes.end(), buf, buf + n);
-  std::fclose(f);
+  std::vector<uint8_t> bytes = readFixtureFile(file);
   ASSERT_GT(bytes.size(), 32u) << kind;
   epub.items[href] = bytes;
 
@@ -734,14 +729,7 @@ TEST(ImageFitFallback, GrayOpenFailureStillPaintsTheImage) {
   freeink::book::Book book;
   ASSERT_EQ(book.open(source, bookArena, scratch), freeink::book::BookStatus::Ok);
   Epub epub;
-  FILE* f = std::fopen(FIT_FIXTURES "/small.bmp", "rb");
-  ASSERT_NE(f, nullptr);
-  std::vector<uint8_t> bytes;
-  uint8_t buf[4096];
-  size_t n;
-  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) bytes.insert(bytes.end(), buf, buf + n);
-  std::fclose(f);
-  epub.items["OEBPS/images/small.bmp"] = bytes;
+  epub.items["OEBPS/images/small.bmp"] = readFixtureFile(FIT_FIXTURES "/small.bmp");
 
   FakeRenderer r;
   auto& storage = HalStorage::getInstance();
@@ -773,14 +761,7 @@ TEST(ImageFitFallback, GrayMidStreamWriteFailureStillPaintsTheImage) {
   freeink::book::Book book;
   ASSERT_EQ(book.open(source, bookArena, scratch), freeink::book::BookStatus::Ok);
   Epub epub;
-  FILE* f = std::fopen(FIT_FIXTURES "/small.bmp", "rb");
-  ASSERT_NE(f, nullptr);
-  std::vector<uint8_t> bytes;
-  uint8_t buf[4096];
-  size_t n;
-  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) bytes.insert(bytes.end(), buf, buf + n);
-  std::fclose(f);
-  epub.items["OEBPS/images/small.bmp"] = bytes;
+  epub.items["OEBPS/images/small.bmp"] = readFixtureFile(FIT_FIXTURES "/small.bmp");
 
   FakeRenderer r;
   auto& storage = HalStorage::getInstance();

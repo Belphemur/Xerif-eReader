@@ -208,8 +208,11 @@ def write_dark_png(path):
     png += chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 0, 0, 0, 0))
     png += chunk(b"IDAT", zlib.compress(bytes(rows), 9))
     png += chunk(b"IEND", b"")
-    with open(path, "wb") as f:
+    import os
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
         f.write(png)
+    os.replace(tmp, path)
 
 
 write_small_bmp(os.path.join(OUT, "small.bmp"))
