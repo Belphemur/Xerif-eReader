@@ -167,6 +167,23 @@ class DevVersionStampTest(unittest.TestCase):
         self.assertEqual(field_of(image), "2.14.0-dev-0123456789abcd")
         self.assertTrue(digest_ok(image))
 
+    def test_long_pr_branch_via_cli_drops_branch_keeps_sha_tail(self):
+        # §14 fit rule end to end: a long PR branch name (from --branch)
+        # drops out of the stamped descriptor first; the -dev-<sha> tail is
+        # never cut.
+        short = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=REPO, text=True).strip()
+        branch = "pr" + "-x" * 40
+        version = subprocess.check_output(
+            [sys.executable, str(GIT_BRANCH), "--print-dev-version", short,
+             "--branch", branch], cwd=REPO, text=True).strip()
+        self.assertIn(branch, version)
+        image = Path(self.make_temp_image())
+        self.assertEqual(run_stamp(image, version).returncode, 0, version)
+        base = version.split("-dev-")[0]
+        self.assertEqual(field_of(image), f"{base}-dev-{short}")
+        self.assertTrue(digest_ok(image))
+
     def test_fit_rule_ladder(self):
         fit = self.fit_version
         # Fits: unchanged.
@@ -209,6 +226,9 @@ class GeneratorVersionFieldTest(unittest.TestCase):
     def head_sha(self):
         return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip()
 
+    def short_sha(self):
+        return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=REPO, text=True).strip()
+
     def test_dev_entry_version_from_git_branch_cli(self):
         sha = self.head_sha()
         version = self.generator.dev_version_for(f"xerif-dev-{sha}-x4pro.bin")
@@ -222,8 +242,50 @@ class GeneratorVersionFieldTest(unittest.TestCase):
         # the device falls back to the asset name.
         self.assertIsNone(self.generator.dev_version_for("xerif-dev-" + "f" * 40 + "-x4pro.bin"))
 
-    def test_pr_entries_get_no_version(self):
+    def test_pr_entry_version_with_branch_override(self):
+        # §14: the PR entry published by this run derives its version with
+        # the --pr-branch override, exactly like the stamp does.
+        sha = self.short_sha()
+        name = f"xerif-pr-999-{sha}-x4pro.bin"
+        version = self.generator.entry_version(name, pr_new=name, pr_branch="feature/pr-stamp")
+        expected = subprocess.check_output(
+            [sys.executable, str(GIT_BRANCH), "--print-dev-version", sha,
+             "--branch", "feature/pr-stamp"], cwd=REPO, text=True).strip()
+        self.assertEqual(version, expected)
+        self.assertIn("feature/pr-stamp", version)
+
+    def test_carried_pr_assets_omit_version(self):
+        # Only the asset named by --pr-new gets the branch override; carried
+        # PR assets (sha from the asset name, no branch) omit the field, as
+        # does the new asset when the lane passes no branch.
         self.assertIsNone(self.generator.entry_version("xerif-pr-303-42136b2-x4pro.bin"))
+        name = f"xerif-pr-999-{self.short_sha()}-x4pro.bin"
+        self.assertIsNone(self.generator.entry_version(name))
+        self.assertIsNone(self.generator.entry_version(name, pr_branch="feature/pr-stamp"))
+        other = f"xerif-pr-998-{self.short_sha()}-x4pro.bin"
+        self.assertIsNone(self.generator.entry_version(
+            other, pr_new=name, pr_branch="feature/pr-stamp"))
+
+
+class GitBranchCliTest(unittest.TestCase):
+    """--print-dev-version CLI arg parsing (--branch override)."""
+
+    def test_branch_without_value_fails(self):
+        proc = subprocess.run([sys.executable, str(GIT_BRANCH), "--print-dev-version", "--branch"],
+                              cwd=REPO, capture_output=True, text=True)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("usage", proc.stderr)
+
+    def test_branch_flag_position_independent(self):
+        sha = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=REPO, text=True).strip()
+        before = subprocess.check_output(
+            [sys.executable, str(GIT_BRANCH), "--print-dev-version", "--branch", "feat/pos", sha],
+            cwd=REPO, text=True).strip()
+        after = subprocess.check_output(
+            [sys.executable, str(GIT_BRANCH), "--print-dev-version", sha, "--branch", "feat/pos"],
+            cwd=REPO, text=True).strip()
+        self.assertEqual(before, after)
+        self.assertIn("feat/pos", before)
 
 
 class ValidateModeTest(unittest.TestCase):

@@ -192,6 +192,21 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Fetch the PR head commit (the stamp derivation needs the object)
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+        run: |
+          # The checkout is a depth-1 snapshot of develop, so the PR head
+          # commit's object is absent and git_branch.py's existence-checked
+          # rev-parse would fail. Fetch it — origin first, the head
+          # repository for fork PRs; if both fail the asset publishes
+          # unstamped (the device falls back to the asset name).
+          git fetch origin "${HEAD_SHA}" \
+            || git fetch "https://github.com/${HEAD_REPO}.git" "${HEAD_SHA}" \
+            || echo "::warning::PR head commit ${HEAD_SHA} unreachable; the asset will publish unstamped"
+
       - name: Stage the previous manifest for sha256 reuse
         if: steps.gate.outputs.publish == 'true'
         env:
@@ -218,10 +233,28 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
           SHORT_SHA: ${{ steps.gate.outputs.short_sha }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
           asset="xerif-pr-${PR_NUMBER}-${SHORT_SHA}-x4pro.bin"
           mv artifact/firmware.bin "${asset}"
+          # Stamp the PR version into the image's esp_app_desc_t (design
+          # docs/design/2026-11-07-dev-ota-slots.md §14): PR firmware
+          # installs through the same dev picker, so it is stamped like a
+          # develop build. The FULL head sha feeds the derivation (the
+          # 7-char SHORT_SHA in the asset name would not re-shorten
+          # identically); --branch overrides the checkout's develop branch
+          # with the PR head branch. On a derivation failure the asset
+          # publishes unstamped — the device falls back to the asset name.
+          if pr_version="$(python3 scripts/git_branch.py --print-dev-version \
+              "${HEAD_SHA}" --branch "${HEAD_BRANCH}" 2>&1)"; then
+            python3 scripts/patch_dev_version.py --image "${asset}" --version "${pr_version}"
+            python3 scripts/patch_dev_version.py --image "${asset}" --verify
+          else
+            echo "::warning::could not derive the PR dev version; publishing unstamped"
+            echo "${pr_version}"
+          fi
           # Same publish gate as the dev channel: the PR asset must pass the
           # full image verifier before it may reach the rolling release.
           python3 scripts/patch_dev_version.py --image "${asset}" --validate
@@ -243,5 +276,7 @@ jobs:
           python3 .github/workflows/generate_dev_manifest.py \
             --out manifest.json \
             --prior carry/manifest.json \
-            --local .
+            --local . \
+            --pr-new "${asset}" \
+            --pr-branch "${HEAD_BRANCH}"
           gh release upload dev --repo "$GITHUB_REPOSITORY" --clobber manifest.json

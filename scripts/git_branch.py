@@ -186,26 +186,50 @@ try:
     inject_version(env)     # noqa: F821  # type: ignore[name-defined]
 except NameError:
     # CLI mode: print the bare dev-version string (optionally for a given
-    # commit SHA) so CI can capture it with a subshell. Reuses the exact
-    # derivation the build middleware uses — no second copy exists.
+    # commit SHA, optionally with an explicit branch override) so CI can
+    # capture it with a subshell. Reuses the exact derivation the build
+    # middleware uses — no second copy exists.
     if len(sys.argv) > 1 and sys.argv[1] == '--print-dev-version':
-        if len(sys.argv) > 3:
-            warn('usage: git_branch.py --print-dev-version [commit-sha]')
-            sys.exit(1)
+        # Usage: --print-dev-version [commit-sha] [--branch NAME]. --branch
+        # replaces the checkout's branch in the derivation (the PR publish
+        # lane checks out develop but stamps a PR head branch); without it
+        # the behavior is unchanged.
+        _sha_arg = None
+        _branch_arg = None
+        _rest = sys.argv[2:]
+        _i = 0
+        while _i < len(_rest):
+            if _rest[_i] == '--branch':
+                if _branch_arg is not None or _i + 1 >= len(_rest) or not _rest[_i + 1]:
+                    warn('usage: git_branch.py --print-dev-version [commit-sha] [--branch NAME]')
+                    sys.exit(1)
+                _branch_arg = _rest[_i + 1]
+                _i += 2
+            elif _sha_arg is None:
+                _sha_arg = _rest[_i]
+                _i += 1
+            else:
+                warn('usage: git_branch.py --print-dev-version [commit-sha] [--branch NAME]')
+                sys.exit(1)
         _project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        if len(sys.argv) == 3:
+        if _sha_arg is not None:
             # ^{object} forces an existence check: a plain 40-hex argument is
             # echoed back abbreviated even when the object is absent (git
             # 2.53), which would stamp a fake identity.
             _short_sha = run_git_value(
                 _project_dir, ['rev-parse', '--short', '--verify',
-                               sys.argv[2] + '^{object}'],
-                f'SHA {sys.argv[2]}'
+                               _sha_arg + '^{object}'],
+                f'SHA {_sha_arg}'
             )
         else:
             _short_sha = get_git_short_sha(_project_dir)
-        _branch = get_git_branch(_project_dir)
-        if 'unknown' in (_short_sha, _branch):
+        if _branch_arg is not None:
+            # An explicit override is the caller's own value; only the
+            # git-derived branch can turn out "unknown".
+            _branch = _branch_arg
+        else:
+            _branch = get_git_branch(_project_dir)
+        if 'unknown' in _short_sha or (_branch_arg is None and 'unknown' in _branch):
             warn('git metadata unavailable; refusing to print a version with an unknown component')
             sys.exit(1)
         print(f'{get_base_version(_project_dir)}-dev-{_branch}-{_short_sha}')

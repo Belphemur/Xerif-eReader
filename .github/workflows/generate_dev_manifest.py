@@ -16,8 +16,14 @@ Dev entries additionally carry the stamped firmware version (the same string
 the esp_app_desc_t shows) derived by the single version source
 scripts/git_branch.py --print-dev-version <sha>, with the SHA taken from the
 asset name — the just-published asset embeds DEV_SHA, carried assets embed
-their own. PR entries (`xerif-pr-*`) get no `version` field: their branch is
-unknowable from the name and the device falls back to the asset name.
+their own. PR entries (`xerif-pr-*`) carry the field too (design
+docs/design/2026-11-07-dev-ota-slots.md §14, one manifest schema): the
+publish lane passes --pr-new <asset name> --pr-branch <head branch> for the
+asset it just published; its sha comes from the asset name's last dash
+segment and the branch override replaces the checkout's branch in the
+derivation. Carried PR assets have no branch and omit the optional field,
+same degradation as unknown dev shas — the device falls back to the asset
+name.
 """
 
 import argparse
@@ -36,18 +42,24 @@ CAP_BYTES = 4096
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def dev_version_for(name):
-    """Stamped dev version for a dev asset, or None when it cannot be derived.
+def dev_version_for(name, branch=None):
+    """Stamped dev version for a dev/PR asset, or None when it cannot be derived.
 
-    Single source of truth: scripts/git_branch.py --print-dev-version. A
-    failed lookup only drops the optional field — the device falls back to
-    the asset name.
+    Single source of truth: scripts/git_branch.py --print-dev-version. The
+    sha is the asset name's last dash-separated segment (dev names embed the
+    full sha, PR names `<pr-number>-<short-sha>` the short sha —
+    git_branch.py re-shortens either way, so both print the same string).
+    `branch` is the PR head-branch override (--pr-branch). A failed lookup
+    only drops the optional field — the device falls back to the asset name.
     """
-    sha = name[len(DEV_PREFIX):-len(NAME_SUFFIX)]
+    prefix = DEV_PREFIX if name.startswith(DEV_PREFIX) else PR_PREFIX
+    sha = name[len(prefix):-len(NAME_SUFFIX)].rsplit("-", 1)[-1]
     script = os.path.join(PROJECT_DIR, "scripts", "git_branch.py")
+    cmd = [sys.executable, script, "--print-dev-version", sha]
+    if branch:
+        cmd += ["--branch", branch]
     try:
-        proc = subprocess.run([sys.executable, script, "--print-dev-version", sha],
-                              capture_output=True, cwd=PROJECT_DIR)
+        proc = subprocess.run(cmd, capture_output=True, cwd=PROJECT_DIR)
     except OSError as e:
         print(f"warning: dev version lookup for {name}: {e}", file=sys.stderr)
         return None
@@ -58,17 +70,19 @@ def dev_version_for(name):
     return proc.stdout.decode().strip()
 
 
-def entry_version(name):
-    """Optional `version` field for a manifest entry.
+def entry_version(name, pr_new=None, pr_branch=None):
+    """Optional `version` field for a manifest entry (§14: one schema).
 
-    Dev assets carry the stamped firmware version (single source:
-    scripts/git_branch.py); PR entries (`xerif-pr-*`) get none — their branch
-    is unknowable from the name — and neither do failed lookups, so the
-    device falls back to the asset name.
+    Dev assets always derive it. The PR asset published by this run
+    (--pr-new) derives it with the --pr-branch override; carried PR assets
+    have no branch and omit the field, as do failed lookups, so the device
+    falls back to the asset name.
     """
-    if not name.startswith(DEV_PREFIX):
-        return None
-    return dev_version_for(name)
+    if name.startswith(DEV_PREFIX):
+        return dev_version_for(name)
+    if name == pr_new and pr_branch:
+        return dev_version_for(name, branch=pr_branch)
+    return None
 
 
 def sha256_of(path):
@@ -138,6 +152,10 @@ def main():
     parser.add_argument("--new-bin",
                         help="local bin published by this run but not yet on the release")
     parser.add_argument("--new-date", default="", help="date for --new-bin")
+    parser.add_argument("--pr-new",
+                        help="asset name of the PR firmware published by this run")
+    parser.add_argument("--pr-branch",
+                        help="PR head branch override for --pr-new's version derivation")
     args = parser.parse_args()
 
     repo = os.environ.get("GITHUB_REPOSITORY")
@@ -182,7 +200,7 @@ def main():
             "sha256": sha256,
             "date": date,
         }
-        version = entry_version(name)
+        version = entry_version(name, args.pr_new, args.pr_branch)
         if version:
             item["version"] = version
         return item
