@@ -70,10 +70,15 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fixtures")
 add_custom_command(
   OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/fixtures/fit_fixtures.epub"
+         "${CMAKE_CURRENT_BINARY_DIR}/fixtures/dark.gif"
+         "${CMAKE_CURRENT_BINARY_DIR}/fixtures/small.bmp"
+         "${CMAKE_CURRENT_BINARY_DIR}/fixtures/prog.jpg"
+         "${CMAKE_CURRENT_BINARY_DIR}/fixtures/pattern.png"
+  BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/fixtures/fit_fixtures.epub"
   COMMAND ${CMAKE_COMMAND} -E env PYTHONPATH= "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/gen_fixtures.py"
           "${CMAKE_CURRENT_BINARY_DIR}/fixtures"
   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/gen_fixtures.py"
-  COMMENT "ttf_image_fit: generating progressive-JPEG fixture EPUB"
+  COMMENT "ttf_image_fit: generating progressive-JPEG/GIF/BMP fixtures + EPUB"
   VERBATIM
 )
 add_custom_target(ttf_image_fit_fixtures DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/fixtures/fit_fixtures.epub")

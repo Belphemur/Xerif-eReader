@@ -7,23 +7,25 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
 #include <map>
+#include <memory>
+#include <new>
 #include <string>
 #include <vector>
 
 class Epub {
  public:
+  // RAII allocation; ownership of the released buffer moves to PoolBytes.
   uint8_t* extractItemToPsram(const char* href, size_t* outSize) {
     if (outSize != nullptr) *outSize = 0;
     const auto it = items.find(href != nullptr ? href : "");
     if (it == items.end()) return nullptr;
-    uint8_t* buf = static_cast<uint8_t*>(malloc(it->second.size()));
+    std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[it->second.size()]);
     if (buf == nullptr) return nullptr;
-    memcpy(buf, it->second.data(), it->second.size());
+    memcpy(buf.get(), it->second.data(), it->second.size());
     if (outSize != nullptr) *outSize = it->second.size();
-    return buf;
+    return buf.release();
   }
 
   // Test seam: href → raw item bytes.

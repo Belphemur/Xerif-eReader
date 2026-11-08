@@ -35,9 +35,10 @@
 // BMP branch); the suite drives them directly so BMP coverage needs no Epub.
 namespace ttfimg {
 DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, size_t size, ToneBake4* bake,
-                           bool (*abortPoll)(void*), void* abortCtx);
+                           GfxRenderer* legacyPaint, bool (*abortPoll)(void*), void* abortCtx);
 DecodeResult remapGrayToCache(const ImageSpec& spec, ToneBake4& bake, const char* writePath, bool caching,
-                              GfxRenderer* paint, bool paintToTarget, bool (*abortPoll)(void*), void* abortCtx);
+                              GfxRenderer* paint, bool paintToTarget, bool (*abortPoll)(void*), void* abortCtx,
+                              bool* cacheStreamOk);
 }  // namespace ttfimg
 
 uint32_t g_fakeMillis = 0;
@@ -163,11 +164,12 @@ void bmpDecodeRemapPaint(FakeRenderer& r, const ttfimg::ImageSpec& spec, const s
   ttfimg::ToneBake4 bake(spec.w);
   ASSERT_TRUE(bake.ok());
   ASSERT_TRUE(bake.beginCollect("/t/paint_case.g"));
-  const auto res = ttfimg::decodeBmpRows(spec, bmp.data(), bmp.size(), &bake, nullptr, nullptr);
+  const auto res =
+      ttfimg::decodeBmpRows(spec, bmp.data(), bmp.size(), &bake, /*legacyPaint=*/nullptr, nullptr, nullptr);
   ASSERT_EQ(res, ttfimg::DecodeResult::Ok);
   ASSERT_TRUE(bake.grayDone());
   ASSERT_EQ(ttfimg::remapGrayToCache(spec, bake, "/t/paint_case.pxc", /*caching=*/false, &r,
-                                     /*paintToTarget=*/true, nullptr, nullptr),
+                                     /*paintToTarget=*/true, nullptr, nullptr, nullptr),
             ttfimg::DecodeResult::Ok);
 }
 
@@ -552,7 +554,7 @@ TEST(AdaptiveBake, GrayTempStreamsEveryRowByteExact) {
   // The temp is consumed by the remap pass: no leftover .g after remap.
   const ttfimg::ImageSpec spec = makeSpec(0, 0, 6, 5);
   ttfimg::remapGrayToCache(spec, bake, "/t/bake_stream.pxc", /*caching=*/false, nullptr, /*paintToTarget=*/false,
-                           nullptr, nullptr);
+                           nullptr, nullptr, nullptr);
   EXPECT_FALSE(storage.exists("/t/bake_stream.g"));
 }
 
@@ -573,10 +575,11 @@ TEST(AdaptiveBake, TwoPhaseCacheIsDeterministicAcrossRuns) {
     ttfimg::ToneBake4 bake(spec.w);
     ASSERT_TRUE(bake.ok());
     ASSERT_TRUE(bake.beginCollect(gray));
-    ASSERT_EQ(ttfimg::decodeBmpRows(spec, bmp.data(), bmp.size(), &bake, nullptr, nullptr), ttfimg::DecodeResult::Ok);
+    ASSERT_EQ(ttfimg::decodeBmpRows(spec, bmp.data(), bmp.size(), &bake, /*legacyPaint=*/nullptr, nullptr, nullptr),
+              ttfimg::DecodeResult::Ok);
     ASSERT_TRUE(bake.grayDone());
     ASSERT_EQ(ttfimg::remapGrayToCache(spec, bake, cache, /*caching=*/true, nullptr, /*paintToTarget=*/false, nullptr,
-                                       nullptr),
+                                       nullptr, nullptr),
               ttfimg::DecodeResult::Ok);
   }
   EXPECT_EQ(storage.files["/t/parity0.pxc"], storage.files["/t/parity1.pxc"]);
@@ -659,4 +662,141 @@ TEST(ImageFitEndToEnd, GifDecodePublishesCacheAndBlits) {
   // 96x144 GIF into a 3x/6x-downscaled 32x24 box below the physical height.
   expectDecodeCacheBlit(source, book, scratch, epub, "OEBPS/images/dark.gif", FIT_FIXTURES "/dark.gif", "gif", 20, 600,
                         32, 24);
+}
+
+// ── review round 1 pins ─────────────────────────────────────────────────────
+
+TEST(AdaptiveBake, FullPageFlatFillPercentileNotSaturatedByU16Bins) {
+  // The qodo/kody finding: u16 bins saturate at 65535, so a flat full-page
+  // fill (90% at one tone) left hi at 255 and the stretch collapsed back to
+  // near-identity. u32 bins keep the percentile targets comparable to the
+  // real counts: the used range [100,200] must stretch to [0,255].
+  ttfimg::ToneBake4 bake(454);
+  ASSERT_TRUE(bake.ok());
+  ASSERT_TRUE(bake.beginCollect("/t/bake_flatfill.g"));
+  std::vector<uint8_t> row(454, 100);
+  for (int r = 0; r < 774; ++r) {
+    if (r % 10 == 9) std::fill(row.begin(), row.end(), static_cast<uint8_t>(200));  // 10% at 200
+    bake.collectRow(row.data());
+    if (r % 10 == 9) std::fill(row.begin(), row.end(), static_cast<uint8_t>(100));
+  }
+  ASSERT_TRUE(bake.grayDone());
+  bake.beginRemap();
+  // N = 351,396: lo target 3513 → first bin reaching it is 100; hi target
+  // 347,882 → first bin reaching it is 200 (the u16 bug left hi at 255).
+  EXPECT_EQ(bake.mapLut[100], 0);
+  EXPECT_EQ(bake.mapLut[200], 255);
+  EXPECT_EQ(bake.mapLut[150], static_cast<uint8_t>((150 - 100) * 255 / 100));
+}
+
+TEST(ImageFitEndToEnd, JpegDecodePublishesCacheAndBlits) {
+  static uint8_t bookBuf[1 << 20];
+  static uint8_t scratchBuf[4 << 20];
+  freeink::book::Arena bookArena(bookBuf, sizeof(bookBuf));
+  freeink::book::Arena scratch(scratchBuf, sizeof(scratchBuf));
+  HostFileSource source;
+  ASSERT_TRUE(source.open(FIT_FIXTURES "/fit_fixtures.epub"));
+  freeink::book::Book book;
+  ASSERT_EQ(book.open(source, bookArena, scratch), freeink::book::BookStatus::Ok);
+  Epub epub;
+  // All-dark progressive fixture: exercises the SDK DC path end to end
+  // (white image regions would legitimately paint no ink).
+  expectDecodeCacheBlit(source, book, scratch, epub, "OEBPS/images/dark_prog.jpg", FIT_FIXTURES "/dark_prog.jpg",
+                        "jpeg", 20, 440, 227, 340);
+}
+
+TEST(ImageFitEndToEnd, PngDecodePublishesCacheAndBlits) {
+  static uint8_t bookBuf[1 << 20];
+  static uint8_t scratchBuf[4 << 20];
+  freeink::book::Arena bookArena(bookBuf, sizeof(bookBuf));
+  freeink::book::Arena scratch(scratchBuf, sizeof(scratchBuf));
+  HostFileSource source;
+  ASSERT_TRUE(source.open(FIT_FIXTURES "/fit_fixtures.epub"));
+  freeink::book::Book book;
+  ASSERT_EQ(book.open(source, bookArena, scratch), freeink::book::BookStatus::Ok);
+  Epub epub;
+  // All-dark 800x1200 PNG into a 2x-downscaled 400x600 box below the
+  // physical height (white regions would legitimately paint no ink).
+  expectDecodeCacheBlit(source, book, scratch, epub, "OEBPS/images/dark.png", FIT_FIXTURES "/dark.png", "png", 20, 180,
+                        400, 600);
+}
+
+// The storage-failure fallbacks (review round 1): gray-temp unavailability
+// must degrade to uncached painting, never to a blank placement.
+
+TEST(ImageFitFallback, GrayOpenFailureStillPaintsTheImage) {
+  static uint8_t bookBuf[1 << 20];
+  static uint8_t scratchBuf[4 << 20];
+  freeink::book::Arena bookArena(bookBuf, sizeof(bookBuf));
+  freeink::book::Arena scratch(scratchBuf, sizeof(scratchBuf));
+  HostFileSource source;
+  ASSERT_TRUE(source.open(FIT_FIXTURES "/fit_fixtures.epub"));
+  freeink::book::Book book;
+  ASSERT_EQ(book.open(source, bookArena, scratch), freeink::book::BookStatus::Ok);
+  Epub epub;
+  FILE* f = std::fopen(FIT_FIXTURES "/small.bmp", "rb");
+  ASSERT_NE(f, nullptr);
+  std::vector<uint8_t> bytes;
+  uint8_t buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) bytes.insert(bytes.end(), buf, buf + n);
+  std::fclose(f);
+  epub.items["OEBPS/images/small.bmp"] = bytes;
+
+  FakeRenderer r;
+  auto& storage = HalStorage::getInstance();
+  storage.files.clear();
+  storage.failOpenForWriteAtCall = 1;  // the .g temp open fails
+  storage.openForWriteCallCount = 0;
+
+  ttfimg::ImageSpec spec = makeSpec(20, 600, 32, 24);
+  snprintf(spec.href, sizeof(spec.href), "OEBPS/images/small.bmp");
+  spec.generation = 11;
+  char cachePath[256];
+  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, cachePath, sizeof(cachePath)));
+  const auto res = ttfimg::decodeAndCache(spec, cachePath, source, book.zip(), scratch, &epub, &r, true, true, nullptr,
+                                          nullptr, true);
+  storage.failOpenForWriteAtCall = 0;
+  EXPECT_EQ(res, ttfimg::DecodeResult::Ok);
+  // The image painted (legacy single pass) and no cache/temp debris exists.
+  expectBoxCoverage(r, spec);
+  EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true));
+}
+
+TEST(ImageFitFallback, GrayMidStreamWriteFailureStillPaintsTheImage) {
+  static uint8_t bookBuf[1 << 20];
+  static uint8_t scratchBuf[4 << 20];
+  freeink::book::Arena bookArena(bookBuf, sizeof(bookBuf));
+  freeink::book::Arena scratch(scratchBuf, sizeof(scratchBuf));
+  HostFileSource source;
+  ASSERT_TRUE(source.open(FIT_FIXTURES "/fit_fixtures.epub"));
+  freeink::book::Book book;
+  ASSERT_EQ(book.open(source, bookArena, scratch), freeink::book::BookStatus::Ok);
+  Epub epub;
+  FILE* f = std::fopen(FIT_FIXTURES "/small.bmp", "rb");
+  ASSERT_NE(f, nullptr);
+  std::vector<uint8_t> bytes;
+  uint8_t buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) bytes.insert(bytes.end(), buf, buf + n);
+  std::fclose(f);
+  epub.items["OEBPS/images/small.bmp"] = bytes;
+
+  FakeRenderer r;
+  auto& storage = HalStorage::getInstance();
+  storage.files.clear();
+  HalFile::failWriteAtCall = 3;  // the third gray-row write fails mid-stream
+  HalFile::writeCallCount = 0;
+
+  ttfimg::ImageSpec spec = makeSpec(20, 600, 32, 24);
+  snprintf(spec.href, sizeof(spec.href), "OEBPS/images/small.bmp");
+  spec.generation = 12;
+  char cachePath[256];
+  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, cachePath, sizeof(cachePath)));
+  const auto res = ttfimg::decodeAndCache(spec, cachePath, source, book.zip(), scratch, &epub, &r, true, true, nullptr,
+                                          nullptr, true);
+  HalFile::failWriteAtCall = 0;
+  EXPECT_EQ(res, ttfimg::DecodeResult::Ok);
+  expectBoxCoverage(r, spec);
+  EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true));
 }

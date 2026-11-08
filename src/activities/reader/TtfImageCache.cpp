@@ -16,9 +16,15 @@ bool ToneBake4::beginCollect(const char* grayPath) {
   grayFailed = false;
   grayOpen = false;
   grayPathLen = 0;
-  snprintf(grayPathBuf, sizeof(grayPathBuf), "%s", grayPath);
-  grayPathLen = strlen(grayPathBuf);
-  if (grayPathLen == 0 || grayPathLen >= sizeof(grayPathBuf)) return false;
+  // Validate the snprintf result BEFORE recording the path: a truncated or
+  // empty path must never be opened (the open would target a different file).
+  const int pathLen = snprintf(grayPathBuf, sizeof(grayPathBuf), "%s", grayPath);
+  if (pathLen <= 0 || pathLen >= static_cast<int>(sizeof(grayPathBuf))) {
+    grayPathBuf[0] = '\0';
+    grayPathLen = 0;
+    return false;
+  }
+  grayPathLen = static_cast<size_t>(pathLen);
   if (!Storage.openFileForWrite("TIMGE", grayPathBuf, grayFile)) {
     LOG_ERR("TIMGE", "Gray temp open failed: %s", grayPathBuf);
     return false;
@@ -29,12 +35,9 @@ bool ToneBake4::beginCollect(const char* grayPath) {
 
 void ToneBake4::collectRow(const uint8_t* gray) {
   if (width <= 0 || gray == nullptr) return;
-  // Saturating bins: a flat image pins one bin; u32 cumulative math absorbs
-  // the clipped counts (512 bytes of state, no heap).
-  for (int x = 0; x < width; ++x) {
-    const uint16_t c = hist[gray[x]];
-    hist[gray[x]] = c == 0xFFFF ? c : static_cast<uint16_t>(c + 1);
-  }
+  // u32 bins: no saturation, so the percentile targets always compare
+  // against the real counts (1 KB of state in the bake object, no heap).
+  for (int x = 0; x < width; ++x) ++hist[gray[x]];
   histCount += static_cast<uint32_t>(width);
   if (grayOpen) {
     if (grayFile.write(gray, static_cast<uint32_t>(width)) != width) {
@@ -59,6 +62,16 @@ bool ToneBake4::grayDone() {
     return false;
   }
   return true;
+}
+
+void ToneBake4::beginLegacyFallback() {
+  // Storage-failure paint fallback (review round 1): drop whatever partial
+  // histogram phase 1 managed and bake with the deterministic degenerate map
+  // (fixed contrast 1.3, gamma off) — the image still paints without any
+  // cache or gray temp.
+  memset(hist, 0, sizeof(hist));
+  histCount = 0;
+  beginRemap();
 }
 
 void ToneBake4::grayDiscard() {

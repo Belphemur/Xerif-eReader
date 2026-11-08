@@ -47,6 +47,9 @@ class HalFile {
   int read() { return -1; }
   size_t write(const void* buf, size_t count) {
     if (testFailWrite) return 0;
+    // Failure injection: write call #N fails when failWriteAtCall == N
+    // (gray-temp mid-stream failure coverage).
+    if (failWriteAtCall != 0 && ++writeCallCount == failWriteAtCall) return 0;
     if (!data || cursor > data->size()) return 0;
     const auto* b = static_cast<const char*>(buf);
     // Subtraction form for the span check, plus a wrap guard so the resize
@@ -73,6 +76,8 @@ class HalFile {
   static bool testFailClose;
   static bool testFailWrite;
   static bool testFailSync;
+  static int failWriteAtCall;  // 0 = off; else the 1-based write call to fail
+  static int writeCallCount;
 
  private:
   bool open_ = false;

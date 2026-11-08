@@ -31,11 +31,13 @@ def pattern(x, y):
 pix = [[pattern(x, y) for x in range(W)] for y in range(H)]
 
 
-def write_progressive_jpeg(path):
+def write_progressive_jpeg(path, source=None):
+    global pix
+    src = source if source is not None else pix
     def avg(x0, y0):
         s = 0
         for y in range(y0, min(y0 + 8, H)):
-            row = pix[y]
+            row = src[y]
             for x in range(x0, min(x0 + 8, W)):
                 s += row[x]
         n = (min(x0 + 8, W) - x0) * (min(y0 + 8, H) - y0)
@@ -105,6 +107,10 @@ def write_png(path):
 
 
 write_progressive_jpeg(os.path.join(OUT, "prog.jpg"))
+# All-dark progressive twin: the coverage fixture (legitimately white image
+# regions paint no ink in the BW coverage check).
+dark_pix = [[10] * W for _ in range(H)]
+write_progressive_jpeg(os.path.join(OUT, "dark_prog.jpg"), dark_pix)
 write_png(os.path.join(OUT, "pattern.png"))
 def write_gif(path):
     """Minimal 96x144 GIF87a: 2-color palette, every pixel index 0 (dark),
@@ -191,7 +197,23 @@ def write_small_bmp(path, w=64, h=48, gray=137):
         f.write(fh + dib + bytes(data))
 
 
+def write_dark_png(path):
+    # All-dark 800x1200 PNG (value 10) — coverage fixtures must be dark, since
+    # legitimately white image regions paint no ink in the BW coverage check.
+    rows = bytearray()
+    for _ in range(H):
+        rows.append(0)
+        rows.extend(bytes([10]) * W)
+    png = b"\x89PNG\r\n\x1a\n"
+    png += chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 0, 0, 0, 0))
+    png += chunk(b"IDAT", zlib.compress(bytes(rows), 9))
+    png += chunk(b"IEND", b"")
+    with open(path, "wb") as f:
+        f.write(png)
+
+
 write_small_bmp(os.path.join(OUT, "small.bmp"))
+write_dark_png(os.path.join(OUT, "dark.png"))
 
 opf = """<?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
@@ -203,7 +225,9 @@ opf = """<?xml version="1.0" encoding="UTF-8"?>
     <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
     <item id="ch1" href="text/ch1.xhtml" media-type="application/xhtml+xml"/>
     <item id="i1" href="images/prog.jpg" media-type="image/jpeg"/>
+    <item id="i6" href="images/dark_prog.jpg" media-type="image/jpeg"/>
     <item id="i2" href="images/pattern.png" media-type="image/png"/>
+    <item id="i5" href="images/dark.png" media-type="image/png"/>
     <item id="i3" href="images/dark.gif" media-type="image/gif"/>
     <item id="i4" href="images/small.bmp" media-type="image/bmp"/>
   </manifest>
@@ -233,7 +257,9 @@ with zipfile.ZipFile(epub_path, "w") as z:
     z.writestr("OEBPS/nav.xhtml", nav)
     z.writestr("OEBPS/text/ch1.xhtml", ch1)
     z.write(os.path.join(OUT, "prog.jpg"), "OEBPS/images/prog.jpg")
+    z.write(os.path.join(OUT, "dark_prog.jpg"), "OEBPS/images/dark_prog.jpg")
     z.write(os.path.join(OUT, "pattern.png"), "OEBPS/images/pattern.png")
+    z.write(os.path.join(OUT, "dark.png"), "OEBPS/images/dark.png")
     z.write(os.path.join(OUT, "dark.gif"), "OEBPS/images/dark.gif")
     z.write(os.path.join(OUT, "small.bmp"), "OEBPS/images/small.bmp")
 

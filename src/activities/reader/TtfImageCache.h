@@ -40,7 +40,7 @@ constexpr bool absoluteGrayImageRoute(const bool pageHasImages, const bool quali
 // tuned Floyd–Steinberg diffusion (2048/2560 ≈ 0.8) and serpentine scanning.
 // Two phases (design §2.1, amendment 2):
 //   1. beginCollect(path) + collectRow(gray) per destination row, in raster
-//      order — a 256-bin saturating histogram accumulates while the raw
+//      order — a 256-bin u32 histogram accumulates while the raw
 //      8-bit gray rows append to the caller's .g temp; no tone is emitted.
 //   2. beginRemap() derives the map from the histogram (percentile clip
 //      1%/99% stretched to [0,255]; degenerate histograms fall back to the
@@ -71,7 +71,10 @@ struct ToneBake4 : ToneBaker {
   uint8_t contrastLut[256];
   uint8_t mapLut[256];    // adaptive phase-2 map (stretch ⊙ gamma)
   bool adaptive = false;  // toneRow uses mapLut once beginRemap() ran
-  uint16_t hist[256];     // saturating bins; cumulative math in u32
+  // u32 bins: percentile targets are n·1%/n·99% of the FULL pixel count, so a
+  // bin must hold the whole image (a flat full-page fill would saturate u16
+  // and leave hi at 255 — the range expansion this bake exists to fix).
+  uint32_t hist[256];
   uint32_t histCount = 0;
   HalFile grayFile;  // phase-1 gray temp (see beginCollect)
   char grayPathBuf[280] = {};
@@ -127,6 +130,9 @@ struct ToneBake4 : ToneBaker {
   const char* grayPath() const { return grayPathBuf; }
   // Percentiles → mapLut, error state reset. Pure integer; deterministic.
   void beginRemap();
+  // Storage-failure fallback: reset the histogram, then beginRemap() — the
+  // deterministic fixed-contrast map for a paint-only legacy pass.
+  void beginLegacyFallback();
 
   // Every Floyd–Steinberg term scales by kDiffusionNum/kDiffusionDen:
   // (errVal·k·2048)/(16·2560) = errVal·k/20 for k = 7|3|5|1 (§7).

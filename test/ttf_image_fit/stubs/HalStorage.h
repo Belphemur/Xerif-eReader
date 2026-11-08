@@ -25,6 +25,9 @@ class HalStorage {
     return openFileForWrite(moduleName, path.c_str(), file);
   }
   bool exists(const char* path);
+  // Failure injection: the Nth openFileForWrite fails when set (0 = off).
+  static int failOpenForWriteAtCall;
+  static int openForWriteCallCount;
   bool remove(const char* path);
   bool rename(const char* oldPath, const char* newPath);
   bool replaceFile(const char* tmpPath, const char* path);

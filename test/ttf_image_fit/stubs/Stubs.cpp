@@ -7,6 +7,10 @@
 bool HalFile::testFailClose = false;
 bool HalFile::testFailWrite = false;
 bool HalFile::testFailSync = false;
+int HalFile::failWriteAtCall = 0;
+int HalFile::writeCallCount = 0;
+int HalStorage::failOpenForWriteAtCall = 0;
+int HalStorage::openForWriteCallCount = 0;
 
 HalStorage HalStorage::instance;
 
@@ -26,6 +30,9 @@ bool HalStorage::openFileForRead(const char* moduleName, const char* path, HalFi
 
 bool HalStorage::openFileForWrite(const char* moduleName, const char* path, HalFile& file) {
   (void)moduleName;
+  // Failure injection: open call #N fails when failOpenForWriteAtCall == N
+  // (gray-temp open-failure coverage).
+  if (failOpenForWriteAtCall != 0 && ++openForWriteCallCount == failOpenForWriteAtCall) return false;
   // openFileForWrite truncates, matching the real HAL contract.
   file.data = &files[path];
   file.data->clear();

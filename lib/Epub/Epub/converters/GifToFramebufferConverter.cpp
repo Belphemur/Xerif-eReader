@@ -507,6 +507,12 @@ bool GifToFramebufferConverter::decodeGifSource(const char* imagePath, uint8_t* 
       ctx.bake = config.toneBake;
       ctx.collect = config.toneCollect;
       ctx.quality = true;
+    } else if (config.toneCollect) {
+      // Collect mode must not silently render without collecting: the engine's
+      // remap would read a short gray stream (review round 1). Fail the decode
+      // before anything is painted; the engine picks a deliberate fallback.
+      LOG_ERR("GIF", "Collect-mode buffers unavailable — failing the decode");
+      return false;
     } else {
       LOG_ERR("GIF", "Quality bake unavailable — falling back to legacy dither");
       ctx.qSums.reset();

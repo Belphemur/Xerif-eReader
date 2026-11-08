@@ -34,14 +34,14 @@ gray → gammaLut (out = 255·(i/255)^(1/2.2)  — BRIGHTENING)
      → + FS error → nearest of {0, 85, 170, 255}
 ```
 
-Mechanism (verified numerically): source mid-gray 128 → gamma 2.2 maps it to **176** →
-contrast 1.3 pivot 128 → **190**. On the 4-level scale `{0, 85, 170, 255}` that lands at
-the second-lightest level with error 20. Any source pixel brighter than ~100 lands at 170
-or 255. The gamma brightening is the 1-bit reference's recipe (harperreed/eink-image):
-there it exists to push tones toward the *dither threshold* so a 1-bit dot pattern can
-represent them. On a 4-level panel it is destructive — it collapses the source's midtones
-into the panel's two lightest levels before diffusion ever runs. The photos are the exact
-signature of this.
+Mechanism (verified numerically): source mid-gray 128 → gamma 2.2 maps it to **186**
+(255·(128/255)^(1/2.2) = 186.4) → contrast 1.3 pivot 128 → **203**. On the 4-level scale
+`{0, 85, 170, 255}` that quantizes to the second-lightest level 170 with error 33 (with no
+incoming diffusion error). Any source pixel brighter than ~100 lands at 170 or 255. The
+gamma brightening is the 1-bit reference's recipe (harperreed/eink-image): there it exists
+to push tones toward the *dither threshold* so a 1-bit dot pattern can represent them. On
+a 4-level panel it is destructive — it collapses the source's midtones into the panel's
+two lightest levels before diffusion ever runs. The photos are the exact signature of this.
 
 Secondary factors:
 
@@ -208,7 +208,30 @@ Compute the used dynamic range **per image** and stretch it to [0, 255]:
   end regardless). Steady state is the 2bpp cache as before.
 - **Cache identity**: bake change → `kQualityCacheRevision` `'r'` → `'s'`.
 
-### 3. Parity requirements (unchanged from PR #301)
+##### Amendment 3 (2026-11-08, review round 1 hardening)
+
+- **Histogram bins are u32** (1 KB in the bake object): percentile targets compare
+  against n·1%/n·99% of the FULL pixel count, so a bin must hold the whole image — u16
+  saturation on a flat full-page fill left `hi` at 255 and collapsed the stretch back to
+  near-identity (the defect-A mechanism surviving inside the fix). Pinned by
+  `AdaptiveBake.FullPageFlatFillPercentileNotSaturatedByU16Bins` (454×774, 90/10 two-tone).
+- **Gray-temp unavailability degrades to uncached painting** (the pre-#301 contract):
+  a failed `.g` open or a failed/short mid-stream write routes the decode through
+  `legacyPaintPass` — a re-decode with the deterministic degenerate map (fixed contrast
+  1.3, gamma off via `ToneBake4::beginLegacyFallback()`) straight to the target, no cache,
+  no temp. Cache-only jobs (worker) no-op. `decodeBmpRows` gained an optional
+  `legacyPaint` mode; the GIF converter's existing legacy quality paint serves the GIF
+  fallback. Pinned by `ImageFitFallback.*` (open failure + mid-stream write failure →
+  full box coverage, no cache debris).
+- **Degraded cache streams no longer publish**: `remapGrayToCache` reports cache-stream
+  completion through a `cacheStreamOk` out-param; the callers skip `publishResult` and
+  return Ok (rows painted) when the writer could not finish — the pre-PR BMP contract.
+- **GIF collect mode fails loudly on buffer-allocation failure** instead of silently
+  rendering without collecting (which would strand the remap with a short gray stream).
+- `beginCollect` validates the `snprintf` result before recording the path (a truncated
+  path must never be opened).
+
+## 3. Parity requirements (unchanged from PR #301)
 
 - All four decoders (SDK JPEG/PNG rows, BMP decode, GIF converter) route through one bake.
 - Worker/foreground cache parity (byte-identical `.t` temp semantics; same bake letter).
