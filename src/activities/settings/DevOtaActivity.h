@@ -73,7 +73,7 @@ class DevOtaActivity : public Activity {
   // until the first LIST render it disables scrolling.
   int16_t listScrollTop_ = 0;
   int16_t listVisibleRows_ = dev_ota::kMaxVersions;
-  char pendingVersion[64] = {0};
+  char pendingVersion[dev_ota::kPendingPayloadCap] = {0};
   const char* failedDetail = nullptr;
   // Install progress, published from the blocking install via
   // onInstallProgress (percent edges only).

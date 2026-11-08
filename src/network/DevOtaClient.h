@@ -75,9 +75,13 @@ enum class PendingKind : uint8_t {
                      // file; payload = SD path; the file is never removed.
 };
 
-// The pending-install payload capacity (version string or SD path). The boot
-// hook and both completion activities size their buffers from this constant.
-constexpr size_t kPendingPayloadCap = 64;
+// The pending-install payload capacity (version string or SD path). The
+// boot hook and all completion activities size their buffers from this
+// constant. The largest payload is a user-picked CI asset under
+// /firmware/: "/firmware/xerif-dev-<40-hex>-x4pro.bin" is 70 bytes and
+// must dance (dev channel while running dev) — the previous 64-byte cap
+// rejected it only after the user confirmed the install.
+constexpr size_t kPendingPayloadCap = 96;
 
 // True when an install was requested from the other slot and this boot must
 // complete it. `payloadOut` receives the recorded payload (the version string
