@@ -1402,6 +1402,13 @@ static void bootFinalize() {
       const esp_partition_t* completionSlot = targetIsStable ? ota_slots::devSlot() : ota_slots::stableSlot();
       if (!ota_slots::sameSlot(slot, completionSlot)) {
         LOG_INF("MAIN", "stale pending install; clearing");
+        // A StableStaged dance whose otadata switch never landed leaves its
+        // fixed staging file on the swap space. Remove it by the known path —
+        // user-picked files (StablePicked/SdDev) keep their own path and are
+        // never touched here.
+        if (kind == dev_ota::PendingKind::StableStaged) {
+          Storage.remove(dev_ota::kStableStagingPath);
+        }
         dev_ota::pendingInstallClear();
       } else if (slot != nullptr) {
         if (bootRecoveryFirmwareMode || bootRebootedFromPanic) {

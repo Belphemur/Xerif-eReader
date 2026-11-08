@@ -25,11 +25,6 @@ namespace {
 // skip the check rather than wrongly blocking the update.
 constexpr uint16_t OTA_MIN_BATTERY_PCT = 20;
 
-// §16 stable→stable dance staging path (the swap space, design §16). A fixed
-// name: overwritten on every dance, removed by the completion pass after the
-// flash (the pending kind tells the pass it is a staged file, not the user's).
-constexpr char kStableStagingPath[] = "/.crosspoint/stable_ota.bin";
-
 // Shared mapping from an OtaUpdaterError to the user-facing detail string, so
 // both the check-time and install-time failure paths surface the same message.
 const char* describeOtaError(OtaUpdater::OtaUpdaterError res) {
@@ -376,7 +371,7 @@ void OtaUpdateActivity::armStableDance() {
     memclaim::DeviceClaim claim(renderer, "OTA");
     claim.runCheap();
     res = updater.stageUpdateToSd(
-        kStableStagingPath, stagedDigest,
+        dev_ota::kStableStagingPath, stagedDigest,
         [](void* ctx) {
           // immediate=true: the deferred path is consumed by
           // ActivityManager::loop(), which never runs while the download
@@ -401,11 +396,11 @@ void OtaUpdateActivity::armStableDance() {
   // manifest — no second 5 MB SD read here). The unattended completion pass
   // re-hashes the staging file and refuses to flash when the SD card's
   // contents changed between this arm and the completion boot.
-  if (!dev_ota::pendingInstallSet(kStableStagingPath, dev_ota::PendingKind::StableStaged) ||
+  if (!dev_ota::pendingInstallSet(dev_ota::kStableStagingPath, dev_ota::PendingKind::StableStaged) ||
       !dev_ota::pendingInstallSetDigest(stagedDigest) || !ota_boot::switchTo(ota_slots::devSlot())) {
     LOG_ERR("OTA", "§16 dance arm failed; clearing the flag");
     dev_ota::pendingInstallClear();
-    Storage.remove(kStableStagingPath);
+    Storage.remove(dev_ota::kStableStagingPath);
     {
       RenderLock lock(*this);
       failedDetail = tr(STR_FIRMWARE_WRITE_FAILED);

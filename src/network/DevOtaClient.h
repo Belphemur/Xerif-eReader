@@ -89,6 +89,13 @@ constexpr size_t kPendingPayloadCap = 96;
 // stamping).
 bool pendingInstallGet(char* payloadOut, size_t cap);
 
+// The stable→stable dance's fixed staging path (the §16 swap space): written
+// by the gh_release stage-and-dance lane, removed by the completion pass for
+// the StableStaged kind. A fixed name lets boot hygiene remove an orphaned
+// copy when a dance arm never rebooted into the worker — user-picked files
+// (StablePicked/SdDev) keep their own path and are never touched by this.
+constexpr char kStableStagingPath[] = "/.crosspoint/stable_ota.bin";
+
 // Record the pending install before rebooting into the swap worker.
 bool pendingInstallSet(const char* payload, PendingKind kind);
 
