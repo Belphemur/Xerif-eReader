@@ -361,9 +361,14 @@ OtaUpdater::OtaUpdaterError OtaUpdater::stageUpdateToSd(const char* stagingPath,
   // completion pass runs the full validateImageFile() (chip + board tag
   // included) before any byte reaches flash, and a wrong-device image cannot
   // pass the signed-manifest SHA-256 check below in the first place.
+  // Write to a temp file first and publish with replaceFile() only after the
+  // download and SHA-256 verification succeed: a power loss or a failed flush
+  // must never leave a partial image at the path the completion pass flashes.
+  const std::string tmpPath = std::string(stagingPath) + ".tmp";
+  Storage.remove(tmpPath.c_str());
   HalFile file;
-  if (!Storage.openFileForWrite("OTA", stagingPath, file) || !file) {
-    LOG_ERR("OTA", "cannot open staging file %s", stagingPath);
+  if (!Storage.openFileForWrite("OTA", tmpPath.c_str(), file) || !file) {
+    LOG_ERR("OTA", "cannot open staging file %s", tmpPath.c_str());
     return INTERNAL_UPDATE_ERROR;
   }
   ota_signature::Sha256Stream sha;
@@ -385,19 +390,29 @@ OtaUpdater::OtaUpdaterError OtaUpdater::stageUpdateToSd(const char* stagingPath,
     }
     return true;
   });
-  file.close();
+  const bool closed = file.close();
   if (!fetchOk) {
     LOG_ERR("OTA", "staging download failed");
-    Storage.remove(stagingPath);
+    Storage.remove(tmpPath.c_str());
     return HTTP_ERROR;
+  }
+  if (!closed) {
+    LOG_ERR("OTA", "staging file close failed; image may be incomplete");
+    Storage.remove(tmpPath.c_str());
+    return INTERNAL_UPDATE_ERROR;
   }
 
   uint8_t computedSha[32];
   sha.finish(computedSha);
   if (memcmp(computedSha, expectedSha, 32) != 0) {
     LOG_ERR("OTA", "staged firmware SHA-256 does not match signed manifest");
-    Storage.remove(stagingPath);
+    Storage.remove(tmpPath.c_str());
     return SIGNATURE_ERROR;
+  }
+  if (!Storage.replaceFile(tmpPath.c_str(), stagingPath)) {
+    LOG_ERR("OTA", "staging publish failed");
+    Storage.remove(tmpPath.c_str());
+    return INTERNAL_UPDATE_ERROR;
   }
   LOG_INF("OTA", "Firmware staged to %s (SHA-256 verified)", stagingPath);
   return OK;

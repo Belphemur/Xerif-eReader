@@ -26,6 +26,8 @@ class OtaUpdater {
 
   OtaUpdater() = default;
   bool isUpdateNewer() const;
+  // True when the last checkForUpdate() pinned a signed-manifest SHA-256.
+  bool isManifestPinned() const { return haveExpectedSha; }
   const std::string& getLatestVersion() const;
   OtaUpdaterError checkForUpdate();
   OtaUpdaterError installUpdate(ProgressCallback onProgress = nullptr, void* ctx = nullptr);

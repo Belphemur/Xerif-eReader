@@ -31,6 +31,7 @@ constexpr char STAGING_PATH[] = "/.crosspoint/dev_ota.bin";
 constexpr char NVS_NAMESPACE[] = "devota";
 constexpr char NVS_PENDING_KEY[] = "pend";
 constexpr char NVS_PENDING_KIND_KEY[] = "pendk";
+constexpr char NVS_PENDING_DIGEST_KEY[] = "pendd";
 
 // SHA-256 of the file at `path`, streamed in 4 KiB chunks. False on open or
 // read failure.
@@ -60,7 +61,29 @@ bool hashFile(const char* path, uint8_t out[32]) {
   file.close();
   return ok;
 }
+
 }  // namespace
+
+bool sha256OfFile(const char* path, uint8_t out[32]) { return hashFile(path, out); }
+
+bool pendingInstallSetDigest(const uint8_t digest[32]) {
+  nvs_handle_t handle;
+  if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) return false;
+  const bool ok = nvs_set_blob(handle, NVS_PENDING_DIGEST_KEY, digest, 32) == ESP_OK && nvs_commit(handle) == ESP_OK;
+  nvs_close(handle);
+  if (!ok) LOG_ERR("DEVOTA", "pending-install digest write failed");
+  return ok;
+}
+
+bool pendingInstallGetDigest(uint8_t digestOut[32]) {
+  if (!digestOut) return false;
+  nvs_handle_t handle;
+  if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return false;
+  size_t stored = 32;
+  const esp_err_t err = nvs_get_blob(handle, NVS_PENDING_DIGEST_KEY, digestOut, &stored);
+  nvs_close(handle);
+  return err == ESP_OK && stored == 32;
+}
 
 Error fetchDevManifest(OtaDevVersionEntry* entries, int maxEntries, int* outCount) {
   if (outCount) *outCount = 0;
@@ -227,6 +250,7 @@ void pendingInstallClear() {
   if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) return;
   nvs_erase_key(handle, NVS_PENDING_KEY);
   nvs_erase_key(handle, NVS_PENDING_KIND_KEY);
+  nvs_erase_key(handle, NVS_PENDING_DIGEST_KEY);
   nvs_commit(handle);
   nvs_close(handle);
 }

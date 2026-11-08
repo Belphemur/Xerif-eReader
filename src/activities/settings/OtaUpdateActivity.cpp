@@ -101,6 +101,23 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
     return;
   }
 
+  // §16 (design §15/§16): running stable, a gh_release install dances through
+  // the dev worker, and the dance's staging pass is fail-closed on the signed
+  // manifest digest — without it the completion pass could never verify the
+  // staged bytes are the ones that were checked. A release without a signed
+  // manifest therefore cannot be installed from the stable slot; say so before
+  // asking the user to confirm, not after staging 5 MB. (Running dev writes
+  // app0 directly and keeps its pre-§16 no-manifest behavior.)
+  if (ota_slots::sameSlot(ota_slots::runningSlot(), ota_slots::stableSlot()) && !updater.isManifestPinned()) {
+    LOG_INF("OTA", "running stable and the release carries no signed manifest; refusing");
+    {
+      RenderLock lock(*this);
+      failedDetail = tr(STR_OTA_SIGNATURE_FAILED);
+      state = FAILED;
+    }
+    return;
+  }
+
   {
     RenderLock lock(*this);
     state = WAITING_CONFIRMATION;
@@ -252,8 +269,11 @@ void OtaUpdateActivity::runUpdateInstall() {
   // the dev slot (the swap worker), and let the boot hook complete the write
   // of app0. Running dev writes app0 directly (the intended role replacement).
   const bool runningIsStable = ota_slots::sameSlot(ota_slots::runningSlot(), ota_slots::stableSlot());
+  // The §16 dance worker must understand the §16 pending kinds: the §5 V1 hook
+  // marker alone also matches PR #298-era images whose boot hook would drop
+  // the StableStaged request (design §16, swap-worker capability).
   const auto route = ota_install_routing::routeForInstall(runningIsStable, /*targetIsStable=*/true,
-                                                          ota_slots::imageHasResumeMarker(ota_slots::devSlot()));
+                                                          ota_slots::imageHasSwapKindsMarker(ota_slots::devSlot()));
   if (route == ota_install_routing::InstallRoute::Dance) {
     armStableDance();
     return;
@@ -375,8 +395,13 @@ void OtaUpdateActivity::armStableDance() {
     return;
   }
 
-  if (!dev_ota::pendingInstallSet(kStableStagingPath, dev_ota::PendingKind::StableStaged) ||
-      !ota_boot::switchTo(ota_slots::devSlot())) {
+  // Pin the staged file's identity (§16 dance identity): the unattended
+  // completion pass re-hashes the staging file and refuses to flash when the
+  // SD card's contents changed between this arm and the completion boot.
+  uint8_t stagedDigest[32];
+  if (!dev_ota::sha256OfFile(kStableStagingPath, stagedDigest) ||
+      !dev_ota::pendingInstallSet(kStableStagingPath, dev_ota::PendingKind::StableStaged) ||
+      !dev_ota::pendingInstallSetDigest(stagedDigest) || !ota_boot::switchTo(ota_slots::devSlot())) {
     LOG_ERR("OTA", "§16 dance arm failed; clearing the flag");
     dev_ota::pendingInstallClear();
     Storage.remove(kStableStagingPath);

@@ -46,12 +46,25 @@ bool readSlotInfo(const esp_partition_t* app, SlotInfo& out);
 // for it before rebooting into that slot.
 constexpr char kResumeHookMarker[] = "XERIF-DEVOTA-RESUME-HOOK-V1";
 
+// Flash-scannable marker identifying images whose boot hook understands the
+// §16 pending kinds (SdDev / StableStaged / StablePicked), not just the §5
+// DevChannel dance. The V1 hook marker above predates the kinds: a PR #298-era
+// image carries it but its boot hook treats any pending flag as a dev-channel
+// resume and would silently drop the newer kinds, so every §16 dance arm gates
+// on THIS marker (design §16 "swap worker unavailable → refuse").
+constexpr char kSwapKindsMarker[] = "XERIF-DEVOTA-SWAP-KINDS-V1";
+
 // True when `app`'s image bytes contain kResumeHookMarker — the image carries
 // the resume hook, so the running-dev dance may reboot into it. Walks the
 // image's segment chain to bound the scan to the real image extent (erased
 // flash beyond it can never match). False when the partition is null, the
 // image header is malformed, or the marker is absent.
 bool imageHasResumeMarker(const esp_partition_t* app);
+
+// True when `app`'s image bytes contain kSwapKindsMarker — the image's boot
+// hook completes the §16 pending kinds. Same scan contract as
+// imageHasResumeMarker().
+bool imageHasSwapKindsMarker(const esp_partition_t* app);
 
 // The slot currently booted (by address match against the running partition),
 // or nullptr when the running image is not in an OTA slot.

@@ -116,7 +116,7 @@ namespace {
 // absolute image offset for the resume-hook marker; kNoMarker omits it.
 constexpr uint32_t kNoMarker = 0xFFFFFFFF;
 void installSegmentedImage(const uint32_t address, const size_t segmentCount, const uint32_t markerOffset,
-                           const uint32_t badMagicByte = 0) {
+                           const uint32_t badMagicByte = 0, const bool kindsMarker = false) {
   // Two segments of 4 KiB each keep the image larger than the scanner's read
   // chunk so the overlap logic is exercised.
   const uint32_t dataLen = 4096;
@@ -133,7 +133,10 @@ void installSegmentedImage(const uint32_t address, const size_t segmentCount, co
   }
   if (badMagicByte != 0) image[0] = badMagicByte;
   if (markerOffset != kNoMarker) {
-    memcpy(image.data() + markerOffset, ota_slots::kResumeHookMarker, sizeof(ota_slots::kResumeHookMarker) - 1);
+    const char* marker = kindsMarker ? ota_slots::kSwapKindsMarker : ota_slots::kResumeHookMarker;
+    const size_t markerLen =
+        kindsMarker ? sizeof(ota_slots::kSwapKindsMarker) - 1 : sizeof(ota_slots::kResumeHookMarker) - 1;
+    memcpy(image.data() + markerOffset, marker, markerLen);
   }
   testOtaSlotsFlashWrite(address, image.data(), image.size());
 }
@@ -176,6 +179,21 @@ TEST(OtaSlotsTest, ImageWithoutMarkerRefuses) {
   testOtaSlotsFlashWrite(0x10000 + 0x20, &kAppMagic, sizeof(kAppMagic));
   testOtaSlotsFlashWrite(0x10000 + 0x20 + 16, version, strlen(version));
   EXPECT_FALSE(ota_slots::imageHasResumeMarker(ota_slots::stableSlot()));
+}
+
+TEST(OtaSlotsTest, KindsMarkerDetected) {
+  setupStandardTable();
+  installSegmentedImage(0x10000, 2, 24 + 8 + 4096 + 8 + 256, 0, /*kindsMarker=*/true);
+  EXPECT_TRUE(ota_slots::imageHasSwapKindsMarker(ota_slots::stableSlot()));
+}
+
+TEST(OtaSlotsTest, V1OnlyImageLacksKindsMarker) {
+  setupStandardTable();
+  // A PR #298-era worker carries the V1 hook marker only: its boot hook would
+  // drop the §16 pending kinds, so a §16 dance arm must refuse it.
+  installSegmentedImage(0x10000, 2, 24 + 8 + 4096 + 8 + 256);
+  EXPECT_TRUE(ota_slots::imageHasResumeMarker(ota_slots::stableSlot()));
+  EXPECT_FALSE(ota_slots::imageHasSwapKindsMarker(ota_slots::stableSlot()));
 }
 
 TEST(OtaSlotsTest, MalformedImageRefuses) {

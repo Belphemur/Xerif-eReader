@@ -90,6 +90,20 @@ bool pendingInstallSet(const char* payload, PendingKind kind);
 // predates kind stamping).
 PendingKind pendingInstallKind();
 
+// §16 dance identity (design §16): the SHA-256 of the exact SD image that was
+// validated and consented to at dance-arm time. The unattended completion
+// pass re-hashes the file and refuses to flash when it differs — an SD card
+// swapped between consent and the completion boot must never reach flash.
+// Stored under its own NVS key; a DevChannel dance (which re-verifies against
+// the signed manifest at completion) records none.
+bool pendingInstallSetDigest(const uint8_t digest[32]);
+bool pendingInstallGetDigest(uint8_t digestOut[32]);
+
+// Streams `path` once and returns its SHA-256 (the §16 dance identity check:
+// arm-time consent record and completion-time re-verification). False when the
+// file cannot be opened or a read fails mid-stream.
+bool sha256OfFile(const char* path, uint8_t out[32]);
+
 void pendingInstallClear();
 
 }  // namespace dev_ota

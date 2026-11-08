@@ -9,6 +9,8 @@
 #include <Logging.h>
 #include <esp_ota_ops.h>
 
+#include <cstring>
+
 #include "MappedInputManager.h"
 #include "activities/home/FileBrowserActivity.h"
 #include "activities/util/ConfirmationActivity.h"
@@ -68,7 +70,7 @@ void SdFirmwareUpdateActivity::onEnter() {
       const uint16_t batteryPct = powerManager.getBatteryPercentage();
       if (batteryPct < DANCE_MIN_BATTERY_PCT) {
         LOG_ERR("FW", "Battery too low (%u%%) to resume the install", batteryPct);
-        dev_ota::pendingInstallClear();
+        unwindDance();
         {
           RenderLock lock(*this);
           errorMessage = tr(STR_OTA_LOW_BATTERY);
@@ -85,12 +87,44 @@ void SdFirmwareUpdateActivity::onEnter() {
     }
     requestUpdateAndWait();
     if (!validateFirmware()) {
+      // The staged/picked file is gone, renamed, corrupt, or for the wrong
+      // device: unwind so no boot re-enters the installer.
+      unwindDance();
       {
         RenderLock lock(*this);
         state = State::FAILED;
       }
       requestUpdate();
       return;
+    }
+    // §16 dance identity check: the dance armed with the SHA-256 of the exact
+    // image that was validated and consented to. A file swapped on the SD card
+    // between the arm and this unattended boot must not reach flash.
+    if (kind != dev_ota::PendingKind::DevChannel) {
+      uint8_t expectedDigest[32];
+      uint8_t actualDigest[32];
+      if (!dev_ota::pendingInstallGetDigest(expectedDigest)) {
+        LOG_ERR("FW", "autoResume: no recorded digest; refusing to flash");
+        errorMessage = tr(STR_OTA_SIGNATURE_FAILED);
+        unwindDance();
+        {
+          RenderLock lock(*this);
+          state = State::FAILED;
+        }
+        requestUpdate();
+        return;
+      }
+      if (!dev_ota::sha256OfFile(firmwarePath.c_str(), actualDigest) || memcmp(expectedDigest, actualDigest, 32) != 0) {
+        LOG_ERR("FW", "autoResume: SD file differs from the consented image");
+        errorMessage = tr(STR_OTA_FILE_CHANGED);
+        unwindDance();
+        {
+          RenderLock lock(*this);
+          state = State::FAILED;
+        }
+        requestUpdate();
+        return;
+      }
     }
     performUpdate();
     return;
@@ -302,9 +336,23 @@ void SdFirmwareUpdateActivity::performUpdate() {
 
 bool SdFirmwareUpdateActivity::sdSwapWorkerAvailable() const {
   // The swap worker is the OTHER slot (§16): running stable dances through the
-  // dev slot, running dev dances through the stable slot.
+  // dev slot, running dev dances through the stable slot. It must understand
+  // the §16 pending kinds — the §5 V1 hook marker alone also matches PR
+  // #298-era images whose boot hook would drop the newer kinds.
   const esp_partition_t* worker = sdTargetIsStable ? ota_slots::devSlot() : ota_slots::stableSlot();
-  return ota_slots::imageHasResumeMarker(worker);
+  return ota_slots::imageHasSwapKindsMarker(worker);
+}
+
+void SdFirmwareUpdateActivity::unwindDance() {
+  // otadata still points at the swap worker; restore it to the TARGET slot —
+  // the firmware the device ran before the dance — so the next boot is the
+  // pre-dance state. Then clear the pending record and drop the staged file.
+  if (!ota_boot::switchTo(sdTargetIsStable ? ota_slots::stableSlot() : ota_slots::devSlot())) {
+    LOG_ERR("FW", "§16 unwind: otadata restore failed; device keeps booting the worker");
+  }
+  const bool staged = dev_ota::pendingInstallKind() == dev_ota::PendingKind::StableStaged;
+  dev_ota::pendingInstallClear();
+  if (staged) Storage.remove(firmwarePath.c_str());
 }
 
 void SdFirmwareUpdateActivity::armSwapDance() {
@@ -315,7 +363,26 @@ void SdFirmwareUpdateActivity::armSwapDance() {
   // switch leaves at most a stale flag, which the boot hook clears.
   const dev_ota::PendingKind kind = sdTargetIsStable ? dev_ota::PendingKind::StablePicked : dev_ota::PendingKind::SdDev;
   const esp_partition_t* worker = sdTargetIsStable ? ota_slots::devSlot() : ota_slots::stableSlot();
-  if (!dev_ota::pendingInstallSet(firmwarePath.c_str(), kind) || !ota_boot::switchTo(worker)) {
+  // The pending record is read back into a kPendingPayloadCap buffer by the
+  // boot hook and this completion pass; a longer path could never be resumed.
+  if (firmwarePath.length() >= dev_ota::kPendingPayloadCap) {
+    LOG_ERR("FW", "SD path too long for the pending-install record (%u >= %u)",
+            static_cast<unsigned>(firmwarePath.length()), static_cast<unsigned>(dev_ota::kPendingPayloadCap));
+    errorMessage = tr(STR_SD_PATH_TOO_LONG);
+    {
+      RenderLock lock(*this);
+      state = State::FAILED;
+    }
+    requestUpdate();
+    return;
+  }
+  // Pin the picked file's identity (§16 dance identity): the unattended
+  // completion pass re-hashes the file and refuses to flash when the SD card's
+  // contents changed between this consent and the completion boot.
+  uint8_t pickedDigest[32];
+  if (!dev_ota::sha256OfFile(firmwarePath.c_str(), pickedDigest) ||
+      !dev_ota::pendingInstallSet(firmwarePath.c_str(), kind) || !dev_ota::pendingInstallSetDigest(pickedDigest) ||
+      !ota_boot::switchTo(worker)) {
     LOG_ERR("FW", "§16 dance arm failed; clearing the flag");
     dev_ota::pendingInstallClear();
     errorMessage = tr(STR_FIRMWARE_WRITE_FAILED);
@@ -344,8 +411,9 @@ void SdFirmwareUpdateActivity::finishFlash(const firmware_flash::Result result) 
     if (autoResume) {
       // A failed completion pass must not leave the flag armed: every boot
       // would re-enter the installer (the same no-retry-loop rule as the
-      // §5 dance's failure paths).
-      dev_ota::pendingInstallClear();
+      // §5 dance's failure paths). Unwind fully: otadata back to the target
+      // slot and the staged file removed.
+      unwindDance();
     }
     RenderLock lock(*this);
     state = State::FAILED;

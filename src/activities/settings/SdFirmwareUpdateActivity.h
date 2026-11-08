@@ -78,5 +78,9 @@ class SdFirmwareUpdateActivity : public Activity {
   // §16 helpers (design §15/§16).
   bool sdSwapWorkerAvailable() const;
   void armSwapDance();
+  // Unwind a failed completion pass: restore otadata to the TARGET slot, clear
+  // the pending record, and drop the staged file so no boot re-enters the
+  // installer and the device returns to its pre-dance firmware.
+  void unwindDance();
   void finishFlash(firmware_flash::Result result);
 };

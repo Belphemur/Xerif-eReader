@@ -18,6 +18,7 @@
 #include <HalTiltSensor.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <Memory.h>
 // The recovery hatch repoints otadata at slot 0 — an ESP32 boot-ROM concept
 // with no simulator counterpart, and the sim env's lib_deps carry no
 // RecoveryBoot include path (platformio.ini [env:simulator]).
@@ -1335,6 +1336,12 @@ extern "C" bool verifyRollbackLater() { return true; }
 // literal is repeated here and pinned to the header constant at compile time.
 constexpr const char kDevOtaResumeHookMarker[] __attribute__((used)) = "XERIF-DEVOTA-RESUME-HOOK-V1";
 
+// Flash-scannable marker (design §16): proves the slot image's boot hook
+// understands the §16 pending kinds (SdDev / StableStaged / StablePicked),
+// not only the §5 DevChannel dance. Referenced in the resume log below so
+// the linker keeps it.
+constexpr const char kDevOtaSwapKindsMarker[] __attribute__((used)) = "XERIF-DEVOTA-SWAP-KINDS-V1";
+
 constexpr bool devOtaMarkerMatchesHeader() {
   const char* embedded = kDevOtaResumeHookMarker;
   const char* header = ota_slots::kResumeHookMarker;
@@ -1344,6 +1351,16 @@ constexpr bool devOtaMarkerMatchesHeader() {
   return true;
 }
 static_assert(devOtaMarkerMatchesHeader(), "embedded resume marker must match ota_slots::kResumeHookMarker");
+
+constexpr bool devOtaKindsMarkerMatchesHeader() {
+  const char* embedded = kDevOtaSwapKindsMarker;
+  const char* header = ota_slots::kSwapKindsMarker;
+  for (size_t i = 0; i < sizeof(ota_slots::kSwapKindsMarker); ++i) {
+    if (embedded[i] != header[i]) return false;
+  }
+  return true;
+}
+static_assert(devOtaKindsMarkerMatchesHeader(), "embedded swap kinds marker must match ota_slots::kSwapKindsMarker");
 
 // Runs once at the top of the first loop() pass (see bootFinalized there).
 // Silent boots have already painted their first frame synchronously in
@@ -1386,17 +1403,18 @@ static void bootFinalize() {
         LOG_INF("MAIN", "pending install deferred (recovery=%d panic=%d)", bootRecoveryFirmwareMode ? 1 : 0,
                 bootRebootedFromPanic ? 1 : 0);
       } else {
-        LOG_INF("MAIN", "resuming pending install (kind=%d, %s, hook %.27s)", static_cast<int>(kind), pendingPayload,
-                kDevOtaResumeHookMarker);
+        LOG_INF("MAIN", "resuming pending install (kind=%d, %s, hook %.27s, kinds %.26s)", static_cast<int>(kind),
+                pendingPayload, kDevOtaResumeHookMarker, kDevOtaSwapKindsMarker);
         if (kind == dev_ota::PendingKind::DevChannel) {
-          activityManager.replaceActivity(std::make_unique<DevOtaActivity>(renderer, mappedInputManager,
-                                                                           /*autoResume=*/true));
+          auto devOtaActivity = makeUniqueNoThrow<DevOtaActivity>(renderer, mappedInputManager, /*autoResume=*/true);
+          if (devOtaActivity) activityManager.replaceActivity(std::move(devOtaActivity));
         } else {
           // SdDev / StableStaged / StablePicked: the §16 SD-file completion
           // pass writes the TARGET slot (the non-running slot) from the staged
           // or user-picked SD file.
-          activityManager.replaceActivity(std::make_unique<SdFirmwareUpdateActivity>(
-              renderer, mappedInputManager, /*recoveryMode=*/false, /*autoResume=*/true));
+          auto sdFirmwareUpdateActivity = makeUniqueNoThrow<SdFirmwareUpdateActivity>(
+              renderer, mappedInputManager, /*recoveryMode=*/false, /*autoResume=*/true);
+          if (sdFirmwareUpdateActivity) activityManager.replaceActivity(std::move(sdFirmwareUpdateActivity));
         }
       }
     }
