@@ -478,8 +478,10 @@ bool blitFromCache(GfxRenderer& renderer, const ImageSpec& spec, const char* dir
 DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freeink::book::BookSource& source,
                             const freeink::book::ZipCatalog& zip, freeink::book::Arena& scratch, Epub* epub,
                             GfxRenderer* paint, const bool qualityTone, const bool caching,
-                            bool (*abortPoll)(void* ctx), void* abortCtx, const bool paintToTarget) {
-  const ZipEntry* entry = zip.find(spec.href);
+                            bool (*abortPoll)(void* ctx), void* abortCtx, const bool paintToTarget,
+                            const char* hrefOverride) {
+  const char* const href = (hrefOverride != nullptr && hrefOverride[0] != '\0') ? hrefOverride : spec.href;
+  const ZipEntry* entry = zip.find(href);
   if (entry == nullptr) return DecodeResult::Skip;
 
   // Atomic publish: every writer streams to "<cachePath>.t" and the engine
@@ -498,7 +500,7 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
   if (probe != BookStatus::Ok) return DecodeResult::Failed;
 
   freeink::book::PageImage sdkImage{};
-  sdkImage.href = spec.href;
+  sdkImage.href = href;
   sdkImage.x = spec.x;
   sdkImage.y = spec.y;
   sdkImage.width = static_cast<uint16_t>(spec.w);
@@ -571,9 +573,9 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
     if (epub == nullptr || paint == nullptr) return DecodeResult::Failed;
 
     size_t imageSize = 0;
-    PoolBytes image{epub->extractItemToPsram(spec.href, &imageSize)};
+    PoolBytes image{epub->extractItemToPsram(href, &imageSize)};
     if (!image) {
-      LOG_ERR("TIMGE", "PSRAM extraction failed: %s", spec.href);
+      LOG_ERR("TIMGE", "PSRAM extraction failed: %s", href);
       return DecodeResult::Failed;
     }
 
@@ -592,12 +594,6 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
     config.abortPoll = abortPoll;
     config.abortCtx = abortCtx;
     config.qualityTone = qualityTone;  // GIF bake policy (§5.6)
-    // The shared ToneBake4 (design 2026-11-08 §5.2) — the converter's inline
-    // Floyd–Steinberg duplicate retired into it. A failed bake construction
-    // leaves the hook null: the converter's quality mode needs it and
-    // degrades to the legacy Bayer path.
-    ttfimg::ToneBake4 gifBake(spec.w);
-    config.toneBake = gifBake.ok() ? &gifBake : nullptr;
 
     bool decoded = false;
     bool aborted = false;
@@ -606,6 +602,14 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
       // identified this GIF from its bytes, so a mismatched or extensionless
       // href must still reach the GIF converter (it would otherwise get no
       // decoder and stay blank).
+      // The shared ToneBake4 (design 2026-11-08 §5.2) — the converter's
+      // inline Floyd–Steinberg duplicate retired into it. A failed bake
+      // construction leaves the hook null: the converter's quality mode
+      // needs it and degrades to the legacy Bayer path. Scoped to the GIF
+      // branch: a BMP decode must not carry two unused error buffers under
+      // heap pressure (review round 2).
+      ttfimg::ToneBake4 gifBake(spec.w);
+      config.toneBake = gifBake.ok() ? &gifBake : nullptr;
       AbortTracker tracker{abortPoll, abortCtx};
       config.abortPoll = &trackAbort;
       config.abortCtx = &tracker;

@@ -37,31 +37,14 @@ void paintTtfPageImages(const freeink::book::Page& page, freeink::book::TtfBookR
 
   const char* dir = ttf.cacheDir();
   if (dir == nullptr || dir[0] == '\0') return;
-  // An href past ImageSpec::kHrefCap cannot key the tone cache, but the SDK
-  // renderer takes the href by pointer with no length cap: paint the whole
-  // page through it instead of leaving those images blank. The quality blits
-  // below overwrite the SDK's own pixels for the cacheable images.
   for (uint16_t m = 0; m < page.imageCount; ++m) {
     const freeink::book::PageImage& img = page.images[m];
-    if (img.href != nullptr && strlen(img.href) >= ttfimg::ImageSpec::kHrefCap) {
-      const freeink::book::BookStatus st = freeink::book::PageRenderer::renderImages(
-          page, ttf.source(), ttf.catalog().zip(), ttf.scratch(), makeFrameTarget(renderer));
-      if (st != freeink::book::BookStatus::Ok) {
-        LOG_DBG("QPR", "TTF image render failed: %s", freeink::book::bookStatusName(st));
-      }
-      break;
-    }
-  }
-  for (uint16_t m = 0; m < page.imageCount; ++m) {
-    const freeink::book::PageImage& img = page.images[m];
-    if (img.width == 0 || img.height == 0) continue;
+    if (img.href == nullptr || img.width == 0 || img.height == 0) continue;
 
     ttfimg::ImageSpec spec{};
-    if (img.href != nullptr && strlen(img.href) < ttfimg::ImageSpec::kHrefCap) {
+    const bool overlongHref = strlen(img.href) >= ttfimg::ImageSpec::kHrefCap;
+    if (!overlongHref) {
       strncpy(spec.href, img.href, ttfimg::ImageSpec::kHrefCap - 1);
-    } else {
-      LOG_DBG("QPR", "Image href missing/overlong — skipped");
-      continue;
     }
     spec.generation = ttf.cacheGeneration();
     spec.spine = ttf.cacheSpine();
@@ -72,6 +55,26 @@ void paintTtfPageImages(const freeink::book::Page& page, freeink::book::TtfBookR
     spec.w = static_cast<int16_t>(img.width);
     spec.h = static_cast<int16_t>(img.height);
     spec.orientation = static_cast<uint8_t>(renderer.getOrientation());
+
+    if (overlongHref) {
+      // An href past ImageSpec::kHrefCap cannot key the tone cache, but the
+      // decode stack takes the href by pointer with no length cap: decode
+      // UNCACHED so every pass paints plane-aware tones instead of the SDK
+      // renderer's 1bpp dither (which would land raw in the plane source —
+      // review round 2). A failed decode falls back to the whole-page SDK
+      // render, which also covers the missing href case.
+      if (ttfimg::decodeAndCache(spec, nullptr, ttf.source(), ttf.catalog().zip(), ttf.scratch(), ttf.decodeEpub(),
+                                 &renderer, qualityTone, /*caching=*/false, nullptr, nullptr, /*paintToTarget=*/true,
+                                 img.href) == ttfimg::DecodeResult::Ok) {
+        continue;
+      }
+      const freeink::book::BookStatus st = freeink::book::PageRenderer::renderImages(
+          page, ttf.source(), ttf.catalog().zip(), ttf.scratch(), makeFrameTarget(renderer));
+      if (st != freeink::book::BookStatus::Ok) {
+        LOG_DBG("QPR", "TTF image render failed: %s", freeink::book::bookStatusName(st));
+      }
+      continue;
+    }
 
     if (ttfimg::hasValidCache(spec, dir, qualityTone) && ttfimg::blitFromCache(renderer, spec, dir, qualityTone)) {
       continue;
@@ -222,9 +225,11 @@ void paintCapturedPage(const freeink::book::Page& page, void* font, GfxRenderer&
   } else {
     // Absolute-gray plane pass: the 0xFF seed is white; the walk clears each
     // plane's bit where the tone's absolute encoding is dark (tone 1 → LSB,
-    // tone 2 → MSB, tone 3 → both).
+    // tone 2 → MSB, tone 3 → both). Crisp-mode text keeps its binary ink in
+    // the planes (no AA bands) — the base's crisp ink must survive the plane
+    // upload (review round 2).
     freeink::book::PagePaint::paintTextAbsolutePlanes(page, *chain, renderer, pass == TtfPaintPass::PlaneMsb,
-                                                      characterSpacingPx, wordSpacingPx);
+                                                      /*binaryText=*/!smoothText, characterSpacingPx, wordSpacingPx);
   }
   freeink::book::PageRenderer::renderRules(page, makeFrameTarget(renderer));
   if (pageHasImages) {

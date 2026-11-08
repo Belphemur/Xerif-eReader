@@ -77,8 +77,13 @@ class PagePaint {
   // absolute encoding of the shared quantizer's tones decides the writes:
   // tone 1 darkens the LSB plane, tone 2 the MSB, tone 3 both (grayPlanePixel
   // absolute branch); tone 0 leaves the seed. `msbPass` selects the plane.
+  // `binaryText` keeps Crisp-mode text crisp in the planes: coverage at/over
+  // the engine's Mono1Sharp ink threshold (120) darkens BOTH planes (solid
+  // ink), everything below is left white — matching the base pass's crisp
+  // ink instead of the AA quantizer's gray bands (review round 2).
   static void paintTextAbsolutePlanes(const Page& page, FontChain& fonts, const GfxRenderer& renderer, bool msbPass,
-                                      int16_t characterSpacingPx = 0, int16_t wordSpacingPx = 0);
+                                      bool binaryText = false, int16_t characterSpacingPx = 0,
+                                      int16_t wordSpacingPx = 0);
 };
 
 }  // namespace book

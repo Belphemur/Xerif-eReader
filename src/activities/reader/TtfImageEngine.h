@@ -92,7 +92,11 @@ enum class DecodeResult : uint8_t {
 DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freeink::book::BookSource& source,
                             const freeink::book::ZipCatalog& zip, freeink::book::Arena& scratch, Epub* epub,
                             GfxRenderer* paint, bool qualityTone, bool caching, bool (*abortPoll)(void* ctx),
-                            void* abortCtx, bool paintToTarget = true);
+                            void* abortCtx, bool paintToTarget = true, const char* hrefOverride = nullptr);
+// `hrefOverride` (optional): probe/extract run against this href instead of
+// spec.href — the decode stack itself takes the href by pointer with no
+// length cap, so a PageImage href past ImageSpec::kHrefCap can still decode
+// (uncached: no cache key is possible for an unkeyable href).
 
 // Full decode gates for a worker job (the #292 heap-gate precedents).
 bool decodeGatesOk();

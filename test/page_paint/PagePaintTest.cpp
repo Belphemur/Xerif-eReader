@@ -232,6 +232,37 @@ TEST(PagePaintAbsolutePlanes, TonesDarkenExactlyTheirPlane) {
   }
 }
 
+// Crisp mode (`binaryText`): coverage at/over the Mono1Sharp ink threshold
+// (120) darkens BOTH planes (solid ink); anything below stays white — the
+// plane-encoded text matches the crisp base instead of AA gray bands
+// (review round 2).
+TEST(PagePaintAbsolutePlanes, CrispBinaryTextDarkensBothPlanesAtInkOnly) {
+  using freeink::book::pagepaint::grayTone;
+  freeink::book::FontChain chain;
+  FakeRenderFont face;
+  chain.add(&face, freeink::book::StyleNone);
+
+  GfxRenderer renderer;
+  const freeink::book::Page page = makeTestPage();
+
+  uint8_t lsbCalls[GfxRenderer::kPlaneBytes] = {};
+  uint8_t msbCalls[GfxRenderer::kPlaneBytes] = {};
+  freeink::book::PagePaint::paintTextAbsolutePlanes(page, chain, renderer, /*msbPass=*/false, /*binaryText=*/true);
+  std::memcpy(lsbCalls, renderer.base, sizeof(lsbCalls));
+  std::memset(renderer.base, 0, sizeof(renderer.base));
+  freeink::book::PagePaint::paintTextAbsolutePlanes(page, chain, renderer, /*msbPass=*/true, /*binaryText=*/true);
+  std::memcpy(msbCalls, renderer.base, sizeof(msbCalls));
+
+  for (int y = 0; y < GfxRenderer::kPanelH; ++y) {
+    for (int x = 0; x < GfxRenderer::kPanelW; ++x) {
+      int sampleIdx = -1;
+      const uint8_t coverage = inTestGlyph(x, y, sampleIdx) ? kCoverage[sampleIdx] : 0;
+      EXPECT_EQ(bitAt(lsbCalls, x, y), coverage >= 120) << x << "," << y;
+      EXPECT_EQ(bitAt(msbCalls, x, y), coverage >= 120) << x << "," << y;
+    }
+  }
+}
+
 // Tone 0 (white) must leave the 0xFF seed alone: the absolute planes carry
 // the whole frame, so a white write would be redundant and a dark write on a
 // white sample would speckle the panel.
