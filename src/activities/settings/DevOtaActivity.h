@@ -53,6 +53,9 @@ class DevOtaActivity : public Activity {
 
   void onWifiSelectionComplete(bool success);
   void fetchManifest();
+  // Keep the scroll window (listScrollTop_..listVisibleRows_) containing
+  // selectedIndex after a button move.
+  void keepSelectionVisible();
   void promptInstall(int index);  // manual path: confirm popup first
   void beginInstall(int index);
   void runInstall();
@@ -64,6 +67,12 @@ class DevOtaActivity : public Activity {
   // install path holds no heap pointers across the blocking write.
   dev_ota::EntryBuffer entries{};
   int selectedIndex = 0;
+  // Scroll window for the version picker: the full kMaxVersions manifest
+  // cannot fit above the button hints, so the list scrolls around the
+  // selection. listVisibleRows_ caches the row count the last render fit;
+  // until the first LIST render it disables scrolling.
+  int16_t listScrollTop_ = 0;
+  int16_t listVisibleRows_ = dev_ota::kMaxVersions;
   char pendingVersion[64] = {0};
   const char* failedDetail = nullptr;
   // Install progress, published from the blocking install via

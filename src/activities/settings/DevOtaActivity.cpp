@@ -5,6 +5,7 @@
 #include <I18n.h>
 #include <WiFi.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -179,6 +180,7 @@ void DevOtaActivity::fetchManifest() {
   {
     RenderLock lock(*this);
     selectedIndex = 0;
+    listScrollTop_ = 0;
     state = LIST;
   }
   requestUpdate();
@@ -383,9 +385,11 @@ void DevOtaActivity::loop() {
   if (state == LIST) {
     if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
       selectedIndex = (selectedIndex + entries.count - 1) % entries.count;
+      keepSelectionVisible();
       requestUpdate();
     } else if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
       selectedIndex = (selectedIndex + 1) % entries.count;
+      keepSelectionVisible();
       requestUpdate();
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       // wasReleased, matching OptionPopup::handleButtons' confirm edge: the
@@ -463,12 +467,28 @@ void DevOtaActivity::render(RenderLock&&) {
     if (touch && rowGap < tokens.listTouchRowGap) rowGap = tokens.listTouchRowGap;
 
     // Rows flow down from the running line like the settings list flows from
-    // its header; three dev rows fit above the button hints in either
-    // orientation at this geometry.
-    int y = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + height + rowGap;
+    // its header. The window is clamped to the space above the button hints:
+    // the full CI window (kMaxVersions) cannot fit at this geometry, so the
+    // list scrolls around the selection instead of drawing rows into the
+    // button-hint band where they would be invisible and untappable.
+    const int listTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + height + rowGap;
+    const int listBottom = pageHeight - metrics.buttonHintsHeight;
+    int visibleRows = 0;
+    for (int used = 0; visibleRows < entries.count; ++visibleRows) {
+      const int next = used + rowHeight + (visibleRows > 0 ? rowGap : 0);
+      if (next > listBottom - listTop) break;
+      used = next;
+    }
+    if (visibleRows <= 0) visibleRows = 1;
+    if (listScrollTop_ > entries.count - visibleRows) listScrollTop_ = entries.count - visibleRows;
+    if (listScrollTop_ < 0) listScrollTop_ = 0;
+    listVisibleRows_ = static_cast<int16_t>(visibleRows);
+    const int lastRow = std::min(entries.count, listScrollTop_ + visibleRows);
+
+    int y = listTop;
     fui::Rect rowRects[dev_ota::kMaxVersions];
     int rowCount = 0;
-    for (int i = 0; i < entries.count; ++i) {
+    for (int i = listScrollTop_; i < lastRow; ++i) {
       char label[48];
       rowLabel(entries.items[i], label, sizeof(label));
       // The selection outline is the row rect itself: the hit band registered
@@ -495,6 +515,16 @@ void DevOtaActivity::render(RenderLock&&) {
                                        static_cast<int16_t>(pageWidth - side * 2), rowHeight};
       y += rowHeight + rowGap;
     }
+    // Scroll indicator: a right-edge thumb when the manifest overflows the
+    // window. The row rects end one side padding before the screen edge, so
+    // the thumb cannot overlap a hit band.
+    if (entries.count > visibleRows) {
+      const int trackH = listBottom - listTop;
+      const int thumbH = std::max(trackH * visibleRows / entries.count, 12);
+      const int thumbY = listTop + (trackH - thumbH) * listScrollTop_ / (entries.count - visibleRows);
+      const int thumbX = pageWidth - metrics.listScrollWidth - metrics.scrollBarRightOffset;
+      renderer.drawLine(thumbX, thumbY, thumbX, thumbY + thumbH - 1, metrics.listScrollWidth, true);
+    }
     if (rowCount > 0) {
       // Publish on this (render) task; loop() routes against the published
       // generation, never the one being rebuilt — the OptionPopup handshake.
@@ -503,7 +533,7 @@ void DevOtaActivity::render(RenderLock&&) {
       const fui::InputSnapshot noInput{};
       fui::Frame<dev_ota::kMaxVersions + 1> frame(uiTarget, device, noInput, touchInteractions);
       for (int i = 0; i < rowCount; ++i) {
-        frame.hit(rowRects[i], TOUCH_ACTION_ROW, static_cast<int16_t>(i), fui::InputTouch);
+        frame.hit(rowRects[i], TOUCH_ACTION_ROW, static_cast<int16_t>(listScrollTop_ + i), fui::InputTouch);
       }
       touchInteractions.publish();
       touchReady = true;
