@@ -50,15 +50,45 @@ Error fetchDevManifest(OtaDevVersionEntry* entries, int maxEntries, int* outCoun
 // on OK. Reuses HttpDownloader + FirmwareFlasher; no second flash path.
 Error installFromManifestEntry(const OtaDevVersionEntry& entry, ProgressCallback onProgress, void* ctx);
 
-// --- running-dev dance (design §5) -----------------------------------------
+// --- pending-install dance (design §5/§16) ----------------------------------
 
-// True when an install was requested from the dev slot and this boot must
-// complete it. `versionOut` receives the requested version (may be empty when
-// the stored flag predates version stamping).
-bool pendingInstallGet(char* versionOut, size_t cap);
+// The dance is the ONE pending-install mechanism (design §16): the running
+// slot stages the asset on SD (/.crosspoint, the swap space), records a
+// pending install, restarts into the OTHER slot (the swap worker), and that
+// boot hook completes the write of the TARGET slot. The §5 dev dance (target
+// = dev slot, worker = stable) is the same mechanism with a different target.
+// The kind names the dance arm: it fixes both the completion pass the boot
+// hook launches and the target slot that pass writes.
+enum class PendingKind : uint8_t {
+  DevChannel = 0,    // §5 dev dance: the completion pass (stable slot) re-fetches
+                     // the dev manifest and writes app1; payload = version string.
+  SdDev = 1,         // §16 SD dance, target dev: the completion pass (stable slot)
+                     // writes app1 from the user's SD file; payload = SD path.
+  StableStaged = 2,  // §16 stable→stable dance, gh_release staged on SD: the
+                     // completion pass (dev slot) writes app0 from the staging
+                     // file; payload = staging path; the staging file is removed
+                     // after the flash.
+  StablePicked = 3,  // §16 stable→stable dance, user-picked SD file: the
+                     // completion pass (dev slot) writes app0 from the user's
+                     // file; payload = SD path; the file is never removed.
+};
 
-// Record the pending install before rebooting into stable.
-bool pendingInstallSet(const char* version);
+// The pending-install payload capacity (version string or SD path). The boot
+// hook and both completion activities size their buffers from this constant.
+constexpr size_t kPendingPayloadCap = 64;
+
+// True when an install was requested from the other slot and this boot must
+// complete it. `payloadOut` receives the recorded payload (the version string
+// or the SD path; may be empty when the stored flag predates payload
+// stamping).
+bool pendingInstallGet(char* payloadOut, size_t cap);
+
+// Record the pending install before rebooting into the swap worker.
+bool pendingInstallSet(const char* payload, PendingKind kind);
+
+// The §16 kind of the stored pending install (DevChannel when the stored flag
+// predates kind stamping).
+PendingKind pendingInstallKind();
 
 void pendingInstallClear();
 

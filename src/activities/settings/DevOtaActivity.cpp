@@ -227,7 +227,8 @@ void DevOtaActivity::beginInstall(const int index) {
       requestUpdate();
       return;
     }
-    if (!dev_ota::pendingInstallSet(entries.items[index].name) || !ota_boot::switchTo(ota_slots::stableSlot())) {
+    if (!dev_ota::pendingInstallSet(entries.items[index].name, dev_ota::PendingKind::DevChannel) ||
+        !ota_boot::switchTo(ota_slots::stableSlot())) {
       // Either failure leaves the device on the dev slot with at most a stale
       // flag; clear it so no boot hook fires on a request nobody can see.
       dev_ota::pendingInstallClear();

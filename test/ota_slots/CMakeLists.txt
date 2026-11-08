@@ -17,3 +17,22 @@ target_link_libraries(OtaSlotsTest PRIVATE
 )
 
 gtest_discover_tests(OtaSlotsTest)
+
+# §15/§16 install-time slot auto-selection: the pure routing decision points
+# (classifier + §16 matrix). No device stubs needed — the routing header is
+# dependency-free by design so the host suite can pin every matrix row.
+add_executable(OtaInstallRoutingTest
+  OtaInstallRoutingTest.cpp
+  ${REPO_ROOT}/src/network/OtaInstallRouting.cpp
+)
+
+target_include_directories(OtaInstallRoutingTest PRIVATE
+  ${REPO_ROOT}/src
+)
+
+target_link_libraries(OtaInstallRoutingTest PRIVATE
+  crosspoint_test_common
+  GTest::gtest_main
+)
+
+gtest_discover_tests(OtaInstallRoutingTest)

@@ -29,6 +29,12 @@ class OtaUpdater {
   const std::string& getLatestVersion() const;
   OtaUpdaterError checkForUpdate();
   OtaUpdaterError installUpdate(ProgressCallback onProgress = nullptr, void* ctx = nullptr);
+  // §16 stable→stable dance (design §15/§16): stage the pinned gh_release
+  // asset to an SD path (the swap space) with SHA-256 verification against
+  // the signed manifest. Requires a prior checkForUpdate(); fails closed
+  // without a pinned digest. The staged file is written by the dance's
+  // completion pass and removed there after the flash.
+  OtaUpdaterError stageUpdateToSd(const char* stagingPath, ProgressCallback onProgress = nullptr, void* ctx = nullptr);
 
  private:
   bool updateAvailable = false;

@@ -39,10 +39,10 @@ enum class InstallTarget : uint8_t { Stable, Dev };
 // image; when it is empty or lacks the marker the install is REFUSED — never
 // fall back to writing the wrong-role slot.
 enum class InstallRoute : uint8_t {
-  DirectWrite,    // target != running slot: write the target slot directly
-  Dance,          // target == running slot: stage on SD, restart into the
-                  // swap worker, let the boot hook complete the write
-  RefuseNoWorker, // target == running slot but the swap worker is unavailable
+  DirectWrite,     // target != running slot: write the target slot directly
+  Dance,           // target == running slot: stage on SD, restart into the
+                   // swap worker, let the boot hook complete the write
+  RefuseNoWorker,  // target == running slot but the swap worker is unavailable
 };
 
 // Prefix-based SD classification (§15). The exact CI asset grammar:

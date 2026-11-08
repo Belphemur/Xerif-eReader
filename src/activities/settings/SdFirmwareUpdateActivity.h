@@ -3,6 +3,7 @@
 #include <string>
 
 #include "activities/Activity.h"
+#include "network/FirmwareFlasher.h"
 
 /**
  * SD-card based firmware update activity.
@@ -16,6 +17,12 @@
  *
  * Used both from Settings -> System -> "SD Card Firmware Update", and as the only
  * activity launched in boot recovery mode (left side button + power on X3).
+ *
+ * §16 stable→stable dance (design §15/§16): the target-slot rule (design §15)
+ * and the running slot never being a write target mean the TARGET slot is the
+ * running slot. The dance completes the write of the TARGET slot from the
+ * OTHER slot (the swap worker): the boot hook (main.cpp) launches this activity
+ * with autoResume=true, the SD path is read from the pending-install flag.
  */
 class SdFirmwareUpdateActivity : public Activity {
  public:
@@ -31,6 +38,14 @@ class SdFirmwareUpdateActivity : public Activity {
   explicit SdFirmwareUpdateActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool recoveryMode = false)
       : Activity("SdFirmwareUpdate", renderer, mappedInput), recoveryMode(recoveryMode) {}
 
+  // §16 dance completion pass (design §15/§16): the boot hook (main.cpp)
+  // launches this activity with autoResume=true after the dance restart; the
+  // staged SD path is read from the pending-install flag and the pass writes
+  // the TARGET slot (the non-running slot). Not for recovery mode.
+  explicit SdFirmwareUpdateActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool recoveryMode,
+                                    bool autoResume)
+      : Activity("SdFirmwareUpdate", renderer, mappedInput), recoveryMode(recoveryMode), autoResume(autoResume) {}
+
   void onEnter() override;
   void loop() override;
   void render(RenderLock&&) override;
@@ -40,12 +55,19 @@ class SdFirmwareUpdateActivity : public Activity {
  private:
   State state = State::PICKING;
   bool recoveryMode = false;
+  // §16 dance completion pass: the boot hook (main.cpp) launches this
+  // activity with autoResume=true; the target slot is encoded by the
+  // pending-install kind and the staged SD path is read from the flag.
+  bool autoResume = false;
 
   std::string firmwarePath;
   size_t firmwareSize = 0;
   size_t writtenBytes = 0;
   unsigned int lastRenderedPercent = 101;
   std::string errorMessage;
+  // §15 source rule: the picked file's classification (basename prefix) fixes
+  // the target slot for this install. Set in onPickerResult.
+  bool sdTargetIsStable = true;
 
   void launchPicker();
   void onPickerResult(const ActivityResult& result);
@@ -53,4 +75,8 @@ class SdFirmwareUpdateActivity : public Activity {
   void promptConfirmation();
   void onConfirmationResult(const ActivityResult& result);
   void performUpdate();
+  // §16 helpers (design §15/§16).
+  bool sdSwapWorkerAvailable() const;
+  void armSwapDance();
+  void finishFlash(firmware_flash::Result result);
 };

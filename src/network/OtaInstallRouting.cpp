@@ -25,8 +25,7 @@ InstallTarget targetForSdFile(const SdFileClass fileClass) {
   return fileClass == SdFileClass::Stable ? InstallTarget::Stable : InstallTarget::Dev;
 }
 
-InstallRoute routeForInstall(const bool runningIsStable, const bool targetIsStable,
-                             const bool workerAvailable) {
+InstallRoute routeForInstall(const bool runningIsStable, const bool targetIsStable, const bool workerAvailable) {
   // The running slot is never a write target (§3): the direct write targets
   // the OTHER slot, the dance targets the running slot.
   if (runningIsStable != targetIsStable) return InstallRoute::DirectWrite;

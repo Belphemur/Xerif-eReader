@@ -1358,15 +1358,24 @@ static void bootFinalize() {
     esp_ota_mark_app_valid_cancel_rollback();
   }
 
-  // Pending dev install (design §5). Only ever armed by a dev build's dance;
-  // release builds see an empty flag and skip at the first branch.
-  char pendingVersion[64];
-  if (dev_ota::pendingInstallGet(pendingVersion, sizeof(pendingVersion))) {
+  // Pending install (design §5/§16). The dance is the ONE pending-install
+  // mechanism: the running slot stages the asset on SD, records a pending
+  // install, restarts into the OTHER slot (the swap worker), and THIS boot
+  // hook completes the write of the TARGET slot. The pending kind fixes both
+  // the completion slot (the slot OPPOSITE the target — the slot the dance
+  // rebooted into) and the completion activity. A boot into the target slot
+  // itself means the flag is stale (the dance completed, or was armed by a
+  // build that never rebooted); clear it so a boot never re-enters the
+  // installer uninvited.
+  char pendingPayload[dev_ota::kPendingPayloadCap];
+  if (dev_ota::pendingInstallGet(pendingPayload, sizeof(pendingPayload))) {
+    const dev_ota::PendingKind kind = dev_ota::pendingInstallKind();
+    const bool targetIsStable =
+        kind == dev_ota::PendingKind::StableStaged || kind == dev_ota::PendingKind::StablePicked;
     const esp_partition_t* slot = ota_slots::runningSlot();
-    if (ota_slots::sameSlot(slot, ota_slots::devSlot())) {
-      // Stale flag: the dance only completes from the stable slot. Clear it so
-      // a dev boot never re-enters the installer uninvited.
-      LOG_INF("MAIN", "stale pending dev install; clearing");
+    const esp_partition_t* completionSlot = targetIsStable ? ota_slots::devSlot() : ota_slots::stableSlot();
+    if (!ota_slots::sameSlot(slot, completionSlot)) {
+      LOG_INF("MAIN", "stale pending install; clearing");
       dev_ota::pendingInstallClear();
     } else if (slot != nullptr) {
       if (bootRecoveryFirmwareMode || bootRebootedFromPanic) {
@@ -1374,12 +1383,21 @@ static void bootFinalize() {
         // flag stays armed so the next clean boot can still finish the
         // install, and a crash during a retry shows the report instead of
         // re-entering the installer on every boot.
-        LOG_INF("MAIN", "pending dev install deferred (recovery=%d panic=%d)", bootRecoveryFirmwareMode ? 1 : 0,
+        LOG_INF("MAIN", "pending install deferred (recovery=%d panic=%d)", bootRecoveryFirmwareMode ? 1 : 0,
                 bootRebootedFromPanic ? 1 : 0);
       } else {
-        LOG_INF("MAIN", "resuming pending dev install (%s, hook %.27s)", pendingVersion, kDevOtaResumeHookMarker);
-        activityManager.replaceActivity(std::make_unique<DevOtaActivity>(renderer, mappedInputManager,
-                                                                         /*autoResume=*/true));
+        LOG_INF("MAIN", "resuming pending install (kind=%d, %s, hook %.27s)", static_cast<int>(kind), pendingPayload,
+                kDevOtaResumeHookMarker);
+        if (kind == dev_ota::PendingKind::DevChannel) {
+          activityManager.replaceActivity(std::make_unique<DevOtaActivity>(renderer, mappedInputManager,
+                                                                           /*autoResume=*/true));
+        } else {
+          // SdDev / StableStaged / StablePicked: the §16 SD-file completion
+          // pass writes the TARGET slot (the non-running slot) from the staged
+          // or user-picked SD file.
+          activityManager.replaceActivity(std::make_unique<SdFirmwareUpdateActivity>(
+              renderer, mappedInputManager, /*recoveryMode=*/false, /*autoResume=*/true));
+        }
       }
     }
   }
