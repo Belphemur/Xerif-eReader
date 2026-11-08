@@ -306,3 +306,41 @@ per-entry exceptions are the DRY violation this addendum closes.
 
 Pseudo-versions from the asset name: the device's name-fallback covers
 manifests that predate this change; new entries carry the real derivation.
+
+### 15. Install-time slot auto-selection (2026-11-08)
+
+**Decision.** The install SOURCE picks the target slot; the user is never asked.
+
+- `gh_release` (stable channel, `/releases/latest`): ALWAYS the stable slot
+  (`ota_slots::stableSlot()`).
+- Dev channel and PR builds (the `dev` prerelease manifest): the dev slot —
+  already the behavior of `DevOtaClient::installFromManifestEntry`, unchanged.
+- Serial upload: the stable slot (inherent — the serial flash offset is `app0`).
+- SD-card installs follow the same rule. Classification is prefix-based on the
+  exact asset grammar the CI lanes emit: `xerif-dev-` and `xerif-pr-` name the
+  dev slot; every other `.bin` (including `xerif-<version>-<device>.bin` and
+  unknown prefixes) names the stable slot.
+
+**Rationale.** `OtaUpdater::installUpdate` writes
+`esp_ota_get_next_update_partition(nullptr)` — the INACTIVE slot. Running
+stable, a gh_release install silently overwrites the dev slot with a stable
+image and destroys the dev install there. The dev channel never had this bug
+because it hard-wires the dev slot.
+
+**Stable→stable dance.** The running slot is never a write target (§3).
+Installing a gh_release while running the stable slot therefore dances through
+the dev slot — the mirror of the §5 dev dance: record the pending-install
+request, reboot into the dev slot, and let the boot hook complete the install
+into `app0`. This requires the dev slot to hold a marker-capable image
+(`kResumeHookMarker`); when the dev slot is empty or too old, REFUSE with a
+clear error instead of overwriting anything.
+
+**Recovery mode exception.** `SdFirmwareUpdateActivity` in recovery mode keeps
+writing the NON-running slot: it is the escape hatch that heals a bricked dev
+slot and must never touch the slot it runs from. The source rule applies to
+normal (non-recovery) SD installs only.
+
+**Rejected.** Keeping `esp_ota_get_next_update_partition` for gh_release
+installs (loses the dev slot on every stable install while running stable);
+refusing stable→stable installs outright (breaks updating an old stable while
+running the newest stable).
