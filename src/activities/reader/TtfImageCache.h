@@ -127,6 +127,10 @@ struct ToneBake4 : ToneBaker {
   // file and fails the decode; nothing valid can be produced from it.
   bool grayDone();
   void grayDiscard();  // close + remove (abort/failure path)
+  // Sticky phase-1 failure probe: true once a gray temp write failed. The
+  // row collectors stop feeding rows and the engine goes straight to the
+  // legacy paint pass instead of finishing a decode whose temp is dead.
+  bool grayWriteFailed() const override { return grayFailed; }
   const char* grayPath() const { return grayPathBuf; }
   // Percentiles → mapLut, error state reset. Pure integer; deterministic.
   void beginRemap();

@@ -85,6 +85,12 @@ void qFlushRow(const int dstY, GifContext& ctx) {
   }
   if (ctx.collect) {
     ctx.bake->collectRow(ctx.qGrayRow.get());
+    if (ctx.bake->grayWriteFailed()) {
+      // Gray temp died mid-collect: stop feeding rows (qFlushRemainder's
+      // loop exits on !success). The engine's legacy pass still paints.
+      ctx.success = false;
+      return;
+    }
     ++ctx.qFlushedRows;  // qFlushRemainder's loop must still terminate
     return;
   }

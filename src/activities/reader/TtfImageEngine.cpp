@@ -43,6 +43,7 @@ struct GrayCollectCtx {
   bool (*abortPoll)(void* ctx) = nullptr;
   void* abortCtx = nullptr;
   bool aborted = false;
+  bool collectFailed = false;  // gray temp died mid-collect (not an abort)
 };
 
 // Placement bounds against the live panel: PortraitInverted swaps the axes
@@ -66,6 +67,10 @@ bool grayCollectFn(void* user, const uint16_t rowIdx, const uint8_t* grayRow, co
     return false;
   }
   if (ctx->bake == nullptr) return false;
+  if (ctx->bake->grayWriteFailed()) {
+    ctx->collectFailed = true;  // stop the render; the engine legacy-passes
+    return false;
+  }
   if (width != ctx->w) {
     LOG_ERR("TIMGE", "SDK row width mismatch: %u != %u", width, ctx->w);
     ctx->aborted = true;
@@ -382,6 +387,7 @@ DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const siz
     } else {
       // Phase 1: histogram + gray temp only (the remap pass bakes).
       bake->collectRow(avgRow);
+      if (bake->grayWriteFailed()) return DecodeResult::Failed;  // engine legacy-passes
     }
   }
   return DecodeResult::Ok;
@@ -531,12 +537,14 @@ DecodeResult remapGrayToCache(const ImageSpec& spec, ttfimg::ToneBake4& bake, co
   for (int row = 0; row < spec.h; ++row) {
     if (abortPoll != nullptr && abortPoll(abortCtx)) {
       if (writerActive) writer.abort();
+      gray.close();  // FAT refuses remove on an open handle
       bake.grayDiscard();
       return DecodeResult::Busy;
     }
     if (gray.read(grayRow, static_cast<size_t>(spec.w)) != spec.w) {
       LOG_ERR("TIMGE", "Gray temp read failed at row %d: %s", row, spec.href);
       if (writerActive) writer.abort();
+      gray.close();
       bake.grayDiscard();
       return DecodeResult::Failed;
     }
@@ -551,6 +559,7 @@ DecodeResult remapGrayToCache(const ImageSpec& spec, ttfimg::ToneBake4& bake, co
     if (paint != nullptr && paintToTarget) paintToneRow(*paint, spec, row, toneRow, spec.w);
   }
   const bool streamOk = writerActive && writer.finalize();
+  gray.close();  // FAT refuses remove on an open handle
   bake.grayDiscard();
   if (cacheStreamOk != nullptr) *cacheStreamOk = streamOk;
   if (writerActive && !streamOk) return DecodeResult::Failed;
@@ -691,8 +700,13 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
       const BookStatus st = freeink::book::ImageRenderer::render(source, zip, sdkImage, scratch, &grayCollectFn, &ctx);
       if (st != BookStatus::Ok || ctx.aborted) {
         bake.grayDiscard();
-        return ctx.aborted ? DecodeResult::Busy
-                           : (st == BookStatus::Unsupported ? DecodeResult::Skip : DecodeResult::Failed);
+        if (ctx.aborted) return DecodeResult::Busy;
+        // Gray temp died mid-collect: the phase-1 render stopped early and
+        // the legacy pass still paints (storage-failure doctrine, round 1).
+        if (ctx.collectFailed)
+          return legacyPaintPass(spec, info.kind, source, zip, scratch, epub, nullptr, 0, bake, paint, paintToTarget,
+                                 abortPoll, abortCtx);
+        return st == BookStatus::Unsupported ? DecodeResult::Skip : DecodeResult::Failed;
       }
       if (bake.grayDone()) {
         bool cacheStreamOk = false;
@@ -785,7 +799,14 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
     }
     if (!decoded) {
       bake.grayDiscard();
-      return aborted ? DecodeResult::Busy : DecodeResult::Failed;
+      if (aborted) return DecodeResult::Busy;
+      // Collect-mode decode failure painted nothing (e.g. a low-heap GIF
+      // buffer failure): the legacy pass gets its own decode attempt before
+      // the placement is given up. In legacy mode (!collecting) the failed
+      // decode itself was the paint attempt — Failed stands.
+      if (!collecting) return DecodeResult::Failed;
+      return legacyPaintPass(spec, info.kind, source, zip, scratch, epub, image.get(), imageSize, bake, paint,
+                             paintToTarget, abortPoll, abortCtx);
     }
     if (collecting && bake.grayDone()) {
       bool cacheStreamOk = false;

@@ -11,6 +11,7 @@ class HalFile {
  public:
   // Wired by HalStorage::openFileFor{Read,Write} to the fake map entry.
   std::string* data = nullptr;
+  std::string openPath;  // set at open; remove-refusal bookkeeping key
   size_t cursor = 0;
 
   bool isOpen() const { return open_; }
@@ -66,12 +67,7 @@ class HalFile {
     if (testFailSync) return false;  // injection point: sync stays open
     return open_;
   }
-  bool close() {
-    if (!open_) return false;
-    if (testFailClose) return false;  // injection point: close stays open
-    open_ = false;
-    return true;
-  }
+  bool close();  // defined in Stubs.cpp (releases the storage open-count)
 
   // Test control (defined in Stubs.cpp).
   static bool testFailClose;

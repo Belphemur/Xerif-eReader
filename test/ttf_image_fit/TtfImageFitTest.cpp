@@ -216,7 +216,7 @@ TEST(ImageFitPaint, BmpCoversNearOneToOneBox) {
 TEST(ImageFitBlit, BlitCoversBoxBelowThePhysicalPanelHeight) {
   FakeRenderer r;
   auto& storage = HalStorage::getInstance();
-  storage.files.clear();
+  storage.resetFiles();
   const auto spec = makeSpec(100, 600, 100, 150);
   ttfimg::ToneCacheWriter writer;
   char path[256];
@@ -535,7 +535,7 @@ TEST(AdaptiveBake, DegenerateHistogramFallsBackToFixedContrast) {
 
 TEST(AdaptiveBake, GrayTempStreamsEveryRowByteExact) {
   auto& storage = HalStorage::getInstance();
-  storage.files.clear();
+  storage.resetFiles();
   ttfimg::ToneBake4 bake(6);
   ASSERT_TRUE(bake.ok());
   ASSERT_TRUE(bake.beginCollect("/t/bake_stream.g"));
@@ -565,7 +565,7 @@ TEST(AdaptiveBake, TwoPhaseCacheIsDeterministicAcrossRuns) {
   // serpentine FS sequence). Separate names so neither run overwrites the
   // other's bytes.
   auto& storage = HalStorage::getInstance();
-  storage.files.clear();
+  storage.resetFiles();
   const auto bmp = makeBmp(64, 48, 137);
   const auto spec = makeSpec(0, 0, 32, 24);
   for (int run = 0; run < 2; ++run) {
@@ -606,7 +606,7 @@ void expectDecodeCacheBlit(freeink::book::BookSource& source, freeink::book::Boo
 
   FakeRenderer r;
   auto& storage = HalStorage::getInstance();
-  storage.files.clear();
+  storage.resetFiles();
 
   ttfimg::ImageSpec spec = makeSpec(specX, specY, specW, specH);
   snprintf(spec.href, sizeof(spec.href), "%s", href);
@@ -733,7 +733,7 @@ TEST(ImageFitFallback, GrayOpenFailureStillPaintsTheImage) {
 
   FakeRenderer r;
   auto& storage = HalStorage::getInstance();
-  storage.files.clear();
+  storage.resetFiles();
   storage.failOpenForWriteAtCall = 1;  // the .g temp open fails
   storage.openForWriteCallCount = 0;
 
@@ -751,6 +751,47 @@ TEST(ImageFitFallback, GrayOpenFailureStillPaintsTheImage) {
   EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true));
 }
 
+TEST(ImageFitFallback, GrayWriteFailureStopsRetryingWrites) {
+  // kody round: the gray-write failure is sticky — after the first failed
+  // row write the collectors stop feeding rows and the remaining rows must
+  // NOT retry the write (one log line total, no write storm), then the
+  // legacy pass paints the placement.
+  static uint8_t bookBuf[1 << 20];
+  static uint8_t scratchBuf[4 << 20];
+  freeink::book::Arena bookArena(bookBuf, sizeof(bookBuf));
+  freeink::book::Arena scratch(scratchBuf, sizeof(scratchBuf));
+  HostFileSource source;
+  ASSERT_TRUE(source.open(FIT_FIXTURES "/fit_fixtures.epub"));
+  freeink::book::Book book;
+  ASSERT_EQ(book.open(source, bookArena, scratch), freeink::book::BookStatus::Ok);
+  Epub epub;
+  epub.items["OEBPS/images/small.bmp"] = readFixtureFile(FIT_FIXTURES "/small.bmp");
+
+  FakeRenderer r;
+  auto& storage = HalStorage::getInstance();
+  storage.resetFiles();
+  // Armed after the last ASSERT: a failing ASSERT must not leak the injection.
+  HalFile::failWriteAtCall = 3;  // the third gray-row write fails
+  HalFile::writeCallCount = 0;
+
+  ttfimg::ImageSpec spec = makeSpec(20, 600, 32, 24);
+  snprintf(spec.href, sizeof(spec.href), "OEBPS/images/small.bmp");
+  spec.generation = 14;
+  char cachePath[256];
+  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, cachePath, sizeof(cachePath)));
+  const auto res = ttfimg::decodeAndCache(spec, cachePath, source, book.zip(), scratch, &epub, &r, true, true, nullptr,
+                                          nullptr, true);
+  HalFile::failWriteAtCall = 0;
+  EXPECT_EQ(res, ttfimg::DecodeResult::Ok);
+  expectBoxCoverage(r, spec);
+  EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true));
+  // Exactly three write attempts: the sticky gate stopped the retry storm
+  // after the first failure (the 24-row collect used to attempt every row).
+  EXPECT_EQ(HalFile::writeCallCount, 3);
+  // The dead temp is discarded even though the failure short-circuited.
+  EXPECT_FALSE(storage.exists((std::string(cachePath) + ".g").c_str()));
+}
+
 TEST(ImageFitFallback, GrayMidStreamWriteFailureStillPaintsTheImage) {
   static uint8_t bookBuf[1 << 20];
   static uint8_t scratchBuf[4 << 20];
@@ -765,7 +806,7 @@ TEST(ImageFitFallback, GrayMidStreamWriteFailureStillPaintsTheImage) {
 
   FakeRenderer r;
   auto& storage = HalStorage::getInstance();
-  storage.files.clear();
+  storage.resetFiles();
   HalFile::failWriteAtCall = 3;  // the third gray-row write fails mid-stream
   HalFile::writeCallCount = 0;
 
@@ -802,7 +843,7 @@ void expectReadFailureStillPaints(const int failReadAtCall, const int failOpenFo
 
   FakeRenderer r;
   auto& storage = HalStorage::getInstance();
-  storage.files.clear();
+  storage.resetFiles();
 
   ttfimg::ImageSpec spec = makeSpec(20, 600, 32, 24);
   snprintf(spec.href, sizeof(spec.href), "OEBPS/images/small.bmp");

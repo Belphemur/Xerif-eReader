@@ -28,6 +28,10 @@ class ToneBaker {
   // temp); no tone is emitted and nothing is painted. Default no-op so a
   // baker without the phase stays valid for single-pass callers.
   virtual void collectRow(const uint8_t* gray) { (void)gray; }
+  // Sticky phase-1 write-failure probe: true once a gray temp write failed
+  // (bakers without a temp never fail). Collectors stop feeding rows so the
+  // dead-temp decode does not run to completion before the legacy fallback.
+  virtual bool grayWriteFailed() const { return false; }
 };
 
 // 4x4 Bayer matrix for ordered dithering

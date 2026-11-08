@@ -36,6 +36,14 @@ class HalStorage {
 
   // Test control: populate with path -> bytes. Empty map = all opens fail.
   std::map<std::string, std::string> files;
+  // Open-handle counts per path: remove refuses while a handle is open
+  // (FAT semantics — the real HAL cannot unlink an open file).
+  std::map<std::string, int> openCounts;
+  // Test fixture reset: clears the files AND the open-handle counts.
+  void resetFiles() {
+    files.clear();
+    openCounts.clear();
+  }
   // Failure injection: rename call #N fails when failOnRenameCall == N
   // (1-based; 0 = never fail). renameCallCount is public so tests reset it.
   int failOnRenameCall = 0;

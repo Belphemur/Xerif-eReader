@@ -39,7 +39,7 @@ void ToneBake4::collectRow(const uint8_t* gray) {
   // against the real counts (1 KB of state in the bake object, no heap).
   for (int x = 0; x < width; ++x) ++hist[gray[x]];
   histCount += static_cast<uint32_t>(width);
-  if (grayOpen) {
+  if (grayOpen && !grayFailed) {  // sticky: one log, no writes after failure
     if (grayFile.write(gray, static_cast<uint32_t>(width)) != width) {
       LOG_ERR("TIMGE", "Gray temp write failed: %s", grayPathBuf);
       grayFailed = true;  // sticky: grayDone() refuses a short stream
