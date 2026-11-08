@@ -68,16 +68,21 @@ class SdFirmwareUpdateActivity : public Activity {
   // §15 source rule: the picked file's classification (basename prefix) fixes
   // the target slot for this install. Set in onPickerResult.
   bool sdTargetIsStable = true;
-  // §16 dance identity: SHA-256 of the picked file, computed BEFORE validation
-  // so the recorded digest describes the image that was validated and
-  // consented to, not whatever sits on the SD card at arm time. Set in
-  // onPickerResult.
+  // §16 dance identity: SHA-256 of the WHOLE file as read by the validation
+  // pass (validateImageFile outSha256), so the recorded digest describes
+  // exactly the bytes that were validated and consented to — never a file
+  // swapped in before or after validation. Set by validateFirmware().
   uint8_t pickedDigest_[32] = {};
   bool pickedDigestValid_ = false;
+  // §16 completion pass: the pending record carries a digest to bind the
+  // flashed bytes to (every kind but DevChannel). Resolved once in onEnter;
+  // performUpdate() reuses it instead of re-reading the NVS record, where a
+  // failed re-read would silently skip the write-side check.
+  bool resumeDigestExpected_ = false;
 
   void launchPicker();
   void onPickerResult(const ActivityResult& result);
-  bool validateFirmware();
+  bool validateFirmware(uint8_t* outDigest = nullptr);
   void promptConfirmation();
   void onConfirmationResult(const ActivityResult& result);
   void performUpdate();

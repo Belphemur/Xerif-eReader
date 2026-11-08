@@ -77,7 +77,12 @@ Result flashFromSdPathInto(const char* sdPath, const esp_partition_t* dest, Prog
 // skip the size-fits-partition check (e.g. when validating ahead of partition
 // lookup). Streams the file in CHUNK-sized reads; the file is rewound on
 // success so the caller can immediately reread it for flashing.
-Result validateImageFile(const char* sdPath, size_t partitionSize);
+//
+// When `outSha256` is non-null it receives the SHA-256 of the WHOLE file as
+// read during this validation pass — the same bytes the header/segment/
+// checksum/trailer verdicts above were computed from — so a caller can bind
+// a consent record to the validated bytes instead of re-reading the file.
+Result validateImageFile(const char* sdPath, size_t partitionSize, uint8_t* outSha256 = nullptr);
 
 const char* resultName(Result r);
 

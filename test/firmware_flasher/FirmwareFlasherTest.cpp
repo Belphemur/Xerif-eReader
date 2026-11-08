@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <mbedtls/sha256.h>
 
 #include <cstdint>
 #include <cstring>
@@ -65,6 +66,57 @@ TEST_F(FirmwareFlasherValidateImageFile, AcceptsAnyBinFilenameForIdenticalImageB
   EXPECT_EQ(firmware_flash::validateImageFile("/xpoint-1.16.0-x4pro.bin", kPartitionSize), firmware_flash::Result::OK);
   EXPECT_EQ(firmware_flash::validateImageFile("/locally-built-firmware.bin", kPartitionSize),
             firmware_flash::Result::OK);
+}
+
+// §16 dance identity: the outSha256 digest must be the SHA-256 of the WHOLE
+// validated file — the same bytes the header/segment/checksum verdicts were
+// computed from — so a consent record bound to it can never describe a file
+// swapped in before or after validation.
+namespace {
+void expectDigestMatchesFile(const std::string& image, const char* path, size_t partitionSize) {
+  auto& files = Storage.files;
+  files[path] = image;
+  uint8_t digest[32];
+  ASSERT_EQ(firmware_flash::validateImageFile(path, partitionSize, digest), firmware_flash::Result::OK);
+  // Reference: the host stub implements FIPS 180-4; hash the same bytes with
+  // a fresh context.
+  mbedtls_sha256_context ref;
+  mbedtls_sha256_init(&ref);
+  ASSERT_EQ(mbedtls_sha256_starts(&ref, 0), 0);
+  ASSERT_EQ(mbedtls_sha256_update(&ref, reinterpret_cast<const uint8_t*>(image.data()), image.size()), 0);
+  uint8_t expected[32];
+  ASSERT_EQ(mbedtls_sha256_finish(&ref, expected), 0);
+  mbedtls_sha256_free(&ref);
+  EXPECT_EQ(0, std::memcmp(digest, expected, 32));
+  // Deterministic across calls: the digest comes from the validation read,
+  // not from per-call state.
+  uint8_t digest2[32];
+  ASSERT_EQ(firmware_flash::validateImageFile(path, partitionSize, digest2), firmware_flash::Result::OK);
+  EXPECT_EQ(0, std::memcmp(digest2, expected, 32));
+  files.erase(path);
+}
+}  // namespace
+
+TEST_F(FirmwareFlasherValidateImageFile, OutSha256MatchesWholeValidatedFile) {
+  constexpr size_t kPartitionSize = 2 * 1024 * 1024;
+  expectDigestMatchesFile(buildValidImage(), "/whole-file-digest.bin", kPartitionSize);
+}
+
+// Same binding for a hash_appended image: the trailer participates in the
+// whole-file digest even though the image's own SHA-256 verdict excludes it.
+TEST_F(FirmwareFlasherValidateImageFile, OutSha256MatchesWholeValidatedFileWithTrailer) {
+  constexpr size_t kPartitionSize = 2 * 1024 * 1024;
+  std::string image = buildValidImage();
+  image[23] = 1;  // hash_appended: the trailer is the SHA-256 of [0, padEnd)
+  mbedtls_sha256_context ctx;
+  mbedtls_sha256_init(&ctx);
+  ASSERT_EQ(mbedtls_sha256_starts(&ctx, 0), 0);
+  ASSERT_EQ(mbedtls_sha256_update(&ctx, reinterpret_cast<const uint8_t*>(image.data()), image.size()), 0);
+  uint8_t trailer[32];
+  ASSERT_EQ(mbedtls_sha256_finish(&ctx, trailer), 0);
+  mbedtls_sha256_free(&ctx);
+  image.append(reinterpret_cast<const char*>(trailer), sizeof(trailer));
+  expectDigestMatchesFile(image, "/whole-file-digest-trailed.bin", kPartitionSize);
 }
 
 namespace {
