@@ -25,8 +25,10 @@ checksum byte (seed 0xEF over all segment data, stored at the last byte of the
 16-byte alignment padding after the final segment). The stamp recomputes both.
 Idempotent: a repeated stamp recomputes both from the current content.
 
-Dev-channel builds only — release flows never call this and keep their
-signed-release descriptors untouched.
+Callers: dev-build.yml (stamps dev builds with the derived dev version),
+pr-firmware-links.yml (PR firmware, --branch override), and release.yml
+(release builds stamped with the plain tag version — the esp_app_desc_t of
+an unstamped release shows the prebuilt core's constant, not 2.X.Y).
 """
 
 import argparse

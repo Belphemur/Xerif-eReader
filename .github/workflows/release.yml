@@ -147,10 +147,19 @@ jobs:
             ".pio/build/${{ matrix.pio_env }}/${xpoint_asset}"
           cp ".pio/build/${{ matrix.pio_env }}/firmware.bin" \
             ".pio/build/${{ matrix.pio_env }}/${xerif_asset}"
-          # Same publish gate as the dev channel: no release asset reaches the
-          # tag unless it passes the full image verifier (checksum + digest).
-          python3 scripts/patch_dev_version.py \
-            --image ".pio/build/${{ matrix.pio_env }}/${xerif_asset}" --validate
+          # Stamp the release version into the image's esp_app_desc_t: the
+          # prebuilt Arduino core bakes a constant version ("6671d0b") into
+          # every image, so the stable slot showed a bogus version in the
+          # slot chooser (and a release OTA compared against it). The stamp
+          # recomputes the appended digest and the XOR checksum byte (the
+          # same invariants the dev lane stamps under), then the full
+          # verifier runs — no release asset reaches the tag stale.
+          for release_asset in "${xpoint_asset}" "${xerif_asset}"; do
+            image=".pio/build/${{ matrix.pio_env }}/${release_asset}"
+            python3 scripts/patch_dev_version.py --image "${image}" --version "${version}"
+            python3 scripts/patch_dev_version.py --image "${image}" --verify
+            python3 scripts/patch_dev_version.py --image "${image}" --validate
+          done
           echo "xpoint_name=$xpoint_asset" >> "$GITHUB_OUTPUT"
           echo "xerif_name=$xerif_asset" >> "$GITHUB_OUTPUT"
 
