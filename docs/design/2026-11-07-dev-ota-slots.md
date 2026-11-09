@@ -385,3 +385,61 @@ Every install path resolves the same way:
 **Invariant.** A dev-channel update on an existing dev release NEVER touches
 app0; a gh_release update NEVER touches app1. The only writes into a fixed
 role's slot are installs whose SOURCE rule targets that role.
+
+### 17. Dance consent identity and picker legibility (2026-11-09)
+
+**Owner report (round 2 hardware).** Selecting a PR entry in the dev picker,
+dancing into stable, and completing the install came back on the LAST
+DEVELOP build instead of the picked PR build: the resume pass matched the
+recorded payload by NAME and silently defaulted to the newest manifest
+entry (index 0 = newest develop build) when the recorded name was missing —
+pruning, a superseding push on the same PR (the rolling manifest rotates
+both), and fetched entries beyond the parser cap all degrade to that silent
+fallback.
+
+**Decision.** The §16 refusal rule gains an explicit consent identity for
+the §5 dev-channel dance, mirroring the §16 arm-time SHA-256 the SD dances
+already record:
+
+- **Arm**: the pending record carries the asset name AND the manifest
+  entry's SHA-256 (the shared pending digest key). Arming fails closed when
+  the entry carries no digest, or when the digest record cannot be
+  written — the dance never leaves the ground either way: the selection
+  is cleared and the device stays on its slot.
+- **Resume**: `dev_ota::bindPendingEntry` binds the record to the freshly
+  fetched manifest. `Exact` (name + digest) installs exactly that entry.
+  `EntryMissing` / `DigestMismatch` / `ShaUnverifiable` all REFUSE: no
+  fallback index, no "install the newest instead". A digest-less pending
+  record (pre-consent firmware) keeps the name-only bind so an upgrade
+  does not strand it.
+- **Refusal unwind**: on every resume-side abort the record is cleared and,
+  while the §16 write latch is still false, otadata is restored to the dev
+  slot (the firmware the device ran before the dance — the
+  `SdFirmwareUpdateActivity::unwindDance` contract). Dev-channel installs
+  now mark that latch before the first erase so the guard is truthful;
+  with the latch true the worker stays selected (never unwind a possibly
+  half-written slot) and the FAILED screen is the exit point.
+- **Labels**: PR entries lead with their PR number ("pr 303 772d2c5") —
+  the number is what distinguishes a PR build from develop builds, even
+  when a stamped version exists. Dev builds keep
+  version -> "dev <sha>" -> raw name. The INSTALLING screen draws the
+  exact entry being installed and says "resuming from stable slot" during
+  a dance boot.
+- **Manifest**: carried PR entries retain the version the PR lane stamped
+  for the same asset — the develop publish lane regenerates the manifest
+  without the PR context, and without retention it silently downgraded
+  every carried PR entry back to the raw name.
+- **Never "detached"**: dev version derivation resolves the branch from
+  `CROSSPOINT_GIT_BRANCH` (CI override) or refs pointing at the commit,
+  and degrades to "unknown" — CI checkouts are detached and a stamped
+  version must never carry the detached label (it leaked into the compiled
+  CROSSPOINT_VERSION shown in About).
+- **Release stamping**: `release.yml` stamps both release assets with the
+  plain tag version (the pio output otherwise carries the prebuilt core's
+  constant esp_app_desc version), then runs the same verify + full-verify
+  gates as the dev lane. §12's "release stays unstamped" note is superseded.
+
+Host pins: `DevOtaPolicyTest` (the PR-entry-over-develop bind, the
+refuse-instead-of-default contract, the legacy name-only bind, the label
+rules) and `test_dev_version_stamp.py` (branch-override derivation, carried
+PR retention, dev re-derivation).

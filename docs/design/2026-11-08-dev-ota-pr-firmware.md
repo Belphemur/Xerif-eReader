@@ -121,3 +121,18 @@ window.
   channel UI lists develop builds + PR builds; the PR's firmware is installable
   and removed when the PR closes.
 - The manifest is verified against the 4096-byte cap with PR entries.
+
+## 8. Amendment (2026-11-09): carried PR entries keep their stamped version
+
+The develop publish lane (dev-build.yml) regenerates the manifest from the
+release's assets and never passes `--pr-new`/`--pr-branch`, so every carried
+PR entry lost its `version` field on the next develop publish — the picker
+degraded the row to the raw asset name. Carried `xerif-pr-*` entries now
+retain the version the PR lane stamped for the same asset (the asset name
+embeds PR number + head sha, so the prior-manifest match is exact);
+`xerif-dev-*` entries still always re-derive from
+`git_branch.py --print-dev-version` so a stale identity can never ride
+along. Also (2026-11-09, no "detached" stamps): the derivation resolves the
+branch from the CI override or refs pointing at the commit and degrades to
+"unknown" — a stamped version must never carry a detached-HEAD label. See
+the dev-OTA design doc §17 for the picker-side consent binding.
