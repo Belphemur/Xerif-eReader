@@ -5002,10 +5002,12 @@ void EpubReaderActivity::ttfRunPreRenderPass(const freeink::book::LayoutParams& 
         &ttfPreRendered.nextChar, kPreRenderSliceBudgetMs, params.characterSpacingPx, params.wordSpacingPx);
   } else {
     // Prerender paints the NEXT page: anchor-less clip matching must use the
-    // page actually painted, not the reader's current position.
-    paintTtfPage(page, params.font, params.characterSpacingPx, params.wordSpacingPx, nextPage);
+    // page actually painted, not the reader's current position. Clip
+    // inversion is deferred to the pass below: paintTtfPage's own inversion
+    // would XOR against it and cancel the saved-clip highlights.
+    paintTtfPage(page, params.font, params.characterSpacingPx, params.wordSpacingPx, nextPage,
+                 /*invertSavedClips=*/false);
   }
-  ttf_->scratch().release(scratchMark);
 
   if (complete) {
     if (grayParity) {
@@ -5015,16 +5017,20 @@ void EpubReaderActivity::ttfRunPreRenderPass(const freeink::book::LayoutParams& 
     }
     // Saved clips invert after the LAST slice so a fast turn serves the page
     // with its highlights (the fast pass displays this framebuffer without
-    // repainting); the page's run text is still live above the scratch
-    // release. Selector repaints are unaffected — this is the reader's own
-    // prerender, and fast turns never serve selector pages.
+    // repainting). The scratch mark is still held here: the highlight pass
+    // re-tokenizes page.runs[].text, which is only valid until release
+    // (TtfBookRuntime.h readPage contract). Selector repaints are unaffected
+    // — this is the reader's own prerender, and fast turns never serve
+    // selector pages.
     ttfDrawClippingHighlights(page, params.font, params.characterSpacingPx, params.wordSpacingPx,
                               static_cast<uint16_t>(nextPage));
+    ttf_->scratch().release(scratchMark);
     ttfPreRendered.pumping = false;
     ttfPreRendered.ready = true;
     LOG_DBG("ERS", "TTF prerendered page %d/%d (%u slice%s, %u runs)", nextPage, ttfPageCount - 1,
             ttfPreRendered.slicesUsed, ttfPreRendered.slicesUsed == 1 ? "" : "s", page.runCount);
   } else {
+    ttf_->scratch().release(scratchMark);
     // Resume next tick: the pass flag re-arms and requestUpdate schedules the
     // next slice. Input processed in between (the loop handles it before the
     // render) aborts the pump in ttfPageTurn — a press waits ≤ one slice.
