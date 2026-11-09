@@ -581,7 +581,11 @@ void DevOtaActivity::render(RenderLock&&) {
     // dance resumed picked.
     char installTarget[48];
     dev_ota::entryLabel(entries.items[selectedIndex], installTarget, sizeof(installTarget));
-    renderer.drawCenteredText(UI_10_FONT_ID, barY + metrics.progressBarHeight + metrics.verticalSpacing, installTarget);
+    // The theme's drawProgressBar renders the percent centered at
+    // bar.y + bar.height + 15 — place the install target one full line BELOW
+    // that line so the two never overprint (device report 2026-11-09: the
+    // name and the percent collided on the same y).
+    renderer.drawCenteredText(UI_10_FONT_ID, barY + metrics.progressBarHeight + 15 + height, installTarget);
   } else if (state == FAILED) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATE_FAILED), true, EpdFontFamily::BOLD);
     if (failedDetail != nullptr) {
