@@ -77,10 +77,11 @@ TEST(CacheIdentity, PolicyLetterSeparatesBakes) {
   // 'v' = the DPID detail-preserving resize feeding the texture bake (design
   // 2026-11-09-ttf-image-dpid-clahe.md; 't' was the pre-DPID texture bake,
   // 'u' burned by the reverted edge pass); 'w' = DPID + CLAHE (Enhanced);
-  // 'l' = legacy.
+  // 'x' = the blockiness bake (0.8 diffusion, no snap/anchor, 0.5% clip)
+  // over DPID + CLAHE (2026-11-09-ttf-image-blockiness.md); 'l' = legacy.
   EXPECT_NE(strstr(a, "/iv"), nullptr);
   EXPECT_NE(strstr(b, "/il"), nullptr);
-  EXPECT_NE(strstr(c, "/iw"), nullptr);
+  EXPECT_NE(strstr(c, "/ix"), nullptr);
 }
 
 TEST(CacheIdentity, RefusesOverlongDir) {
@@ -299,16 +300,17 @@ TEST(ToneBake4, IsPlacementIndependent) {
 }
 
 TEST(ToneBake4, DiffusionWeightScalesEveryKernelTerm) {
-  // W = 2560/2560 = 1: term = errVal·k/16 for k = 7|3|5|1 (texture §5
-  // as-built), C truncation toward zero.
+  // W = 2048/2560 = 0.8 (blockiness design 2026-11-09): every kernel term
+  // scales by it — term = (errVal·k·2048)/(16·2560) = errVal·k/20, C
+  // truncation toward zero.
   ttfimg::ToneBake4 bake(8);
   ASSERT_TRUE(bake.ok());
-  EXPECT_EQ(bake.diffuse(20, 7), 8);     // 140/16
-  EXPECT_EQ(bake.diffuse(20, 3), 3);     // 60/16
-  EXPECT_EQ(bake.diffuse(20, 5), 6);     // 100/16
-  EXPECT_EQ(bake.diffuse(20, 1), 1);     // 20/16
-  EXPECT_EQ(bake.diffuse(-40, 7), -17);  // -280/16 truncates toward zero
-  EXPECT_EQ(bake.diffuse(3, 7), 1);      // 21/16 truncated
+  EXPECT_EQ(bake.diffuse(20, 7), 7);     // 140/20
+  EXPECT_EQ(bake.diffuse(20, 3), 3);     // 60/20
+  EXPECT_EQ(bake.diffuse(20, 5), 5);     // 100/20
+  EXPECT_EQ(bake.diffuse(20, 1), 1);     // 20/20
+  EXPECT_EQ(bake.diffuse(-40, 7), -14);  // -280/20 exact
+  EXPECT_EQ(bake.diffuse(3, 7), 1);      // 21/20 truncated
 }
 
 TEST(ToneBake4, SerpentineMirrorsTheKernel) {
@@ -316,12 +318,16 @@ TEST(ToneBake4, SerpentineMirrorsTheKernel) {
   // ascending (row 0) equals the same row baked on a reverse-seeded bake —
   // the FS kernel mirrors with the visit direction, so the horizontal error
   // term always lands on the next-visited pixel.
+  // Noise 0: the threshold offset is keyed on absolute x, which is not
+  // mirror-symmetric — the pin measures the kernel, not the noise.
   const int w = 16;
   uint8_t gray[w];
   for (int i = 0; i < w; ++i) gray[i] = static_cast<uint8_t>(60 + (i < w - 1 - i ? i : w - 1 - i) * 15);
   ttfimg::ToneBake4 forward(w);
   ttfimg::ToneBake4 backward(w);
   ASSERT_TRUE(forward.ok() && backward.ok());
+  forward.noiseAmp = 0;
+  backward.noiseAmp = 0;
   backward.reverse = true;  // row 0 visits right-to-left
   uint8_t fwd[w];
   uint8_t rev[w];

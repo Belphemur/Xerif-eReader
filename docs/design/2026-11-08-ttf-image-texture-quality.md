@@ -135,3 +135,28 @@ Host proof (test/ttf_image_fit/TtfImageTextureTest.cpp, 8 tests): flats near a l
 bake 100% one level; gradient mean |row-to-row L1 delta| 3.9 vs ideal ~2.0 (baseline
 16.6) with no sustained opposite-sign swings; threshold noise tone-neutral and
 deterministic; 1px/2px strokes 100% retained without halos.
+
+## Amendment (2026-11-09, blockiness soak)
+
+Owner soak at the texture bake (9d9494e4 lineage) shows full-page art blocky
+with flat stepped tone bands; the evidence lives in
+docs/design/2026-11-09-ttf-image-blockiness.md. Host stage-split probes (vision-checked against the
+soak photos, /tmp/pi_blockiness/): stage B (DPID out) is clean on every epub
+fixture; the entire artifact set is bake-side. The §2/§3/§4 features are
+synthetic-field instruments that damage real print art at panel scale:
+
+- flat-run snap: freezes real-art gradients into plateaus (the stepped bands);
+- stroke anchor: erodes soft dark fields into solids with ragged fringes
+  ("blacks too deep");
+- diffusion 1.0: fills every 1–2 px shelf transition with opposing clusters
+  (moth-eaten edges) — salt-isolated metric 4013 → 1164 back at 0.8.
+
+The threshold noise STAYS (at 0.8 it is what holds the synthetic §2.3/§2.2
+guarantees: flat-40 dropout 92.4% → 100% solid at amp ≥12, gradient row
+delta 13.2 → 3.3), amp stays 8 (amp 12 triples real-art isolated specks
+420 → 1053). Contract 2's "flat field bakes 100% one level" weakens to a
+≥90% dominance pin for constant fields (the 's'-era behavior, owner-accepted
+on device 2026-11-08); the anchor contract reverts to pre-texture behavior
+(strokes survive at 0.8 without anchoring — neighbour error cannot lift a
+0-mapped stroke pixel cross-shelf). Full rationale + probe references:
+docs/design/2026-11-09-ttf-image-blockiness.md.

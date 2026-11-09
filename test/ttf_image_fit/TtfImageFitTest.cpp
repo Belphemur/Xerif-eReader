@@ -463,7 +463,7 @@ TEST(AdaptiveBake, MidtoneStaysMidtoneWhenRangeIsFull) {
   // The defect-A signature pin: the old fixed map sent source 128 → 176
   // (gamma 2.2 brightening) → 190 (contrast) before quantization, collapsing
   // midtones into the panel's two lightest levels. A near-uniform histogram
-  // (4 px per bin, N=1024) clips at lo=2 / hi=253 and the stretch keeps the
+  // (4 px per bin, N=1024) clips at lo=1 / hi=253 and the stretch keeps the
   // midtone at 128 — no brightening anywhere in the map.
   ttfimg::ToneBake4 bake(4);
   ASSERT_TRUE(bake.ok());
@@ -475,14 +475,16 @@ TEST(AdaptiveBake, MidtoneStaysMidtoneWhenRangeIsFull) {
   }
   ASSERT_TRUE(bake.grayDone());
   bake.beginRemap();
-  // lo: cum ≥ 1024·1/100 = 10 first at v=2 (12). hi: cum ≥ 1013 first at
-  // v=253 (1016). Stretch [2,253] → [0,255].
-  EXPECT_EQ(bake.mapLut[2], 0);
-  EXPECT_EQ(bake.mapLut[253], 255);
-  EXPECT_EQ(bake.mapLut[128], static_cast<uint8_t>((128 - 2) * 255 / 251));  // == 128
+  // 0.5%/99.5% clip (blockiness design 2026-11-09): lo: cum ≥ 1024·5/1000 = 5
+  // first at v=1 (8). hi: cum ≥ 1024·995/1000 = 1018 first at v=254 (1020).
+  // Stretch [1,254] → [0,255].
+  EXPECT_EQ(bake.mapLut[1], 0);
+  EXPECT_EQ(bake.mapLut[254], 255);
+  EXPECT_EQ(bake.mapLut[128], static_cast<uint8_t>((128 - 1) * 255 / 253));  // == 128
   EXPECT_EQ(bake.mapLut[128], 128);
-  EXPECT_EQ(bake.mapLut[1], 0);      // below lo clamps to black
-  EXPECT_EQ(bake.mapLut[254], 255);  // above hi clamps to white
+  EXPECT_EQ(bake.mapLut[2], 1);      // first in-range step above black
+  EXPECT_EQ(bake.mapLut[0], 0);      // below lo clamps to black
+  EXPECT_EQ(bake.mapLut[253], 253);  // one below hi: just under the top step
 }
 
 TEST(AdaptiveBake, PaleBandStretchesToTheFullRange) {

@@ -229,7 +229,8 @@ TEST(DpidScaler, LambdaZeroEqualsFractionalPass1AndRandomMode) {
 
 TEST(DpidScaler, TinyImageSkipsDetail) {
   // dst >= src on both axes: plan() must drop the detail pass and the
-  // scratch must shrink accordingly (no image buffer at all).
+  // scratch must shrink accordingly (no image buffer at all; nearest adds
+  // one source-row store — see the small-class tests below).
   DpidScaler::Plan p{100, 80, 120, 96, false, true, false};
   const DpidScaler::Plan q = DpidScaler::plan(p);
   EXPECT_FALSE(q.detail);
@@ -249,6 +250,94 @@ TEST(DpidScaler, TinyImageSkipsDetail) {
   for (const auto& r : sink.rows) {
     for (const uint8_t v : r) ASSERT_EQ(v, 200);
   }
+}
+
+// ── small class: nearest-center picks (blockiness design 2026-11-09) ────────
+
+TEST(DpidScaler, SmallUpscaleKeepsSourcePixelsCrisp) {
+  // dst >= src on both axes: nearest-center sampling — each destination
+  // pixel equals some source pixel, so line art stays crisp instead of the
+  // box-blur the fractional pass produced (the ornament soak defect).
+  DpidScaler::Plan p{2, 2, 4, 4, false, true, false};
+  const DpidScaler::Plan q = DpidScaler::plan(p);
+  EXPECT_FALSE(q.detail);
+  EXPECT_TRUE(q.nearest);
+  Sink sink;
+  sink.w = 4;
+  const std::vector<uint8_t> src{10, 200, 60, 250};
+  std::vector<uint8_t> block(DpidScaler::scratchBytes(q));
+  DpidScaler s;
+  ASSERT_TRUE(s.begin(q, block.data(), block.size(), &Sink::emit, &sink, &pollFalse, nullptr));
+  for (int y = 0; y < 2; ++y) s.feedSourceRow(y, src.data() + y * 2);
+  ASSERT_TRUE(s.finish());
+  ASSERT_EQ(sink.rows.size(), static_cast<size_t>(4));
+  // Every emitted pixel is one of the four source values (no blends).
+  for (const auto& r : sink.rows) {
+    for (const uint8_t v : r) {
+      ASSERT_TRUE(v == 10 || v == 200 || v == 60 || v == 250) << "blended value " << int(v);
+    }
+  }
+  // The 2x upscale is the source block pattern: each source pixel fills a
+  // 2x2 destination square (nearest-center mapping).
+  ASSERT_EQ(sink.rows[0][0], 10);
+  ASSERT_EQ(sink.rows[0][3], 200);
+  ASSERT_EQ(sink.rows[3][0], 60);
+  ASSERT_EQ(sink.rows[3][3], 250);
+}
+
+TEST(DpidScaler, SmallUpscaleThroughputRunsThroughEveryDestinationPixel) {
+  // 32x31 -> 96x93 (the epub ornament placement): every destination row and
+  // column is emitted (flush per band) and the values stay single-source.
+  const int sw = 32, sh = 31, dw = 96, dh = 93;
+  std::vector<uint8_t> src(static_cast<size_t>(sw) * sh);
+  for (int y = 0; y < sh; ++y) {
+    for (int x = 0; x < sw; ++x) src[static_cast<size_t>(y) * sw + x] = static_cast<uint8_t>((x * 7 + y * 13) % 251);
+  }
+  DpidScaler::Plan p{sw, sh, dw, dh, false, true, false};
+  const DpidScaler::Plan q = DpidScaler::plan(p);
+  EXPECT_TRUE(q.nearest);
+  Sink sink;
+  sink.w = dw;
+  std::vector<uint8_t> block(DpidScaler::scratchBytes(q));
+  DpidScaler s;
+  ASSERT_TRUE(s.begin(q, block.data(), block.size(), &Sink::emit, &sink, &pollFalse, nullptr));
+  for (int y = 0; y < sh; ++y) s.feedSourceRow(y, src.data() + static_cast<size_t>(y) * sw);
+  ASSERT_TRUE(s.finish());
+  ASSERT_EQ(sink.rows.size(), static_cast<size_t>(dh));
+  for (const auto& r : sink.rows) ASSERT_EQ(r.size(), static_cast<size_t>(dw));
+  // Row count: the sw*sh source set is subject to nearest picks only.
+  for (int y = 0; y < dh; ++y) {
+    for (int x = 0; x < dw; ++x) {
+      const int sx = (2 * x + 1) * sw / (2 * dw);
+      const int sy = (2 * y + 1) * sh / (2 * dh);
+      ASSERT_EQ(sink.rows[y][x], src[static_cast<size_t>(sy) * sw + sx]);
+    }
+  }
+}
+
+TEST(DpidScaler, DegradedSmallUpscaleKeepsFractionalBox) {
+  // A scratch block too small for the nearest row (but big enough for the
+  // row accumulators — the rung the degraded ladder actually hands in)
+  // streams the fractional-average box (the old small-class behavior).
+  DpidScaler::Plan p{2, 2, 5, 5, false, true, false};
+  const DpidScaler::Plan q = DpidScaler::plan(p);
+  Sink sink;
+  sink.w = 5;
+  const std::vector<uint8_t> src{10, 200, 60, 250};
+  DpidScaler s;
+  // acc + wtot (2*5*8 B) + hold (5 B) = 85 B; the nearest row carve fails.
+  std::vector<uint8_t> tiny(5 * 17);
+  ASSERT_TRUE(s.begin(q, tiny.data(), tiny.size(), &Sink::emit, &sink, &pollFalse, nullptr));
+  for (int y = 0; y < 2; ++y) s.feedSourceRow(y, src.data() + y * 2);
+  ASSERT_TRUE(s.finish());
+  ASSERT_EQ(sink.rows.size(), static_cast<size_t>(5));
+  bool sawBlend = false;
+  for (const auto& r : sink.rows) {
+    for (const uint8_t v : r) {
+      if (v != 10 && v != 200 && v != 60 && v != 250) sawBlend = true;
+    }
+  }
+  EXPECT_TRUE(sawBlend);  // the fractional box blends across the 5x grid
 }
 
 TEST(DpidScaler, BorderRowsAndColumnsStayCovered) {

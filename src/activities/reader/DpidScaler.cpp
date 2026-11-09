@@ -124,8 +124,12 @@ DpidScaler::Plan DpidScaler::plan(const Plan& dimsIn) {
   if (p.srcW <= 0 || p.srcH <= 0 || p.dstW <= 0 || p.dstH <= 0) {
     p.detail = false;
     p.clahe = false;
+    p.nearest = false;
   } else if (p.dstW >= p.srcW && p.dstH >= p.srcH) {
-    p.detail = false;  // tiny image: skip detail, degenerate to plain sampling
+    // Small class: no box/pass-2 averaging — nearest-center picks keep
+    // line art crisp at ornament scale-ups (blockiness design 2026-11-09).
+    p.detail = false;
+    p.nearest = true;
   }
   return p;
 }
@@ -135,7 +139,8 @@ size_t DpidScaler::scratchBytes(const Plan& planIn) {
   const size_t dstW = static_cast<size_t>(p.dstW);
   const bool tooSmallForClahe = p.clahe && (p.dstW / kClaheTiles < 2 || p.dstH / kClaheTiles < 2);
   const bool needsImage = p.detail || (p.clahe && !tooSmallForClahe);
-  size_t bytes = dstW * 8 * 2 + dstW;  // acc + wtot accumulators, hold row
+  size_t bytes = dstW * 8 * 2 + dstW;                   // acc + wtot accumulators, hold row
+  if (p.nearest) bytes += static_cast<size_t>(p.srcW);  // nearest-sample row
   if (needsImage) bytes += dstW * static_cast<size_t>(p.dstH);
   if (needsImage && p.detail) bytes += dstW;           // tent row
   if (p.random) bytes += static_cast<size_t>(p.srcW);  // provider row scratch
@@ -170,6 +175,7 @@ bool DpidScaler::begin(const Plan& planIn, uint8_t* block, const size_t bytes, E
   }
 
   curBand_ = -1;
+  nearBest_ = 0;
   nextPass2_ = 0;
   lastRand_ = -1;
   holdFull_ = false;
@@ -190,6 +196,7 @@ bool DpidScaler::begin(const Plan& planIn, uint8_t* block, const size_t bytes, E
   ring_ = nullptr;
   ringRows_ = 0;
   rowBuf_ = nullptr;
+  near_ = nullptr;
   if (needsImage) {
     dst_ = static_cast<uint8_t*>(carve(dstW * static_cast<size_t>(p_.dstH)));
     if (p_.detail) tent_ = static_cast<uint8_t*>(carve(dstW));
@@ -211,6 +218,14 @@ bool DpidScaler::begin(const Plan& planIn, uint8_t* block, const size_t bytes, E
     claheHist_ = static_cast<uint16_t*>(carve(sizeof(uint16_t) * kClaheTiles * kClaheTiles * kClaheBins));
     claheMap_ = static_cast<uint8_t*>(carve(static_cast<size_t>(kClaheTiles * kClaheTiles) * kClaheBins));
   }
+  if (p_.nearest) {
+    near_ = static_cast<uint8_t*>(carve(static_cast<size_t>(p_.srcW)));
+    if (near_ == nullptr) {
+      // Degraded rung (no block): stream the fractional box like the old
+      // small class instead of failing — the blockless ladder keeps working.
+      p_.nearest = false;
+    }
+  }
   if (acc_ == nullptr || wtot_ == nullptr || hold_ == nullptr) return false;
   if (needsImage && (dst_ == nullptr || (p_.detail && tent_ == nullptr))) return false;
   if (p_.detail && p_.random && rowBuf_ == nullptr) return false;
@@ -229,6 +244,31 @@ bool DpidScaler::needsFinish() const { return ok_ && !finished_; }
 // ── pass 1 ──────────────────────────────────────────────────────────────────
 
 void DpidScaler::accumulateRow(const int y, const uint8_t* gray) {
+  if (p_.nearest) {
+    // Nearest sampling: a destination band spans at most one source row.
+    // Remember the highest-overlap covering row (for a ≤1-row span that is
+    // exactly the row containing the band center), pick the nearest column
+    // at flush.
+    const int64_t y0q = static_cast<int64_t>(y) * kQ16;
+    const int64_t y1q = y0q + kQ16;
+    const int bFirst = bandFirst(y0q, p_.srcH, p_.dstH);
+    const int bLast = bandLast(y1q, p_.srcH, p_.dstH);
+    for (int band = bFirst; band <= bLast; ++band) {
+      const int64_t ov = bandOverlap(band, y0q, y1q, p_.srcH, p_.dstH);
+      if (ov <= 0) continue;
+      if (band != curBand_) {
+        const int ended = curBand_;
+        if (ended >= 0) flushBand();
+        curBand_ = band;
+        nearBest_ = ov;
+        memcpy(near_, gray, static_cast<size_t>(p_.srcW));
+      } else if (ov > nearBest_) {
+        nearBest_ = ov;
+        memcpy(near_, gray, static_cast<size_t>(p_.srcW));
+      }
+    }
+    return;
+  }
   const int64_t y0q = static_cast<int64_t>(y) * kQ16;
   const int64_t y1q = y0q + kQ16;
   const int bFirst = bandFirst(y0q, p_.srcH, p_.dstH);
@@ -268,6 +308,20 @@ void DpidScaler::accumulateRow(const int y, const uint8_t* gray) {
 }
 
 void DpidScaler::flushBand() {
+  // Nearest sampling (small class): each source row covering a band spanned
+  // at most one band, so the remembered row is THE nearest source row; the
+  // picked column is the nearest-center mapping. Emits straight to the sink
+  // (bufferless by construction — nearest never sets needsImage).
+  if (p_.nearest && near_ != nullptr) {
+    for (int x = 0; x < p_.dstW; ++x) {
+      int sx = (2 * x + 1) * p_.srcW / (2 * p_.dstW);
+      if (sx >= p_.srcW) sx = p_.srcW - 1;
+      hold_[x] = near_[sx];
+    }
+    if (!emit_(emitUser_, curBand_, hold_)) aborted_ = true;
+    curBand_ = -1;
+    return;
+  }
   // Bufferless mode: the completed band streams straight to the emit hook —
   // pass 2 and CLAHE can never run without the full-image buffer.
   if (dst_ == nullptr) {

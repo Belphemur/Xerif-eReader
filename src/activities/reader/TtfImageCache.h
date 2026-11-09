@@ -62,27 +62,22 @@ struct ToneBake4 : ToneBaker {
   static constexpr bool kGammaEnabled = false;  // §2.2: stretch owns the range; device tune flips this
   static constexpr int kContrastNum = 13;       // 1.3 (eink-image default), pivot 128
   static constexpr int kContrastDen = 10;
-  static constexpr int kDiffusionNum = 2560;  // 1.0 in 8.8 fixed point (texture §2.3)
+  // Diffusion weight 0.8 (blockiness design 2026-11-09): the 2026-11-08
+  // texture campaign's 1.0 was validated on synthetic gradients only; on
+  // real print art at the ~0.5x panel downscale each quantizer-shelf
+  // transition band is 1-2 px wide, so full-strength diffusion breaks the
+  // transitions into large opposing clusters — the stepped tone bands of
+  // the 2026-11-09 soak. 0.8 keeps flat fields uniform (small errors still
+  // cannot cross a threshold) while transitions stay coherent.
+  static constexpr int kDiffusionNum = 2048;  // 0.8 in 8.8 fixed point
   static constexpr int kDiffusionDen = 2560;
-  // Zero-mean pseudo-random threshold offset (texture §2.3): breaks the
-  // row-as-mega-pixel mode-locking that drives period-2 banding on smooth
-  // gradients. Deterministic pure function of (x, row) — worker/foreground
-  // parity holds; never enters errVal, so the emitted tone stays true.
-  static constexpr int kMaskAmp = 8;  // offset range −8..+7 (4-bit hash)
-  // Flat-field preservation (texture §2.2/§3): a run of pixels whose mapped
-  // tones are mutually within kFlatTol is locally flat; when such a run sits
-  // within kSnap of one level AND the incoming error is small (no vertical
-  // gradient flowing through), the run bakes as that single level and its
-  // residual error is dropped instead of diffused into texture.
-  static constexpr int kFlatTol = 2;  // mapped-tone variation tolerance
-  static constexpr int kFlatErr = 8;  // max incoming error for a flat run
-  static constexpr int kSnap = 21;    // half the 85/2 step
-  // Thin-stroke anchoring (texture §2.4): a source pixel this dark bakes
-  // level 0 regardless of accumulated error; its full error still diffuses,
-  // so the local tone is preserved and no halo bias is added.
-  static constexpr int kStrokeMap = 42;  // half the first shelf (85/2)
-  static constexpr int kClipNum = 1;     // percentile clip: ~1% / ~99%
-  static constexpr int kClipDen = 100;
+  // Percentile clip (blockiness design 2026-11-09): 0.5% / 99.5%. The old
+  // 1%/99% clip sat at gray ~62 on soft-shadow art, crushing every shadow
+  // below it to level 0 (the "blacks too deep" soak defect) while
+  // stretching the rest; 0.5% keeps midtone structure and still reaches
+  // true black/white where the art contains them.
+  static constexpr int kClipNum = 5;     // percentile clip out of kClipDen
+  static constexpr int kClipDen = 1000;  // => 0.5% / 99.5%
 
   uint8_t gammaLut[256];
   uint8_t contrastLut[256];
@@ -102,7 +97,7 @@ struct ToneBake4 : ToneBaker {
   std::unique_ptr<int16_t[]> errNext;  // error passed to the next row
   const int width;
   bool reverse = false;  // serpentine: the current row scans right-to-left
-  int row = 0;           // baked row index (threshold-noise key; texture §2.3)
+  int row = 0;           // baked row index (threshold-noise key)
 
   explicit ToneBake4(const int w) : width(w) {
     for (int i = 0; i < 256; ++i) {
@@ -162,6 +157,20 @@ struct ToneBake4 : ToneBaker {
     return static_cast<int16_t>(errVal * k * kDiffusionNum / (16 * kDiffusionDen));
   }
 
+  // Zero-mean pseudo-random threshold offset (texture §2.3, kept): breaks
+  // the row-as-mega-pixel mode-locking behind period-2 banding. At the
+  // blockiness bake's 0.8 weight the noise is what keeps constant-field
+  // error accumulation from igniting dropout specks and gradient rows from
+  // locking (host-probed: flat-40 dropout 6.2% -> 0%, gradient row delta
+  // 13.2 -> 3.3). Deterministic pure function of (x, row) — worker/
+  // foreground parity holds; never enters errVal, so tone stays true.
+  static constexpr int kMaskAmp = 8;  // offset range −8..+7 (4-bit hash)
+  // Per-instance active amplitude (defaults to kMaskAmp): the serpentine
+  // kernel-mirroring suite bakes with noise 0 — the noise offset is keyed on
+  // absolute x, which is not mirror-symmetric, so an exact-mirror pin must
+  // exclude it to measure the kernel itself.
+  int noiseAmp = kMaskAmp;
+
   // x is image-local (0-based). `reverseScan` selects the mirrored kernel:
   // a serpentine row is VISITED in its scan direction, so the horizontal
   // term always lands on the next-visited pixel (7/20 to x+1 ascending,
@@ -169,38 +178,24 @@ struct ToneBake4 : ToneBaker {
   // Mapped tone of one source pixel (the LUT chain the bake quantizes).
   int mapv(const uint8_t gray) const { return adaptive ? mapLut[gray] : contrastLut[gammaLut[gray]]; }
 
-  uint8_t toneDir(const int x, const int gray, const bool reverseScan, const uint8_t* rowGray = nullptr) {
+  uint8_t toneDir(const int x, const int gray, const bool reverseScan) {
+    // Serpentine Floyd–Steinberg over the mapped tone (blockiness design
+    // 2026-11-09): the texture bake's flat-run snap and stroke anchor are
+    // REMOVED — they froze real-art gradients into plateaus and eroded dark
+    // fields into solids (the 2026-11-09 soak regression). The quantizer
+    // decision keeps the ±8 threshold noise (see kMaskAmp).
     const int mv = mapv(static_cast<uint8_t>(gray));
     const int v = mv + err[x + 1];
-    // Zero-mean pseudo-random threshold offset (texture §2.3): breaks the
-    // row-as-mega-pixel mode-locking behind period-2 gradient banding.
-    // Integer bit-mix of (x, row); never enters errVal — tone stays true.
     uint32_t h = (static_cast<uint32_t>(x) + 1) * 374761393u + (static_cast<uint32_t>(row) + 1) * 668265263u;
     h = (h ^ (h >> 13)) * 1274126177u;
-    const int veff = v + (static_cast<int>((h >> 17) & 15) - 8);
+    const int veff = v + (static_cast<int>((h >> 17) & 15) - noiseAmp);
     int t = (veff + 42) / 85;  // nearest of {0, 85, 170, 255} in the mapped space
     if (t < 0) t = 0;
     if (t > 3) t = 3;
+    // The noise never enters errVal: the diffused error tracks the true
+    // mapped value, so emitted tone stays unbiased.
     const int errVal = v - t * 85;
-    // Flat-field preservation (texture §2.2/§3): the SOURCE neighborhood is
-    // flat (both horizontal neighbours map within kFlatTol of this pixel;
-    // out-of-image counts as continuing the flat), no vertical gradient is
-    // flowing through (small incoming error), and the mapped tone sits within
-    // kSnap of one level: bake that level uniformly and drop the residual
-    // error instead of diffusing texture the source does not have.
-    if (rowGray != nullptr && errVal >= -kSnap && errVal <= kSnap && err[x + 1] >= -kFlatErr &&
-        err[x + 1] <= kFlatErr) {
-      bool flat = true;
-      if (x > 0 && (mapv(rowGray[x - 1]) - mv > kFlatTol || mv - mapv(rowGray[x - 1]) > kFlatTol)) flat = false;
-      if (flat && x + 1 < width && (mapv(rowGray[x + 1]) - mv > kFlatTol || mv - mapv(rowGray[x + 1]) > kFlatTol))
-        flat = false;
-      if (flat) return static_cast<uint8_t>(t);
-    }
-    // Thin-stroke anchoring (texture §2.4): a source pixel this dark bakes
-    // black even when accumulated neighbour error would push it up a level;
-    // the full error still diffuses, so the local tone is preserved.
-    if (mv <= kStrokeMap && t != 0) return emitDir(x, v, reverseScan, 0);
-    return emitDir(x, errVal, reverseScan, t);
+    return emitDir(x, errVal, reverseScan, static_cast<uint8_t>(t));
   }
   // Diffuse errVal through the serpentine kernel and return the level.
   uint8_t emitDir(const int x, const int errVal, const bool reverseScan, const uint8_t t) {
@@ -234,7 +229,7 @@ struct ToneBake4 : ToneBaker {
     const bool rev = reverse;
     for (int i = 0; i < width; ++i) {
       const int x = rev ? (width - 1 - i) : i;
-      tones[x] = toneDir(x, gray[x], rev, gray);
+      tones[x] = toneDir(x, gray[x], rev);
     }
     nextRow();
   }

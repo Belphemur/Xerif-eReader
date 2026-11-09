@@ -63,6 +63,13 @@ class DpidScaler {
     bool clahe = false;   // pictureDetail == Enhanced
     bool detail = true;   // DPID λ=1; false => fractional λ=0 box
     bool random = false;  // source rows re-readable (no ring needed)
+    // Small class (dst >= src on both axes) picks each destination pixel
+    // from the nearest source pixel by center mapping instead of
+    // box-averaging (blockiness design 2026-11-09): the divider-ornament
+    // scale-ups render crisp line art instead of a blurred field. Costs
+    // one srcW row buffer inside the scratch block; the degraded (no
+    // block) ladder rung still streams the fractional box.
+    bool nearest = false;
   };
 
   DpidScaler() = default;
@@ -139,6 +146,8 @@ class DpidScaler {
   uint8_t* tent_ = nullptr;        // dstW row, tent values of the active row
   uint8_t* ring_ = nullptr;        // ringRows * srcW source rows (streaming)
   uint8_t* rowBuf_ = nullptr;      // srcW, random-access provider scratch
+  uint8_t* near_ = nullptr;        // srcW, nearest-sample store (small class)
+  int64_t nearBest_ = 0;           // overlap of the remembered nearest row
   uint16_t* claheHist_ = nullptr;  // [tiles][256]
   uint8_t* claheMap_ = nullptr;    // [tiles][256]
   int tilesX_ = 0, tilesY_ = 0, tileW_ = 0, tileH_ = 0;

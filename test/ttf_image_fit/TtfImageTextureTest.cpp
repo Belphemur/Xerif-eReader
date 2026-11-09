@@ -71,13 +71,19 @@ TEST(TextureBake, FlatNearLevelBakesOneUniformLevel) {
   EXPECT_EQ(levelCount(tones, 3), 0);
 }
 
-TEST(TextureBake, FlatDarkFieldBakesOneUniformLevel) {
-  // Flat 40 maps to 13 — within ±kSnap of level 0: solid black, no dropout
-  // specks and no bright dither dots.
+TEST(TextureBake, FlatDarkFieldStaysDominantlyBlack) {
+  // Flat 40 maps to 13 — level 0 dominates. Without the texture bake's
+  // flat-run snap (removed by the blockiness design 2026-11-09: it froze
+  // real-art gradients into plateaus), the 0.8-weight FS on a CONSTANT
+  // field reaches its equilibrium with ~8% level-1 dropout specks — the
+  // 's'-era behavior the owner accepted on device (2026-11-08 soak, no
+  // complaint). The pins that still matter: no mid levels, no white, and
+  // the field stays dominantly black.
   const std::vector<uint8_t> gray(96 * 48, 40);
   const auto tones = bake(96, 48, gray, "/t/texture_flat40.g");
-  EXPECT_EQ(levelCount(tones, 0), 96 * 48);
-  EXPECT_EQ(levelCount(tones, 1), 0);
+  const int l0 = levelCount(tones, 0);
+  EXPECT_GE(l0, 9 * 96 * 48 / 10);  // ≥90% level 0
+  EXPECT_EQ(levelCount(tones, 1), 96 * 48 - l0);
   EXPECT_EQ(levelCount(tones, 2), 0);
   EXPECT_EQ(levelCount(tones, 3), 0);
 }

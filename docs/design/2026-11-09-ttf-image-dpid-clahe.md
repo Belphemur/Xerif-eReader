@@ -277,3 +277,13 @@ grid equality, cache-letter separation `/iv`, `/iw`, `/il`). Budget suite:
 served-item scratch at both portrait placements under the 5 MB budget,
 degraded rungs monotonically smaller, gate semantics (5 MB floor,
 small-board fallback, no-PSRAM defer).
+
+## Amendment (2026-11-09, blockiness soak): small class sampling
+
+Owner: the small divider ornament resizes badly. The small class (dst ≥ src
+on both axes) sampled through the fractional pass-1 box, blurring line art
+before the bake. plan() now selects nearest-center sampling for that class
+(one srcW row inside the call-scoped block; a rung whose carve misses the row
+falls back to the fractional box) — see §3.4 of
+docs/design/2026-11-09-ttf-image-blockiness.md and the suite's three
+small-class pins. The downscale DPID path is untouched.
