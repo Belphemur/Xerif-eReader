@@ -3,18 +3,68 @@
 #include <Arduino.h>
 #include <GfxRenderer.h>
 #include <Logging.h>
+#include <WiFi.h>
 
 #include <cstdio>
 
 #include "MappedInputManager.h"
 #include "activities/RenderLock.h"
 #include "components/UITheme.h"
+#include "fontIds.h"
+#include "network/DevOtaPolicy.h"
 #include "network/OtaBootSwitch.h"
+#include "util/MemoryClaimGateDevice.h"
 
 namespace fui = freeink::ui;
 
+namespace {
+// §20: what the resolved list props give every VALUE string — the theme's
+// smallText, bound to the uiScale small font on every board (makeUiTarget).
+// The label runs in the same font, so one measure serves the whole row.
+int measureUiSmall(const void* ctx, const char* text) {
+  return static_cast<const GfxRenderer*>(ctx)->getTextWidth(UI_10_FONT_ID, text ? text : "");
+}
+}  // namespace
+
 const esp_partition_t* FirmwareSlotsActivity::slotPartition(const int index) const {
   return index == 0 ? ota_slots::stableSlot() : ota_slots::devSlot();
+}
+
+freeink::ui::Insets FirmwareSlotsActivity::contentInsets() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  return fui::Insets{static_cast<int16_t>(safe.y + metrics.topPadding + metrics.headerHeight),
+                     static_cast<int16_t>(renderer.getScreenWidth() - (safe.x + safe.width)),
+                     static_cast<int16_t>(renderer.getScreenHeight() - (safe.y + safe.height)),
+                     static_cast<int16_t>(safe.x)};
+}
+
+int FirmwareSlotsActivity::listBandWidth() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  // contentInsets() leaves the safe area horizontally untouched (left =
+  // safe.x, right = screen - (safe.x + safe.width)), so the rows draw in
+  // the safe band. ui::list then takes the theme's listInset and reserves
+  // the scroll strip for nav-managed lists (its draw path: strip = width +
+  // inset + 2 of air; the token listScrollInset is pinned to 0).
+  int band = safe.width - static_cast<int>(metrics.listInset) * 2;
+  const int needed = static_cast<int>(metrics.listScrollWidth) + 2;
+  if (metrics.listInset < needed) band -= needed - metrics.listInset;
+  return band < 0 ? 0 : band;
+}
+
+int FirmwareSlotsActivity::valueSlotWidth(const int index) const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto& theme = UITheme::getInstance();
+  // Same resolved row geometry the list draws with: side padding inside the
+  // band, then the row's own label (small text, single line) and the value
+  // text gap (ListProps::textGap left at its 10 default). Value inset stays
+  // 0 — this screen sets none.
+  int width = listBandWidth() - static_cast<int>(metrics.listSidePadding) * 2;
+  const char* label = rowItems[index].label;
+  width -= renderer.getTextWidth(UI_10_FONT_ID, label ? label : "");
+  width -= 10;
+  return width < 0 ? 0 : width;
 }
 
 void FirmwareSlotsActivity::onEnter() {
@@ -23,18 +73,45 @@ void FirmwareSlotsActivity::onEnter() {
   rowItems[0].label = tr(STR_SLOT_STABLE);
   rowItems[1].label = tr(STR_SLOT_DEV);
   const esp_partition_t* running = ota_slots::runningSlot();
+
+  // §20 identity (owner report: the dev row printed the raw esp_app_desc
+  // string, garbling the row, instead of the picker's "pr <num> <sha>"):
+  // the slot's stamped version cross-references the CURRENT dev manifest.
+  // The slots screen never owns the radio — no WifiSelectionActivity, no
+  // silent restart on exit — so the fetch runs only when WiFi is already
+  // up; otherwise the stamped version itself stays the build identity (its
+  // trailing sha is what the manifest PR names carry). Fail-safe both
+  // ways: a failed fetch leaves devEntries_ empty and the label falls
+  // through to the stamp verbatim.
+  ota_slots::SlotInfo probe;
+  if (WiFi.status() == WL_CONNECTED && ota_slots::readSlotInfo(slotPartition(1), probe) &&
+      dev_ota::parseDevStamp(probe.version, nullptr)) {
+    memclaim::DeviceClaim claim(renderer, "SLOTS");
+    claim.runCheap();
+    static_cast<void>(dev_ota::fetchDevManifest(devEntries_.items, dev_ota::kMaxVersions, &devEntries_.count));
+  }
+  if (devEntries_.count <= 0) devEntries_ = {};
+
   for (int i = 0; i < kSlotCount; ++i) {
     ota_slots::SlotInfo info;
     valueText[i][0] = '\0';
+    const bool isRunning = ota_slots::sameSlot(slotPartition(i), running);
+    char suffix[32]{};
+    if (isRunning) snprintf(suffix, sizeof(suffix), " · %s", tr(STR_SLOT_RUNNING));
     if (ota_slots::readSlotInfo(slotPartition(i), info)) {
-      snprintf(valueText[i], sizeof(valueText[i]), "%s", info.version);
+      // The identity is composed to fit the value slot TOGETHER with the
+      // suffix (the running marker) — slotRowValue reserves its width, the
+      // append here is the composition's second half.
+      int prNum = -1;
+      dev_ota::slotRowValue(info.version, devEntries_.items, devEntries_.count, measureUiSmall, &renderer,
+                            valueSlotWidth(i), suffix, prNum, valueText[i], sizeof(valueText[i]));
+      strlcat(valueText[i], suffix, sizeof(valueText[i]));
+      if (i == 1) {
+        LOG_INF("SLOTS", "dev slot identity '%s' (pr=%d, manifest rows=%d)", valueText[i], prNum, devEntries_.count);
+      }
     } else {
       snprintf(valueText[i], sizeof(valueText[i]), "%s", tr(STR_SLOT_EMPTY));
-    }
-    if (ota_slots::sameSlot(slotPartition(i), running)) {
-      // The version string is at most 32 bytes, so the marker always fits.
-      strlcat(valueText[i], " · ", sizeof(valueText[i]));
-      strlcat(valueText[i], tr(STR_SLOT_RUNNING), sizeof(valueText[i]));
+      strlcat(valueText[i], suffix, sizeof(valueText[i]));
     }
     rowItems[i].value = valueText[i];
     rowItems[i].actionValue = static_cast<int16_t>(i);
@@ -45,11 +122,7 @@ const char* FirmwareSlotsActivity::headerTitle() const { return tr(STR_FIRMWARE_
 
 void FirmwareSlotsActivity::buildScreen(UiScreen& screen) {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
-  screen.setContentMarginFromScreen(fui::Insets{
-      static_cast<int16_t>(safe.y + metrics.topPadding + metrics.headerHeight),
-      static_cast<int16_t>(renderer.getScreenWidth() - (safe.x + safe.width)),
-      static_cast<int16_t>(renderer.getScreenHeight() - (safe.y + safe.height)), static_cast<int16_t>(safe.x)});
+  screen.setContentMarginFromScreen(contentInsets());
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
   fui::ListProps props;

@@ -5,6 +5,7 @@
 
 #include "activities/UiListActivity.h"
 #include "components/OptionPopup.h"
+#include "network/DevOtaClient.h"  // EntryBuffer: the manifest the picker fetched
 #include "network/OtaSlots.h"
 
 class MappedInputManager;
@@ -33,9 +34,25 @@ class FirmwareSlotsActivity final : public UiListActivity {
   const esp_partition_t* slotPartition(int index) const;
   void bootSlot(int index);
 
+  // §20: the content-band geometry buildScreen() renders with, shared by
+  // the row-value composition so a composed value cannot overprint the
+  // label or spill the row edge. The band width is what ui::list gives the
+  // rowArea (content band, theme listInset, nav-reserved scroll strip).
+  freeink::ui::Insets contentInsets() const;
+  int listBandWidth() const;
+  // Pixel width the row's value text may use: band minus the resolved row
+  // side padding, the row's measured label and the value text gap.
+  int valueSlotWidth(int index) const;
+
   freeink::ui::ListItem rowItems[kSlotCount]{};
   // Display strings must outlive the row items that point into them; one
-  // buffer per row, rebuilt in onEnter().
-  char valueText[kSlotCount][48]{};
+  // buffer per row, rebuilt in onEnter(). Sized for the longest real value —
+  // a full 31-byte dev stamp + the running marker + NUL has to fit.
+  char valueText[kSlotCount][64]{};
+  // §20 cross-reference: the dev manifest's PR entries turn a dev slot's
+  // stamped version into the picker's own "pr <num> <sha>" badge. Held so
+  // the fetch happens once per screen entry; zeroed when the fetch is not
+  // attempted (radio down, no dev stamp — the stamp itself is the identity).
+  dev_ota::EntryBuffer devEntries_{};
   OptionPopup<> bootPopup;
 };
