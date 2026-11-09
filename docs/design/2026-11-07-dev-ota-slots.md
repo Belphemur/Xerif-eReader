@@ -499,3 +499,46 @@ The pure policy functions are pinned in `DevOtaPolicyTest` (group order,
 within-PR ordering, undated entries running last in manifest order,
 header-row classification, +6h/−5h/minute-offset conversions, day and year
 boundary rolls, stamp-own-offset handling, verbatim fall-open).
+
+### 20. Slot-chooser prints the stamped build identity (2026-11-09)
+
+**Decision (owner hardware report, X4 Pro).** The Firmware slots screen read
+each image's `esp_app_desc_t.version` verbatim: a dev-stamped field is the
+truncated fit product, and the row garbled — no PR number, a mangled value
+against the label. The dev row's real identity is this two-step: the slot's
+stamped dev version cross-references the CURRENT dev manifest (the picker
+can fetch it — `pr-firmware-links.yml` stamps with the head branch, so a
+stamp can never carry a PR number; the number exists only in the asset
+name). The grammar knowledge for both consumers lives in ONE module
+(`dev_ota` in `DevOtaPolicy.{h,cpp}`):
+
+- `parsePrName` — the PR asset name parse (`"xerif-pr-<num>-<sha>"`),
+  moved from the picker's file-local helper to the public record the
+  picker (`entryLabel`, `entryGroup`) AND the slot chooser share.
+- `parseDevStamp` — the stamped dev version parse
+  (`"<base>-dev-<branch>-<sha>"`, self-identifying by the `-dev-` marker;
+  the sha is the segment after the final dash, 4..12 hex chars —
+  `fit_version` guarantees the `-dev-<sha>` tail never gets cut). Stable
+  releases, the prebuilt core's constant and erasure padding return false.
+- `slotRowValue` — one composition for both slot rows: a manifest PR sha
+  match (prefix compare, first manifest entry wins) renders the picker's
+  own `"pr <num> <sha>"` badge; otherwise the stamped version itself (the
+  honest build identity). Then the value shrinks by recognized shapes only
+  (full stamp → branch-dropped → shorter sha → shorter base) until the
+  value plus the running marker fits the row's value slot, measured in the
+  theme's small font from the same content-band geometry `buildScreen`
+  renders with. Bad input prints verbatim and never becomes "unknown".
+
+The slots screen never owns the radio: the manifest fetch runs in
+`onEnter` only when WiFi is already connected (best-effort, memory-claimed
+like the picker's), and without it the stamp itself stays the row value —
+no connection prompt, no silent restart on exit. Deviation from the
+brief's one-entry-point sketch: `prNumOut` was removed from the stamp
+parse (a stamp cannot carry a PR number — that is what made the cross-
+reference necessary); the returned sha plus the manifest cross-reference
+produce the same identity with no dead output. Pinned in
+`DevOtaPolicyTest` (§20 suite: grammar matrix 7..12-char shas, base/
+branch/sha decode, cross-reference resolution and first-entry conflict
+rule, no-manifest/no-match verbatim, fit-or-shape-clamp over every
+capacity, branch-then-sha shrink steps, badge shrink-to-number, garbage
+verbatim, entry-vs-slot one-badge parity).
