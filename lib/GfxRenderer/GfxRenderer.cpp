@@ -2082,11 +2082,15 @@ void GfxRenderer::invertRegion(const int x, const int y, const int w, const int 
     int ax = 0, ay = 0, bx = 0, by = 0;
     rotateCoordinates(orientation, x, y, &ax, &ay, panelWidth, panelHeight);
     rotateCoordinates(orientation, x + w - 1, y + h - 1, &bx, &by, panelWidth, panelHeight);
-    exact.x = static_cast<uint16_t>(std::min(ax, bx));
-    exact.y = static_cast<uint16_t>(std::min(ay, by));
+    // Lower- and upper-clamped to the panel before the uint16_t casts: a
+    // rotation's arithmetic can produce a negative coordinate for a clipped
+    // edge, and it would wrap into a huge unsigned rect extent.
+    exact.x = static_cast<uint16_t>(std::max(0, std::min(ax, bx)));
+    exact.y = static_cast<uint16_t>(std::max(0, std::min(ay, by)));
     const int exHi = std::max(ax, bx) + 1;
+    const int eyHi = std::max(ay, by) + 1;
     exact.w = static_cast<uint16_t>(std::min(exHi, static_cast<int>(panelWidth)) - exact.x);
-    exact.h = static_cast<uint16_t>(std::min(std::max(ay, by) + 1, static_cast<int>(panelHeight)) - exact.y);
+    exact.h = static_cast<uint16_t>(std::min(eyHi, static_cast<int>(panelHeight)) - exact.y);
   }
 
   // GRAYSCALE_DUAL: when a dual strip target is bound both plane scratches

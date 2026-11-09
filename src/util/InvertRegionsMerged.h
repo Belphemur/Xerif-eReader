@@ -10,35 +10,34 @@
 // inverting them separately would cancel the shared band (XOR twice = restore).
 // Rects are grouped by VERTICAL INTERVAL OVERLAP (tokens on one visual line
 // from runs with different sizePx share the line band even though their exact
-// top/height differ — superscript runs, mixed-size spans), then merged by
-// ascending x with touch/overlap, and each merged rectangle is inverted once.
-inline void invertRegionsMerged(GfxRenderer& renderer, const std::vector<Rect>& rects) {
+// top/height differ — superscript runs, mixed-size spans), then merged by x
+// with touch/overlap, and each merged rectangle is inverted once. Sorts the
+// caller's vector in place (no extra allocation on the paint path); the band
+// merge tracks the running LEFT edge too, because the (y, x) order lets a
+// deeper band's rect sit left of an interval already emitted.
+inline void invertRegionsMerged(GfxRenderer& renderer, std::vector<Rect> rects) {
   if (rects.empty()) return;
-  // Sort by (y, x) so a vertical run of overlapping rects is contiguous.
-  std::vector<Rect> sorted(rects);
-  std::sort(sorted.begin(), sorted.end(), [](const Rect& a, const Rect& b) {
-    if (a.y != b.y) return a.y < b.y;
-    return a.x < b.x;
-  });
+  std::sort(rects.begin(), rects.end(),
+            [](const Rect& a, const Rect& b) { return a.y != b.y ? a.y < b.y : a.x < b.x; });
   size_t i = 0;
-  while (i < sorted.size()) {
-    // Band = a maximal chain whose vertical intervals overlap: grow the band's
-    // bottom while the next rect starts above it. Tokens on the same visual
-    // line overlap; lines with tight spacing may overlap by 1-2 px too, which
-    // still merges the rare edge case instead of XOR-restoring a seam.
-    int x = sorted[i].x;
-    int y = sorted[i].y;
-    int right = sorted[i].x + sorted[i].width;
-    int bottom = sorted[i].y + sorted[i].height;
+  while (i < rects.size()) {
+    // Band = a maximal chain whose vertical intervals overlap; the band's top
+    // is the running minimum so a left-of-band rect reenters the interval.
+    int x = rects[i].x;
+    int y = rects[i].y;
+    int right = rects[i].x + rects[i].width;
+    int bottom = rects[i].y + rects[i].height;
     size_t j = i + 1;
-    while (j < sorted.size() && sorted[j].y < bottom) {
-      const int rectBottom = sorted[j].y + sorted[j].height;
-      if (sorted[j].x <= right) {
-        right = std::max(right, sorted[j].x + sorted[j].width);
+    while (j < rects.size() && rects[j].y < bottom) {
+      const int rectBottom = rects[j].y + rects[j].height;
+      if (rects[j].x <= right) {
+        x = std::min(x, rects[j].x);
+        right = std::max(right, rects[j].x + rects[j].width);
       } else {
         renderer.invertRegion(x, y, right - x, bottom - y);
-        x = sorted[j].x;
-        right = sorted[j].x + sorted[j].width;
+        x = rects[j].x;
+        right = rects[j].x + rects[j].width;
+        y = rects[j].y;
       }
       bottom = std::max(bottom, rectBottom);
       ++j;

@@ -266,6 +266,15 @@ void DictionaryDefinitionActivity::openSearch() {
       const auto& keyboard = std::get<KeyboardResult>(result.data);
       if (!keyboard.text.empty()) {
         if (lookup) {
+          // Same capacity guard as the selection path: the 16-entry navigation
+          // history is full after 16 forward lookups, and a further search
+          // would push past its end in navigateDefinition.
+          if (lookup->depth == lookup->history.size()) {
+            showMessage(StrId::STR_DICT_HISTORY_FULL);
+            clearBeforeNextRender = true;
+            requestUpdate();
+            return;
+          }
           // In-popup recursion: navigateDefinition() runs on the next loop
           // tick, keeping the lookup history under this activity.
           lookup->pendingWord = keyboard.text;

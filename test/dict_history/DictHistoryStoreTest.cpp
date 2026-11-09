@@ -69,17 +69,26 @@ TEST(DictHistoryStore, SanitizesControlBytesAndTruncatesLongQueries) {
 
 TEST(DictHistoryStore, Utf8TruncationEndsOnCodepointBoundary) {
   fake::reset();
-  // "café" with é (2 bytes): a cut that would land inside é rolls back to
-  // the codepoint boundary.
-  const std::string longUtf8 = std::string(128, 'a') + "\xc3\xa9" + "x";
-  EXPECT_TRUE(DictHistoryStore::record(longUtf8));
+  // é begins AT byte 128 (bytes 128-129): the 128-byte cap lands on its lead
+  // byte, which is a clean boundary — all 128 in-limit ASCII bytes survive.
+  const std::string cleanCut = std::string(128, 'a') + "\xc3\xa9" + "x";
+  EXPECT_TRUE(DictHistoryStore::record(cleanCut));
   auto history = lines();
   ASSERT_EQ(history.size(), 1u);
-  EXPECT_EQ(history[0].size(), 127u);  // the é's lead byte straddles the cap and is dropped
+  EXPECT_EQ(history[0].size(), 128u);
   EXPECT_EQ(history[0].back(), 'a');
+  // A cap landing INSIDE é (its lead at byte 127, continuation at 128) rolls
+  // back to the codepoint boundary: the incomplete character is dropped and
+  // the stored query stays valid UTF-8.
+  const std::string splitCut = std::string(127, 'a') + "\xc3\xa9" + "x";
+  EXPECT_TRUE(DictHistoryStore::record(splitCut));
+  history = lines();
+  ASSERT_EQ(history.size(), 2u);
+  EXPECT_EQ(history.front().size(), 127u);
+  EXPECT_EQ(history.front().back(), 'a');
   // A control byte mid-query refuses the whole record.
   EXPECT_FALSE(DictHistoryStore::record(std::string(50, 'a') + '\n' + std::string(50, 'b')));
-  EXPECT_EQ(lines().size(), 1u);
+  EXPECT_EQ(lines().size(), 2u);
 }
 
 TEST(DictHistoryStore, TempPublishFailureKeepsRecoverableStage) {

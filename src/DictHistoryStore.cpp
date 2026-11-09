@@ -59,13 +59,13 @@ void parseRingLines(const std::string_view content, std::vector<std::string>& ou
 std::string sanitizeQuery(const std::string& query) {
   size_t length = std::min(query.size(), DictHistoryStore::MAX_QUERY_BYTES);
   if (length < query.size()) {
-    // A byte-granular cap can land inside a multi-byte codepoint: roll back
-    // trailing continuation bytes, then drop the straddling codepoint's lead,
-    // so stored query text stays valid UTF-8.
+    // Roll back ONLY when the cap lands inside a multi-byte codepoint (the
+    // byte at the cap is a continuation: its codepoint started before the
+    // cap). A cap landing on a lead byte or ASCII is already a clean
+    // boundary — the straddling codepoint lies entirely past the limit.
     while (length > 0 && (static_cast<unsigned char>(query[length]) & 0xC0) == 0x80) {
       --length;
     }
-    if (length > 0 && (static_cast<unsigned char>(query[length]) & 0x80) != 0) --length;
     if (length == 0) return {};  // defensive: a codepoint cannot fill the cap
   }
   std::string clean;
@@ -81,21 +81,31 @@ std::string sanitizeQuery(const std::string& query) {
 // Reads one path into a caller-buffer and parses the ring lines. False when
 // the path is unreadable or present but OOM-stranded (callers must not treat
 // that as an empty history and rewrite).
-bool readRingPath(const char* path, std::vector<std::string>& out) {
+// Reads one path and parses the ring lines. Coding:
+// - returns false                 → path missing (or storage-level open error)
+// - returns true, readable=false  → open OK but read failed / OOM: present yet
+//   unreadable; callers must never treat that as an empty ring and rewrite
+// - returns true, readable=true   → parsed OK (entries possibly EMPTY: a
+//   blank file, or a filled buffer's truncated tail refused)
+bool readRingPath(const char* path, std::vector<std::string>& out, bool& readable) {
+  readable = false;
   HalFile file = Storage.open(path, O_RDONLY);
   if (!file) return false;
   auto buffer = makeUniqueNoThrow<uint8_t[]>(MAX_FILE_BYTES);
-  if (!buffer) return false;
-  const size_t bytes = static_cast<size_t>(std::max(file.read(buffer.get(), MAX_FILE_BYTES), 0));
+  if (!buffer) return true;  // stranded an open file unreadably
+  const int raw = file.read(buffer.get(), MAX_FILE_BYTES);
   file.close();
-  parseRingLines(std::string_view(reinterpret_cast<const char*>(buffer.get()), bytes), out);
+  if (raw < 0) return true;  // read error (present, unreadable)
+  readable = true;
+  parseRingLines(std::string_view(reinterpret_cast<const char*>(buffer.get()), static_cast<size_t>(raw)), out);
   return true;
 }
 }  // namespace
 
 void DictHistoryStore::load(std::vector<std::string>& out) {
   out.clear();
-  readRingPath(FILE_PATH, out);
+  bool readable = false;
+  readRingPath(FILE_PATH, out, readable);
 }
 
 bool DictHistoryStore::record(const std::string& query) {
@@ -105,10 +115,11 @@ bool DictHistoryStore::record(const std::string& query) {
   // Load recent-first. An existing-but-unreadable live file must never be
   // replaced by a single-query ring: an empty load from a PRESENT file means
   // a transient storage error, so the update refuses instead.
-  const bool historyPresent = Storage.exists(FILE_PATH);
   std::vector<std::string> entries;
-  load(entries);
-  if (historyPresent && entries.empty()) {
+  bool liveReadable = false;
+  const bool livePresent = readRingPath(FILE_PATH, entries, liveReadable) && liveReadable;
+  if (livePresent && !liveReadable) {
+    // Present but unreadable (transient storage error): never rewrite.
     LOG_ERR("DICTH", "History exists but is unreadable; refusing to rewrite");
     return false;
   }
@@ -116,11 +127,22 @@ bool DictHistoryStore::record(const std::string& query) {
     // Previous publication may have failed (remove+rename leaves the stage
     // file behind and no live file); recover from the rotated backup first —
     // it is staged only after a completed write — then the recovery stage.
-    std::vector<std::string> staged, backup;
-    if (readRingPath(BACKUP_PATH, backup) && !backup.empty())
-      entries = std::move(backup);
-    else if (readRingPath(TEMP_PATH, staged) && !staged.empty())
-      entries = std::move(staged);
+    // A PRESENT recovery file that reads as unreadable refuses the rewrite.
+    for (const char* path : {BACKUP_PATH, STAGE_PATH, TEMP_PATH}) {
+      std::vector<std::string> staged;
+      bool stagedReadable = false;
+      readRingPath(path, staged, stagedReadable);
+      // A PRESENT recovery file that reads as unreadable refuses the rewrite
+      // (a missing one is just no recovery source for this path).
+      if (Storage.exists(path) && !stagedReadable) {
+        LOG_ERR("DICTH", "Recovery file unreadable; refusing to rewrite");
+        return false;
+      }
+      if (!staged.empty()) {
+        entries = std::move(staged);
+        break;
+      }
+    }
   }
   // Move-to-front dedupe: a re-looked-up word jumps to the top.
   const auto existing = std::find(entries.begin(), entries.end(), clean);
@@ -146,8 +168,8 @@ bool DictHistoryStore::record(const std::string& query) {
     }
   }
   // The stage must complete before publication; a short write or a failed
-  // sync leaves the live history untouched.
-  bool staged = ok;  // stage completed before the sync/publish attempts
+  // sync leaves the live history untouched (an interrupted stage is removed,
+  // its content is not a recovery source).
   if (ok && !file.sync()) ok = false;
   file.close();
   if (ok) {
@@ -160,7 +182,6 @@ bool DictHistoryStore::record(const std::string& query) {
     ok = Storage.replaceFile(STAGE_PATH, FILE_PATH);
     if (!ok) LOG_ERR("DICTH", "Could not publish history stage file");
   } else {
-    // Interrupted stage: its content cannot be trusted as a recovery source.
     (void)Storage.remove(STAGE_PATH);
   }
   return ok;

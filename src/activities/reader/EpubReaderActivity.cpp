@@ -5001,7 +5001,9 @@ void EpubReaderActivity::ttfRunPreRenderPass(const freeink::book::LayoutParams& 
         page, *chain, renderer, ttfPreRendered.nextRun, ttfPreRendered.nextChar, &ttfPreRendered.nextRun,
         &ttfPreRendered.nextChar, kPreRenderSliceBudgetMs, params.characterSpacingPx, params.wordSpacingPx);
   } else {
-    paintTtfPage(page, params.font, params.characterSpacingPx, params.wordSpacingPx, ttfPage);
+    // Prerender paints the NEXT page: anchor-less clip matching must use the
+    // page actually painted, not the reader's current position.
+    paintTtfPage(page, params.font, params.characterSpacingPx, params.wordSpacingPx, nextPage);
   }
   ttf_->scratch().release(scratchMark);
 
