@@ -64,6 +64,14 @@ what the loser would have cost.
    still cannot see the chip; the SDK owns the state, the SDK heals it.
 4. **Rejected: touch-to-wake via Gesture mode.** Remains unverified
    hardware on X4 Pro (parent doc §4); out of scope.
+5. **Bus serialization of the runtime re-probe** (review round): the
+   ladder's `beginGt911()` re-init holds `freeink::I2cBusLock`, which is a
+   real mutex on the profiles that enable it (Metalio EINK4, EEGO A4) and a
+   no-op elsewhere — enabling it on the X4 Pro shared bus (GT911 + PCF8563
+   Rtc + CW2017 gauge, SDA39/SCL38) is a cross-cutting profile change (Rtc,
+   BatteryMonitor and every other shared-bus user must take it), recorded
+   here as a follow-up for the SDK owner rather than smuggled into this
+   defect fix.
 
 ## 4. Behavior contract after the fix
 
@@ -73,15 +81,30 @@ what the loser would have cost.
   recovers autonomously within the ladder (N failed polls → wake handshake
   → re-probe), with one `LOG` line per ladder step.
 - A controller the wake handshake cannot revive is re-probed instead of
-  dying until reboot; the re-probe's failure (chip absent) is logged once.
+  dying until reboot; a re-probe that finds no chip on the bus logs one line
+  per attempt (rate-limited to once per 60 s) and the ladder keeps retrying
+  until the chip answers again — a failed re-probe must not strand
+  `gt911Addr`/`touchDataEnabled` and turn touch permanently unreachable
+  (that was the ladder's own failure mode, caught in review round 1).
 
 ## 5. Verification
 
 - **Host tests** (freeink-sdk InputManager suite): park entry parks on an
   ACKed command regardless of probe code; the ladder fires the handshake
-  after N failed reads and re-probes on handshake failure; rate limit holds.
+  after N failed reads and re-probes on handshake failure; rate limit holds;
+  a failed re-probe retries at the rate limit and recovers a chip that
+  comes back; a handshake that cannot clear the controller's latched report
+  does not re-arm the level-wake INT.
 - **Device bench build**: `XERIF_BENCH_TOUCH_PARK=1` per the parent doc's
   bench escape; serial shows `GT911 sleep entered` on park and
   `GT911 wake, resuming poll` on the button edge.
 - **Owner soak**: idle > 5 min on battery → one Up/Down press → touch
-  alive every time; with no button press, touch recovers autonomously.
+  alive every time.
+- **Ladder soak (fault state)**: the autonomous ladder only engages while
+  the controller is considered awake but stops answering on I2C — the
+  pre-fix misclassified park, a chip self-sleep, or a NACKed park retry. A
+  healthy post-fix park parks the controller correctly, so the no-button
+  soak is NOT evidence for the ladder on healthy hardware; correctness is
+  pinned by the host suite, and any ladder line in a device log (`GT911
+  poll: 5 failed reads…`, `…re-probing…`) is evidence it engaged in a
+  genuine fault state.
