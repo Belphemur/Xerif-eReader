@@ -614,7 +614,7 @@ void DevOtaActivity::render(RenderLock&&) {
       const fui::DeviceContext device = uiTarget.deviceContext();
       const fui::InputSnapshot noInput{};
       fui::Frame<dev_ota::kMaxVersions + 1> frame(uiTarget, device, noInput, touchInteractions);
-      for (int i = listScrollTop_; i < lastRow && touchRows > 0; ++i) {
+      for (int i = listScrollTop_; i < lastRow; ++i) {
         const int entry = displayRows_[i].entry;
         if (entry < 0) continue;
         frame.hit(rowRects[i - listScrollTop_], TOUCH_ACTION_ROW, static_cast<int16_t>(entry), fui::InputTouch);
