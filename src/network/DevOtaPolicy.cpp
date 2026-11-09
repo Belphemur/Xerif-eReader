@@ -34,9 +34,8 @@ ResumeBind bindPendingEntry(const OtaDevVersionEntry* entries, int count, const 
 
 namespace {
 
-// Display label for a dev asset name "xerif-dev-<sha>-x4pro.bin" → "dev <sha12>".
-// Returns false when the name doesn't match the pattern; callers then show
-// the raw asset name.
+// Display label for a dev asset name. Returns false when the name doesn't
+// match the pattern; callers then show the raw asset name.
 bool devNameLabel(const char* name, char* out, size_t cap) {
   constexpr char kPrefix[] = "xerif-dev-";
   const size_t prefixLen = sizeof(kPrefix) - 1;
@@ -50,18 +49,10 @@ bool devNameLabel(const char* name, char* out, size_t cap) {
   return true;
 }
 
-// One parse of a PR asset name "xerif-pr-<num>-<sha>-x4pro.bin": the
-// "pr <num> <sha>" row badge AND the group ordering key (PR id) both come
-// from here, so a badge and its group can never disagree on whether an
-// entry is a PR build. num/sha point into `name`. `value` is 0 (still a PR)
-// when <num> is not purely numeric — the badge keeps the raw slice.
-struct PrName {
-  const char* num = nullptr;
-  size_t numLen = 0;
-  long value = 0;
-  const char* sha = nullptr;  // points into `name`: bounded by shaLen
-  size_t shaLen = 0;
-};
+}  // anonymous namespace
+
+// Single PR-asset grammar (struct/comment in the header): also consumed by
+// the slot chooser's §20 cross-reference.
 bool parsePrName(const char* name, PrName* out) {
   constexpr char kPrefix[] = "xerif-pr-";
   constexpr char kSuffix[] = "-x4pro.bin";
@@ -94,19 +85,173 @@ bool parsePrName(const char* name, PrName* out) {
   return true;
 }
 
-bool prNameLabel(const char* name, char* out, size_t cap) {
-  PrName pr;
-  if (!parsePrName(name, &pr)) return false;
+// "pr <num> <sha>" badge — the picker's PR rows and the slot chooser's
+// cross-reference both land here (§20: one grammar, one composer).
+void prBadge(const PrName& pr, char* out, size_t cap) {
   snprintf(out, cap, "pr %.*s %.*s", static_cast<int>(pr.numLen), pr.num, static_cast<int>(pr.shaLen), pr.sha);
+}
+
+// --- §20 fork dev stamp "<base>-dev-<branch>-<sha>" ---------------------------
+// git_branch.py derives <base>-dev-<branch>-<short sha>; patch_dev_version's
+// fit_version fits the 31-byte field by dropping a whole overlength branch
+// and, at worst, truncating the base on the right — the "-dev-<sha>" tail
+// itself is never cut. So the text after the last dash is the short sha,
+// 4..12 hex chars (git's own shortened form); longer, shorter, or non-hex
+// tails are not a stamp this module claims to know.
+bool parseDevStamp(const char* version, DevStamp* out) {
+  constexpr char kDevMark[] = "-dev-";
+  constexpr size_t kMinShaLen = 4;
+  constexpr size_t kMaxShaLen = 12;
+  if (!version) return false;
+  const size_t len = strnlen(version, 33);  // bounded: the field is 32 bytes
+  constexpr size_t kMarkLen = sizeof(kDevMark) - 1;
+  if (len < kMarkLen + kMinShaLen) return false;
+  // The -dev- marker with at least one base char before, and the sha after.
+  const char* mark = nullptr;
+  for (size_t i = 1; i + kMarkLen < len; ++i) {
+    if (strncmp(version + i, kDevMark, kMarkLen) == 0) {
+      mark = version + i;
+      break;
+    }
+  }
+  if (!mark) return false;
+  size_t shaLen = len - static_cast<size_t>(mark + kMarkLen - version);
+  if (shaLen < kMinShaLen || shaLen > kMaxShaLen) return false;
+  const char* sha = mark + kMarkLen;
+  for (size_t i = 0; i < shaLen; ++i) {
+    const char c = sha[i];
+    const bool hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+    if (!hex) return false;
+  }
+  if (out) {
+    out->base = version;
+    out->baseLen = static_cast<size_t>(mark - version);
+    if (out->baseLen == 0) return false;
+    out->sha = sha;
+    out->shaLen = shaLen;
+    // The branch survives only when it is whole: base-sha without anything
+    // between is the fit_version's dropped form (the branch was dropped or
+    // already absent) — no branch component to report.
+    const char* branchEnd = sha - 1;  // the dash before the sha
+    if (branchEnd > mark + kMarkLen) {
+      out->branch = mark + kMarkLen;
+      out->branchLen = static_cast<size_t>(branchEnd - out->branch);
+    } else {
+      out->branch = nullptr;
+      out->branchLen = 0;
+    }
+  }
   return true;
 }
 
-}  // namespace
+namespace {
+
+// One recognized shape of a stamped dev version (§20): the branch kept or
+// dropped, and the shown-sha/base budgets the shrink loop steps through.
+// Every shape keeps the "-dev-<sha>" tail — the build identity; the base
+// and the shown sha are the only shrinking surfaces.
+void composeStampShape(const DevStamp& stamp, const size_t baseLen, const size_t shaLen, const bool withBranch,
+                       char* out, const size_t cap) {
+  if (withBranch && stamp.branchLen > 0) {
+    snprintf(out, cap, "%.*s%.*s-dev-%.*s", static_cast<int>(baseLen), stamp.base, static_cast<int>(stamp.branchLen),
+             stamp.branch, static_cast<int>(shaLen), stamp.sha);
+  } else {
+    snprintf(out, cap, "%.*s-dev-%.*s", static_cast<int>(baseLen), stamp.base, static_cast<int>(shaLen), stamp.sha);
+  }
+}
+
+void composeStampShape(const DevStamp& stamp, const size_t baseLen, const size_t shaLen, char* out, const size_t cap) {
+  composeStampShape(stamp, baseLen, shaLen, true, out, cap);  // widest shape has the branch
+}
+
+}  // anonymous namespace
+
+void slotRowValue(const char* version, const OtaDevVersionEntry* manifest, const int count, TextMeasure measure,
+                  const void* measureCtx, const int valueSlotPx, const char* suffix, int& prNumOut, char* out,
+                  const size_t cap) {
+  prNumOut = -1;
+  if (!out || cap == 0) return;
+  if (!version) {
+    out[0] = '\0';
+    return;
+  }
+  if (!measure) measure = [](const void*, const char*) { return 0; };
+  int slotPx = valueSlotPx;
+  if (suffix) slotPx -= measure(measureCtx, suffix);
+
+  // Manifest cross-reference first (§20): a PR asset whose name sha shares
+  // a prefix with the stamp's trailing sha (the shorter of the two decides
+  // — a 7-char field and a 12-char manifest sha still name one commit).
+  // First manifest match wins.
+  DevStamp stamp;
+  const bool stamped = parseDevStamp(version, &stamp);
+  if (manifest && count > 0 && stamped) {
+    for (int i = 0; i < count; ++i) {
+      PrName pr;
+      if (!parsePrName(manifest[i].name, &pr)) continue;
+      const size_t cmpLen = pr.shaLen < stamp.shaLen ? pr.shaLen : stamp.shaLen;
+      if (memcmp(stamp.sha, pr.sha, cmpLen) != 0) continue;
+      prBadge(pr, out, cap);
+      prNumOut = static_cast<int>(pr.value);
+      return;
+    }
+  }
+  if (!stamped) {
+    // Not a fork stamp (stable release, the prebuilt core's constant,
+    // garbage): fail-safe verbatim, never shortened to a placeholder.
+    snprintf(out, cap, "%s", version);
+    return;
+  }
+
+  // Recognized shapes, widest identity first: the full stamp (branch
+  // kept), the fit_version's branch-dropped form, then a shorter shown sha,
+  // then a shorter base. Each keeps the "-dev-<sha>" tail.
+  char shape[48];
+  composeStampShape(stamp, stamp.baseLen, stamp.shaLen, shape, sizeof(shape));
+  if (measure(measureCtx, shape) <= slotPx) {
+    snprintf(out, cap, "%s", shape);
+    return;
+  }
+  if (stamp.branchLen > 0) {
+    composeStampShape(stamp, stamp.baseLen, stamp.shaLen, false, shape, sizeof(shape));
+    if (measure(measureCtx, shape) <= slotPx) {
+      snprintf(out, cap, "%s", shape);
+      return;
+    }
+  }
+  // Shorter sha (identity holds: the manifest prefix matched on the shorter
+  // form anyway when it matched at all), then a shorter base on the right.
+  size_t shaLen = stamp.shaLen;
+  while (shaLen > 4) {
+    --shaLen;
+    composeStampShape(stamp, stamp.baseLen, shaLen, shape, sizeof(shape));
+    if (measure(measureCtx, shape) <= slotPx) {
+      snprintf(out, cap, "%s", shape);
+      return;
+    }
+  }
+  size_t baseLen = stamp.baseLen;
+  while (baseLen > 1) {
+    --baseLen;
+    composeStampShape(stamp, baseLen, shaLen, shape, sizeof(shape));
+    if (measure(measureCtx, shape) <= slotPx) {
+      snprintf(out, cap, "%s", shape);
+      return;
+    }
+  }
+  // Nothing fits: the verbatim stamp (fail safe — never a placeholder).
+  composeStampShape(stamp, stamp.baseLen, stamp.shaLen, shape, sizeof(shape));
+  snprintf(out, cap, "%s", shape);
+}
 
 void entryLabel(const OtaDevVersionEntry& entry, char* out, size_t cap) {
   // PR identity first: the PR number distinguishes it from develop builds,
   // and PR stamps rotate out of the manifest anyway.
-  if (prNameLabel(entry.name, out, cap)) return;
+  PrName pr;
+  if (parsePrName(entry.name, &pr)) {
+    prBadge(pr, out, cap);
+    return;
+  }
   if (entry.version[0]) {
     snprintf(out, cap, "%s", entry.version);
   } else if (!devNameLabel(entry.name, out, cap)) {
