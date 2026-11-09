@@ -64,6 +64,13 @@ mask on the source:
    `Uint8Array`-style buffer if that is already the bake's memory model — task 1
    decides from evidence). No new PSRAM allocation; if the existing buffer already
    holds the full image, the mask rides in it.
+   *(Owner correction 2026-11-08: the TTF reader path is gated to PSRAM-class boards
+   only by design — `platformio.ini` gates `CROSSPOINT_TTF_READER=1` to x4pro,
+   x4pro_profile, x4c, papermono, all with `-DBOARD_HAS_PSRAM`, and the comment
+   "Native-TTF reader path (design §14.1): PSRAM class boards only" says so. The
+   no-new-PSRAM contract was written from the wrong assumption. Full-image PSRAM
+   scratch is legitimate for future work; the arena model is PSRAM-backed
+   (`TtfBookRuntime.h:9-15`).)*
 5. **Cache rev bump** `'t'` → `'u'` so existing caches re-decode.
 6. **Regressions forbidden:** legacy FS4 path (`imageDecodeQuality = 0`) untouched,
    X3/1-bit paths untouched, driver/LUT untouched, TTF path only.
@@ -105,3 +112,40 @@ cppcheck, clang-format. Push `--force-with-lease` to `feat/ttf-image-quality2` (
 Develop has moved 11 commits past the PR head at write time (OTA work). The brief's
 task 0 rebases the PR onto origin/develop before any implementation work; the design
 doc is amended in lockstep if the rebase changes any of the numbers above.
+
+
+## As-built (2026-11-08) — DROPPED
+
+The pass was implemented (commit `9cba080a0`, 16 tests, 1560/1560 host ctest) and
+reverted the same day (revert `3138eae9e`) on owner soak feedback:
+
+- **The picture quality regressed** — "the quality of the picture is the worst.
+  Previous algorithm had better result." The band dilation (radius 1) plus the
+  threshold 42 entry fires on soft illustration gradients, not just text strokes;
+  the coverage mix is a hard binary decision between two palette levels, so the
+  dithered tone the texture campaign tuned (FS at factor 1.0 + threshold noise) is
+  replaced by crisp step edges everywhere the pass fires. Synthetics passed; real
+  artwork failed.
+- **The F3 goal was not met** — "text is still barely readable". At 480 px width the
+  AA band around thin script strokes is 1–2 px wide; the coverage mix cannot
+  reconstruct a stroke that dithered to 1 px of mid-level grain.
+- **The design's own drop rule applies** — the parent texture campaign's F3 was a
+  stretch goal with a documented drop condition: "a mechanism that cannot meet it
+  without violating 1–3 is documented and dropped." The pass violated the
+  no-regression rule (F1/F2 invariants held only on synthetic fixtures, not on real
+  artwork), so it is dropped.
+
+The revert restores the `'t'` bake (flat-field snap, threshold noise, stroke anchor,
+FS at factor 1.0) — the texture campaign's shipped state. Cache rev stays `'t'`.
+A future F3 attempt must satisfy the no-regression rule on real artwork, not just
+synthetic fixtures, before it can ship.
+
+## PSRAM policy correction (2026-11-08)
+
+The no-new-PSRAM contract above was written from the wrong assumption: the TTF
+reader path is gated to PSRAM-class boards **only** (`platformio.ini` gates
+`CROSSPOINT_TTF_READER=1` to x4pro, x4pro_profile, x4c, papermono, all with
+`-DBOARD_HAS_PSRAM`, and the comment "Native-TTF reader path (design §14.1): PSRAM
+class boards only" says so). The reader's arena model is PSRAM-backed
+(`TtfBookRuntime.h:9-15`). A full-image PSRAM scratch buffer is legitimate for future
+work; the row-ringed design was the answer to a constraint that does not exist.
