@@ -12,7 +12,9 @@
 
 #include "network/DevOtaPolicy.h"
 
-// OtaDevVersionEntry lives beside the policy, in the OTA JSON module.
+// OtaDevVersionEntry lives beside the policy; kMaxVersions bounds the
+// manifest window. Both headers are POD-only (no device deps) by design.
+#include "network/DevOtaClient.h"
 #include "network/OtaJson.h"  // OtaDevVersionEntry
 
 namespace {
@@ -322,4 +324,245 @@ TEST(DevOtaPolicyPickerRows, SingleGroupKeepsJustItsOwnHeader) {
   EXPECT_EQ(rows[2].entry, 1);
   const int noRows = dev_ota::pickerRows(entries, 0, rows);
   EXPECT_EQ(noRows, 0);
+}
+
+// --- §20 slot-row identity (brief 2026-11-09 slots screen) ------------------
+
+namespace {
+
+// Stub measure: every character costs kStubPxPerChar px (ctx ignored).
+constexpr int kStubPxPerChar = 10;
+int stubMeasure(const void*, const char* text) { return static_cast<int>((text ? strlen(text) : 0) * kStubPxPerChar); }
+int stubMeasureChars(const char* text) { return stubMeasure(nullptr, text); }
+
+// Composition contract: the output either fits the slot together with the
+// suffix (the way slotRowValue reserves the suffix width), or it is the
+// fail-safe escape — the unshrunk identity itself, never a placeholder.
+void expectComposedFits(const char* value, const char* suffix, const int slotPx, const char* out) {
+  const int suffixLen = suffix ? static_cast<int>(strlen(suffix)) : 0;
+  if (stubMeasureChars(out) + suffixLen * kStubPxPerChar <= slotPx) {
+    SUCCEED();
+  } else {
+    EXPECT_STREQ(out, value) << "oversized output must be the verbatim stamp, never a placeholder";
+  }
+}
+
+}  // namespace
+
+TEST(DevOtaPolicySlotStamp, GrammarAcceptsShortShaLengths) {
+  // CI shortens as needed (scripts/git_branch.py get_git_short_sha), so
+  // 7..12-char trailing segments are all valid stamps. Branches carry
+  // slashes and dashes — exactly what the live manifest records.
+  const char* valid[] = {
+      "2.16.1-dev-develop-772d2c5",                   // 7
+      "2.16.1-dev-develop-420c659e",                  // 8 (the live develop stamp)
+      "2.16.1-dev-fix/gt911-park-recovery-3a6e50f1",  // 9 + slashes
+      "1.1.0-dev-feat-kosync-xpath-05c6cf8ab12",      // 11 (git_branch doc example)
+      "2.16.1-dev-x-184cd3a1112f",                    // 12
+  };
+  for (const char* version : valid) {
+    dev_ota::DevStamp stamp;
+    ASSERT_TRUE(dev_ota::parseDevStamp(version, &stamp)) << version;
+  }
+  const char* invalid[] = {
+      "2.16.1",                    // stable release
+      "",                          // empty
+      "2.16.1-develop-420c659e",   // no "-dev-" marker
+      "2.16.1-dev-420",            // sha shorter than 4 hex chars
+      "2.16.1-dev-ghijkl",         // non-hex sha
+      "-dev-420c659e",             // empty base
+      "2.16.1-dev-420c659eabcde",  // sha beyond 12 hex chars: not this contract
+  };
+  for (const char* version : invalid) {
+    EXPECT_FALSE(dev_ota::parseDevStamp(version, nullptr)) << version;
+  }
+  // Out-parameter is optional: the pure predicate works without it.
+  EXPECT_TRUE(dev_ota::parseDevStamp("2.16.1-dev-develop-420c659e", nullptr));
+}
+
+TEST(DevOtaPolicySlotStamp, GrammarDecodesBaseBranchSha) {
+  dev_ota::DevStamp stamp;
+  ASSERT_TRUE(dev_ota::parseDevStamp("2.16.1-dev-develop-515801b46", &stamp));
+  EXPECT_EQ(stamp.baseLen, 6);
+  EXPECT_EQ(strncmp(stamp.base, "2.16.1", 6), 0);
+  EXPECT_EQ(stamp.branchLen, 7);
+  EXPECT_EQ(strncmp(stamp.branch, "develop", 7), 0);
+  EXPECT_EQ(stamp.shaLen, 9);
+  EXPECT_EQ(strncmp(stamp.sha, "515801b46", 9), 0);
+
+  // fit_version's branch-dropped form: no branch component to report.
+  dev_ota::DevStamp dropped;
+  ASSERT_TRUE(dev_ota::parseDevStamp("2.16.1-dev-9d9494e", &dropped));
+  EXPECT_EQ(dropped.branchLen, 0);
+  EXPECT_EQ(dropped.branch, nullptr);
+  EXPECT_EQ(dropped.shaLen, 7);
+  EXPECT_EQ(strncmp(dropped.sha, "9d9494e", 7), 0);
+}
+
+TEST(DevOtaPolicySlotStamp, PrCrossReferenceRendersThePickerBadge) {
+  // The owner's exact scenario: manifest newest-first, PR 303 behind the
+  // develop rows, and the flashed PR image carrying its dropped-branch stamp.
+  OtaDevVersionEntry entries[2]{};
+  makePickerEntry(entries[0], "xerif-dev-a8841f7b5c2d-x4pro.bin", "2026-11-09T16:12:26-05:00");
+  makePickerEntry(entries[1], "xerif-pr-303-9d9494e-x4pro.bin", "2026-11-09T21:02:54Z");
+  char out[64]{};
+  int num = 0;
+  dev_ota::slotRowValue("2.16.1-dev-9d9494e", entries, 2, stubMeasure, nullptr, 100000, nullptr, num, out, sizeof(out));
+  EXPECT_STREQ(out, "pr 303 9d9494e");
+  EXPECT_EQ(num, 303);
+}
+
+TEST(DevOtaPolicySlotStamp, PrCrossReferenceResolvesTheRightNumber) {
+  // Several PR entries with distinct numbers: only the sha decides.
+  OtaDevVersionEntry entries[3]{};
+  makePickerEntry(entries[0], "xerif-pr-309-4b9bbc4-x4pro.bin", nullptr);
+  makePickerEntry(entries[1], "xerif-pr-309-3a6e50f-x4pro.bin", nullptr);
+  makePickerEntry(entries[2], "xerif-pr-303-9d9494e-x4pro.bin", nullptr);
+  char out[64]{};
+  int num = 0;
+  dev_ota::slotRowValue("2.16.1-dev-9d9494e", entries, 3, stubMeasure, nullptr, 100000, nullptr, num, out, sizeof(out));
+  EXPECT_STREQ(out, "pr 303 9d9494e");
+  EXPECT_EQ(num, 303);
+}
+
+TEST(DevOtaPolicySlotStamp, SameShaConflictTakesFirstManifestEntry) {
+  OtaDevVersionEntry entries[2]{};
+  makePickerEntry(entries[0], "xerif-pr-303-9d9494e-x4pro.bin", nullptr);
+  makePickerEntry(entries[1], "xerif-pr-404-9d9494e-x4pro.bin", nullptr);
+  char out[64]{};
+  int num = 0;
+  dev_ota::slotRowValue("2.16.1-dev-9d9494e", entries, 2, stubMeasure, nullptr, 100000, nullptr, num, out, sizeof(out));
+  EXPECT_STREQ(out, "pr 303 9d9494e");
+  EXPECT_EQ(num, 303);
+}
+
+TEST(DevOtaPolicySlotStamp, NoManifestOrNoMatchShowsTheStampItself) {
+  char out[64]{};
+  int num = 0;
+  dev_ota::slotRowValue("2.16.1-dev-develop-515801b46", nullptr, 0, stubMeasure, nullptr, 100000, nullptr, num, out,
+                        sizeof(out));
+  EXPECT_STREQ(out, "2.16.1-dev-develop-515801b46");
+  EXPECT_EQ(num, -1);
+
+  // An empty manifest (fetch failed) and a manifest without the sha behave
+  // identically — never a placeholder.
+  OtaDevVersionEntry entries[1]{};  // zeroed (empty name) entries
+  dev_ota::slotRowValue("2.16.1-dev-develop-515801b46", entries, 1, stubMeasure, nullptr, 100000, nullptr, num, out,
+                        sizeof(out));
+  EXPECT_STREQ(out, "2.16.1-dev-develop-515801b46");
+
+  OtaDevVersionEntry noMatch[1]{};
+  makePickerEntry(noMatch[0], "xerif-pr-303-772d2c5-x4pro.bin", nullptr);
+  dev_ota::slotRowValue("2.16.1-dev-develop-515801b46", noMatch, 1, stubMeasure, nullptr, 100000, nullptr, num, out,
+                        sizeof(out));
+  EXPECT_STREQ(out, "2.16.1-dev-develop-515801b46");
+}
+
+TEST(DevOtaPolicySlotStamp, DevelopStampFitsOrClampsByRecognizedShapes) {
+  // A long branch survives the manifest but the field's fit_version may well
+  // have dropped it; every capacity walk must compose a shape that fits —
+  // or refuses to shrink and prints the stamp verbatim.
+  const char* value = "2.16.1-dev-feat/ttf-image-quality2-9d9494e";
+  for (int capacity = 0; capacity <= 520; capacity += 8) {
+    char out[64]{};
+    int num = -1;
+    dev_ota::slotRowValue(value, nullptr, 0, stubMeasure, nullptr, capacity, nullptr, num, out, sizeof(out));
+    expectComposedFits(value, nullptr, capacity, out);
+  }
+}
+
+TEST(DevOtaPolicySlotStamp, ClampsAgainstEveryManifestWindowCapacity) {
+  // kMaxVersions-sized manifest (3 PR + 4 dev + a carried entry): the dev
+  // stamp finds no PR sha, so the identity stays the stamp; the composition
+  // must still hold the fit-or-verbatim contract.
+  OtaDevVersionEntry entries[dev_ota::kMaxVersions]{};
+  makePickerEntry(entries[0], "xerif-pr-309-4b9bbc4-x4pro.bin", nullptr);
+  makePickerEntry(entries[1], "xerif-pr-303-9d9494e-x4pro.bin", nullptr);
+  makePickerEntry(entries[2], "xerif-pr-306-099c814-x4pro.bin", nullptr);
+  makePickerEntry(entries[3], "xerif-dev-515801b4604-d41d8-x4pro.bin", nullptr);
+  makePickerEntry(entries[4], "xerif-dev-515801b460-d41d8-x4pro.bin", nullptr);
+  makePickerEntry(entries[5], "xerif-dev-515801b46-d41d8-x4pro.bin", nullptr);
+  makePickerEntry(entries[6], "xerif-dev-515801b4-d41d8-x4pro.bin", nullptr);
+  const char* value = "2.16.1-dev-develop-515801b46";
+  for (int capacity = 0; capacity <= 520; capacity += 8) {
+    char out[64]{};
+    int num = -1;
+    dev_ota::slotRowValue(value, entries, dev_ota::kMaxVersions, stubMeasure, nullptr, capacity, nullptr, num, out,
+                          sizeof(out));
+    expectComposedFits(value, nullptr, capacity, out);
+    if (stubMeasureChars(out) > capacity) EXPECT_EQ(num, -1);  // escape: unfitted
+  }
+}
+
+TEST(DevOtaPolicySlotStamp, DropsTheBranchThenShortensShaInShapes) {
+  const char* value = "2.16.1-dev-develop-9d9494e";  // 26 chars
+  const char* suffix = " · running";                 // 11 bytes (' · ' + 'running')
+  char out[64]{};
+  int num = -1;
+  // Full composition needs 26 + 11 chars; it fits exactly at the boundary.
+  dev_ota::slotRowValue(value, nullptr, 0, stubMeasure, nullptr, 370, suffix, num, out, sizeof(out));
+  EXPECT_STREQ(out, value);
+  // One pixel less and the branch goes first (the fit_version shape).
+  dev_ota::slotRowValue(value, nullptr, 0, stubMeasure, nullptr, 369, suffix, num, out, sizeof(out));
+  EXPECT_STREQ(out, "2.16.1-dev-9d9494e");
+  // A tighter slot starts shortening the shown sha (identity tail intact:
+  // nothing else cuts before this stage). 280 - 110(slot) leaves room for
+  // exactly base + "-dev-" + a 6-char sha.
+  dev_ota::slotRowValue(value, nullptr, 0, stubMeasure, nullptr, 280, suffix, num, out, sizeof(out));
+  EXPECT_STREQ(out, "2.16.1-dev-9d9494");
+  // A slot that cannot hold even the shortest base-1 shape prints the
+  // stamp verbatim (the fail-safe escape, never a placeholder).
+  dev_ota::slotRowValue(value, nullptr, 0, stubMeasure, nullptr, 200, suffix, num, out, sizeof(out));
+  EXPECT_STREQ(out, value);
+}
+
+TEST(DevOtaPolicySlotStamp, BadgeTooWideShrinksItsShaThenFallsToTheStamp) {
+  OtaDevVersionEntry entries[1]{};
+  makePickerEntry(entries[0], "xerif-pr-303-9d9494e-x4pro.bin", nullptr);
+  // Plenty of space: the full badge.
+  char out[64]{};
+  int num = -1;
+  dev_ota::slotRowValue("2.16.1-dev-9d9494e", entries, 1, stubMeasure, nullptr, 100000, nullptr, num, out, sizeof(out));
+  EXPECT_STREQ(out, "pr 303 9d9494e");
+  // Too narrow for the badge (140px at the stub): the shown sha drops, the
+  // number never does.
+  dev_ota::slotRowValue("2.16.1-dev-9d9494e", entries, 1, stubMeasure, nullptr, 130, nullptr, num, out, sizeof(out));
+  EXPECT_STREQ(out, "pr 303 9d94");
+  EXPECT_EQ(num, 303);
+  // Sub-badge-room slots fall back to the stamp shapes (the badge refusal
+  // is the identity decision, the shapes are the presentation fallback).
+  dev_ota::slotRowValue("2.16.1-dev-9d9494e", entries, 1, stubMeasure, nullptr, 60, nullptr, num, out, sizeof(out));
+  expectComposedFits("2.16.1-dev-9d9494e", nullptr, 60, out);
+}
+
+TEST(DevOtaPolicySlotStamp, EntryLabelAndSlotComposeTheSamePrBadge) {
+  // The one-parse invariant: the picker (entryLabel) and the slot chooser
+  // (slotRowValue) must never drift into two PR grammars — same entry, same
+  // badge text.
+  OtaDevVersionEntry entry{};
+  makePickerEntry(entry, "xerif-pr-303-9d9494e-x4pro.bin", "2026-11-09T21:02:54Z");
+  char picker[64]{};
+  dev_ota::entryLabel(entry, picker, sizeof(picker));
+  char slots[64]{};
+  int num = -1;
+  dev_ota::slotRowValue("2.16.1-dev-ttf-image-quality2-9d9494e", &entry, 1, stubMeasure, nullptr, 100000, nullptr, num,
+                        slots, sizeof(slots));
+  EXPECT_STREQ(picker, slots);
+  EXPECT_STREQ(slots, "pr 303 9d9494e");
+  EXPECT_EQ(num, 303);
+}
+
+TEST(DevOtaPolicySlotStamp, GarbageStampPrintsVerbatim) {
+  char out[64]{};
+  int num = 0;
+  // The prebuilt Arduino core's constant version (unstamped images).
+  dev_ota::slotRowValue("6671d0b", nullptr, 0, stubMeasure, nullptr, 10, nullptr, num, out, sizeof(out));
+  EXPECT_STREQ(out, "6671d0b");
+  EXPECT_EQ(num, -1);
+
+  // Erasure padding: 32 × 0xFF, NUL-terminated — the SlotInfo field order.
+  char padded[33]{};
+  memset(padded, '\xff', 32);
+  dev_ota::slotRowValue(padded, nullptr, 0, stubMeasure, nullptr, 10, nullptr, num, out, sizeof(out));
+  EXPECT_STREQ(out, padded);
 }

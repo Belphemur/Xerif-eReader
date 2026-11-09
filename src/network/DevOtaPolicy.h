@@ -137,17 +137,20 @@ using TextMeasure = int (*)(const void* ctx, const char* text);
 //    fetched): a PR asset whose name sha shares a prefix with the stamp's
 //    trailing sha (the shorter of the two decides the prefix — a 7-char
 //    field sha and a 12-char manifest sha still name one commit); first
-//    manifest match wins;
+//    manifest match wins. A badge that would not fit shrinks its shown sha
+//    first (the PR number never goes), then falls back to the stamp shapes;
 //  - otherwise the stamped dev version itself (the real build identity;
 //    never a placeholder, matching output such as "2.16.1-dev-develop-<sha>");
 //  - an unrecognizable text (not a fork stamp) is printed VERBATIM — bad
 //    input fails safe, never "unknown".
-// The composed value is then shrunk by recognized shapes only — full stamp →
+// Then the value is shrunk by recognized shapes only — full stamp →
 // "<base>-dev-<sha>" → shorter sha → shorter base — until it plus `suffix`
 // (the caller's " · running" marker, may be null) fits `valueSlotPx` as
-// measured by `measure` in the row's value font. `prNumOut` receives the
-// matched PR number (PrName::value) or -1. Needs cap ≥ 48 (31-byte stamp +
-// suffix + NUL).
+// measured by `measure` in the row's value font. When nothing fits, the
+// whole value is printed verbatim (fail safe — a garbled-but-honest row
+// edge beats a wrong identity). `prNumOut` receives the matched PR number
+// (PrName::value) or -1. Needs
+// cap ≥ 48 (31-byte stamp + suffix + NUL).
 void slotRowValue(const char* version, const OtaDevVersionEntry* manifest, int count, TextMeasure measure,
                   const void* measureCtx, int valueSlotPx, const char* suffix, int& prNumOut, char* out, size_t cap);
 

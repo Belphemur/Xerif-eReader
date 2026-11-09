@@ -103,7 +103,10 @@ bool parseDevStamp(const char* version, DevStamp* out) {
   constexpr size_t kMinShaLen = 4;
   constexpr size_t kMaxShaLen = 12;
   if (!version) return false;
-  const size_t len = strnlen(version, 33);  // bounded: the field is 32 bytes
+  // Bounded past the 31-byte field contract (real stamped fields are ≤31
+  // bytes, NUL-padded by readSlotInfo); the host suite exercises longer
+  // identity strings, so the bound must never cut a stamp mid-sha.
+  const size_t len = strnlen(version, 64);
   constexpr size_t kMarkLen = sizeof(kDevMark) - 1;
   if (len < kMarkLen + kMinShaLen) return false;
   // The -dev- marker with at least one base char before, and the sha after.
@@ -115,9 +118,15 @@ bool parseDevStamp(const char* version, DevStamp* out) {
     }
   }
   if (!mark) return false;
-  size_t shaLen = len - static_cast<size_t>(mark + kMarkLen - version);
+  const char* rest = mark + kMarkLen;
+  const size_t restLen = len - static_cast<size_t>(rest - version);
+  // The sha is the segment after the FINAL dash of the tail (fit_version's
+  // exact split: a branch kept whole keeps its own dashes; the
+  // branch-dropped form has none left, so the whole tail is the sha).
+  const char* sha = rest + restLen;
+  while (sha > rest && sha[-1] != '-') --sha;
+  const size_t shaLen = len - static_cast<size_t>(sha - version);
   if (shaLen < kMinShaLen || shaLen > kMaxShaLen) return false;
-  const char* sha = mark + kMarkLen;
   for (size_t i = 0; i < shaLen; ++i) {
     const char c = sha[i];
     const bool hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
@@ -129,13 +138,9 @@ bool parseDevStamp(const char* version, DevStamp* out) {
     if (out->baseLen == 0) return false;
     out->sha = sha;
     out->shaLen = shaLen;
-    // The branch survives only when it is whole: base-sha without anything
-    // between is the fit_version's dropped form (the branch was dropped or
-    // already absent) — no branch component to report.
-    const char* branchEnd = sha - 1;  // the dash before the sha
-    if (branchEnd > mark + kMarkLen) {
-      out->branch = mark + kMarkLen;
-      out->branchLen = static_cast<size_t>(branchEnd - out->branch);
+    if (sha > rest) {
+      out->branch = rest;
+      out->branchLen = static_cast<size_t>(sha - rest - 1);  // minus the dash
     } else {
       out->branch = nullptr;
       out->branchLen = 0;
@@ -153,7 +158,7 @@ namespace {
 void composeStampShape(const DevStamp& stamp, const size_t baseLen, const size_t shaLen, const bool withBranch,
                        char* out, const size_t cap) {
   if (withBranch && stamp.branchLen > 0) {
-    snprintf(out, cap, "%.*s%.*s-dev-%.*s", static_cast<int>(baseLen), stamp.base, static_cast<int>(stamp.branchLen),
+    snprintf(out, cap, "%.*s-dev-%.*s-%.*s", static_cast<int>(baseLen), stamp.base, static_cast<int>(stamp.branchLen),
              stamp.branch, static_cast<int>(shaLen), stamp.sha);
   } else {
     snprintf(out, cap, "%.*s-dev-%.*s", static_cast<int>(baseLen), stamp.base, static_cast<int>(shaLen), stamp.sha);
@@ -193,7 +198,12 @@ void slotRowValue(const char* version, const OtaDevVersionEntry* manifest, const
       if (memcmp(stamp.sha, pr.sha, cmpLen) != 0) continue;
       prBadge(pr, out, cap);
       prNumOut = static_cast<int>(pr.value);
-      return;
+      if (measure(measureCtx, out) <= slotPx) return;
+      // A badge wider than the slot (pathological narrow row) keeps the
+      // PR number — the identity — and drops the shown sha to the minimum.
+      snprintf(out, cap, "pr %.*s %.4s", static_cast<int>(pr.numLen), pr.num, pr.sha);
+      if (measure(measureCtx, out) <= slotPx) return;
+      break;  // badge never fits: fall through to the stamp shapes
     }
   }
   if (!stamped) {
@@ -219,12 +229,13 @@ void slotRowValue(const char* version, const OtaDevVersionEntry* manifest, const
       return;
     }
   }
-  // Shorter sha (identity holds: the manifest prefix matched on the shorter
-  // form anyway when it matched at all), then a shorter base on the right.
+  // Shorter sha (identity holds: the manifest cross-reference already
+  // matched on a shared prefix, whatever the shown length), then a shorter
+  // base on the right — both on the fit_version's branch-dropped form.
   size_t shaLen = stamp.shaLen;
   while (shaLen > 4) {
     --shaLen;
-    composeStampShape(stamp, stamp.baseLen, shaLen, shape, sizeof(shape));
+    composeStampShape(stamp, stamp.baseLen, shaLen, false, shape, sizeof(shape));
     if (measure(measureCtx, shape) <= slotPx) {
       snprintf(out, cap, "%s", shape);
       return;
@@ -233,7 +244,7 @@ void slotRowValue(const char* version, const OtaDevVersionEntry* manifest, const
   size_t baseLen = stamp.baseLen;
   while (baseLen > 1) {
     --baseLen;
-    composeStampShape(stamp, baseLen, shaLen, shape, sizeof(shape));
+    composeStampShape(stamp, baseLen, shaLen, false, shape, sizeof(shape));
     if (measure(measureCtx, shape) <= slotPx) {
       snprintf(out, cap, "%s", shape);
       return;
