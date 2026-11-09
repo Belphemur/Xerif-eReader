@@ -137,7 +137,8 @@ Your e-reader shouldn't dictate your typography. On PSRAM-equipped devices
 (X4 Pro, M5PaperMono), Xerif eReader ships a true vector font engine: take any `.ttf` or
 `.otf` file — from Google Fonts, your OS, or that foundry you've been saving up for —
 copy it to the SD card, and it just works. No firmware reflash, no rebuild, no
-compromises.
+compromises. Not in the mood for file hunting? **Manage Fonts** now offers
+Japanese fonts as direct downloads.
 
 1. Create a folder for your family on the SD card: `/fonts/YourFont/`
    (or `/.fonts/YourFont/` to keep it out of the way).
