@@ -122,7 +122,7 @@ artifacts — and the same order of cost (~2× box-average).
    - Output determinism: DPID and CLAHE are deterministic integer operations (same
      input → same bytes); pin with tests.
 
-6. **README** — update the README's reader-engine feature line (README.md:79
+6. **README** — update the README's reader-engine feature line (README.md:86
    "image handling") to mention the picture-detail setting in user-facing language.
 
 ## Acceptance
