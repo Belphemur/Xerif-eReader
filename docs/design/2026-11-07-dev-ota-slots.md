@@ -467,3 +467,35 @@ slot, so opting into a dev build remains reversible without cables.
 (and back) purely from Settings. A release image for X4 Pro now shows:
 Check for Updates, SD Firmware Update, Firmware Slots, Dev Channel — all
 unconditional. Non-X4-Pro release envs are unchanged.
+
+### 19. Grouped picker order + local-time dates (2026-11-09)
+
+**Decision (owner hardware report, X4 Pro).** The version picker's flat
+newest-first mix interleaved PR and develop builds, and its row dates were
+the manifest's raw UTC stamps (device clock read 15:02 while a row showed
+20:56). The picker now:
+
+- **Groups by build kind** (`dev_ota::pickerRows`, built on the pure
+  `pickerOrder` in `DevOtaPolicy`): a bold "Pull requests" header row, the
+  PR builds ordered by PR id DESCENDING (newest build instant first within
+  one PR), then a "Dev builds" header row, the develop builds newest first.
+  A group with no entries contributes no header. Header rows are neither
+  selectable nor touch targets — the selection index stays a manifest entry
+  index (the §16 dance binds by name+SHA against that index, unchanged), and
+  Up/Down traversal plus touch rects skip the separators. The scroll window
+  and the scrollbar thumb count display rows (entries + headers).
+- **Local-time dates** (`compactDevDate(iso, offsetMinutes, …)`): the
+  stamp's own ISO offset — dev stamps carry the commit's zone (`git show -s
+  --format=%cI`, e.g. `+02:00`), PR/carried entries are GitHub `created_at`
+  (`Z`) — is subtracted to the UTC instant, then the device clock's UTC
+  offset is added. The offset is resolved by the activity through
+  `SETTINGS.clockEffectiveOffsetMin()` (the status bar clock's resolution:
+  live IANA zone, DST folding, cached fallback offline) at render time. A
+  stamp that shapes as a date but is not a real instant falls open to the
+  previously-shown verbatim UTC slice; an unrecognizable shape still hides
+  the date (as before).
+
+The pure policy functions are pinned in `DevOtaPolicyTest` (group order,
+within-PR ordering, undated entries running last in manifest order,
+header-row classification, +6h/−5h/minute-offset conversions, day and year
+boundary rolls, stamp-own-offset handling, verbatim fall-open).

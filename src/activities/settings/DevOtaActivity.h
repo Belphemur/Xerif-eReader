@@ -9,6 +9,7 @@
 #include "activities/Activity.h"
 #include "components/OptionPopup.h"
 #include "network/DevOtaClient.h"
+#include "network/DevOtaPolicy.h"
 #include "network/OtaJson.h"
 
 class MappedInputManager;
@@ -60,6 +61,11 @@ class DevOtaActivity : public Activity {
   // Keep the scroll window (listScrollTop_..listVisibleRows_) containing
   // selectedIndex after a button move.
   void keepSelectionVisible();
+  // Display row of a manifest entry in displayRows_ (-1 when absent).
+  int displayRowForEntry(int entry) const;
+  // Move the selection to the next/previous ENTRY row in display order
+  // (header rows are skipped), wrapping. False when there is no entry row.
+  bool stepSelection(int dir);
   void promptInstall(int index);  // manual path: confirm popup first
   void beginInstall(int index);
   void runInstall();
@@ -74,9 +80,15 @@ class DevOtaActivity : public Activity {
   // Scroll window for the version picker: the full kMaxVersions manifest
   // cannot fit above the button hints, so the list scrolls around the
   // selection. listVisibleRows_ caches the row count the last render fit;
-  // until the first LIST render it disables scrolling.
+  // until the first LIST render it disables scrolling. Both count DISPLAY
+  // rows (pickerRows output: entry rows + group headers), never entries.
   int16_t listScrollTop_ = 0;
   int16_t listVisibleRows_ = dev_ota::kMaxVersions;
+  // §19 grouped display: PR group header + entries, then dev group header
+  // + entries, recomputed after each manifest fetch. Header rows have
+  // entry < 0 and are neither selectable nor touch targets.
+  dev_ota::PickerRow displayRows_[kMaxVersions + 2];
+  int16_t displayRowCount_ = 0;
   char pendingVersion[dev_ota::kPendingPayloadCap] = {0};
   const char* failedDetail = nullptr;
   // Install progress, published from the blocking install via

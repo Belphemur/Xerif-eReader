@@ -164,3 +164,162 @@ TEST(DevOtaPolicyLabel, CompactDevDateShape) {
   EXPECT_STREQ(out, "11-07 14:03");
   EXPECT_FALSE(dev_ota::compactDevDate("2026-11-07 14:03", 0, out, sizeof(out)));
 }
+
+TEST(DevOtaPolicyDate, ConvertsToTheDeviceOffsetPositive) {
+  // +6h rolls the date over: UTC 20:56 on 11-07 is 02:56 on 11-08.
+  char out[16] = {};
+  ASSERT_TRUE(dev_ota::compactDevDate("2026-11-07T20:56:00+00:00", 360, out, sizeof(out)));
+  EXPECT_STREQ(out, "11-08 02:56");
+}
+
+TEST(DevOtaPolicyDate, ConvertsToTheDeviceOffsetNegative) {
+  char out[16] = {};
+  ASSERT_TRUE(dev_ota::compactDevDate("2026-11-07T20:56:00Z", -300, out, sizeof(out)));
+  EXPECT_STREQ(out, "11-07 15:56");
+}
+
+TEST(DevOtaPolicyDate, OffsetBeyondTheHourRollsBackwards) {
+  // DST-style minute offsets (e.g. +5:30, -2h) and backward rolls across
+  // midnight: local 01:30-120min on 03-08 is 23:30 the PREVIOUS day (floor,
+  // not trunc-toward-zero, must roll the days counter back).
+  char out[16] = {};
+  ASSERT_TRUE(dev_ota::compactDevDate("2026-03-08T01:30:00Z", -120, out, sizeof(out)));
+  EXPECT_STREQ(out, "03-07 23:30");
+  ASSERT_TRUE(dev_ota::compactDevDate("2026-11-07T20:56:00Z", 330, out, sizeof(out)));
+  EXPECT_STREQ(out, "11-08 02:26");
+}
+
+TEST(DevOtaPolicyDate, StampSOwnNonZeroOffsetIsRespected) {
+  // dev-build.yml stamps the committer zone (%cI), not always UTC: a
+  // +02:00 stamp IS 20:56 UTC, and the device offset applies afterwards.
+  char out[16] = {};
+  ASSERT_TRUE(dev_ota::compactDevDate("2026-11-07T22:56:00+02:00", 60, out, sizeof(out)));
+  EXPECT_STREQ(out, "11-07 21:56");
+}
+
+TEST(DevOtaPolicyDate, YearAndMonthBoundaries) {
+  char out[16] = {};
+  ASSERT_TRUE(dev_ota::compactDevDate("2026-12-31T20:00:00Z", 360, out, sizeof(out)));
+  EXPECT_STREQ(out, "01-01 02:00");
+  ASSERT_TRUE(dev_ota::compactDevDate("2024-02-29T12:00:00Z", 0, out, sizeof(out)));
+  EXPECT_STREQ(out, "02-29 12:00");
+}
+
+TEST(DevOtaPolicyDate, DigitsButNotADateFallOpenVerbatim) {
+  // Shape-valid but semantically impossible (the pre-conversion display):
+  // show something rather than hiding the row date.
+  char out[16] = {};
+  ASSERT_TRUE(dev_ota::compactDevDate("2026-11-07T25:61:00Z", 360, out, sizeof(out)));
+  EXPECT_STREQ(out, "11-07 25:61");
+}
+
+namespace {
+
+void makePickerEntry(OtaDevVersionEntry& e, const char* name, const char* date) {
+  strncpy(e.name, name, sizeof(e.name) - 1);
+  if (date) strncpy(e.date, date, sizeof(e.date) - 1);
+}
+
+}  // namespace
+
+TEST(DevOtaPolicyPicker, PrEntriesLeadOrderedByIdDescending) {
+  // Owner report: a flat newest-first mix (pr 309, pr 303, dev, dev, pr
+  // 306) — PR builds group on top, ascending PR numbers LAST (highest id
+  // first), regardless of how the PRs' build dates interleave.
+  OtaDevVersionEntry entries[5]{};
+  makePickerEntry(entries[0], "xerif-pr-309-aaa-x4pro.bin", "2026-11-08T09:00:00Z");
+  makePickerEntry(entries[1], "xerif-pr-303-772d2c5-x4pro.bin", "2026-11-07T21:00:00Z");
+  makePickerEntry(entries[2], "xerif-dev-111-x4pro.bin", "2026-11-07T20:56:00Z");
+  makePickerEntry(entries[3], "xerif-dev-000-x4pro.bin", "2026-11-07T18:00:00Z");
+  makePickerEntry(entries[4], "xerif-pr-306-bbb-x4pro.bin", "2026-11-07T22:00:00Z");
+  int order[5];
+  dev_ota::pickerOrder(entries, 5, order);
+  EXPECT_EQ(order[0], 0);  // pr 309 (highest id first…
+  EXPECT_EQ(order[1], 4);  // pr 306 — newest PR date beats 303 despite id
+  EXPECT_EQ(order[2], 1);  // pr 303
+  EXPECT_EQ(order[3], 2);  // dev newest first…
+  EXPECT_EQ(order[4], 3);
+  EXPECT_EQ(dev_ota::entryGroup(entries[1]), dev_ota::EntryGroup::Pr);
+  EXPECT_EQ(dev_ota::entryGroup(entries[2]), dev_ota::EntryGroup::Dev);
+}
+
+TEST(DevOtaPolicyPicker, DevEntriesNewestFirstUndatedRunLastInManifestOrder) {
+  OtaDevVersionEntry entries[3]{};
+  makePickerEntry(entries[0], "xerif-dev-old-x4pro.bin", "");
+  makePickerEntry(entries[1], "xerif-dev-new-x4pro.bin", "2026-11-08T09:00:00Z");
+  makePickerEntry(entries[2], "xerif-dev-mid-x4pro.bin", "2026-11-07T20:56:00Z");
+  int order[3];
+  dev_ota::pickerOrder(entries, 3, order);
+  EXPECT_EQ(order[0], 1);
+  EXPECT_EQ(order[1], 2);
+  EXPECT_EQ(order[2], 0);  // undated, but keeps its earlier manifest slot
+}
+
+TEST(DevOtaPolicyPicker, PerPrBuildsNewestFirstWithinOnePr) {
+  OtaDevVersionEntry entries[2]{};
+  makePickerEntry(entries[0], "xerif-pr-303-late-x4pro.bin", "2026-11-09T10:00:00Z");
+  makePickerEntry(entries[1], "xerif-pr-303-early-x4pro.bin", "2026-11-09T08:00:00Z");
+  int order[2];
+  dev_ota::pickerOrder(entries, 2, order);
+  EXPECT_EQ(order[0], 0);
+  EXPECT_EQ(order[1], 1);
+}
+
+TEST(DevOtaPolicyPickerRows, HeadersSplitTheGroupsAndMatchTheOrder) {
+  // The rows the user sees: PR header, PR entries in picker order, dev
+  // header, dev entries in picker order.
+  OtaDevVersionEntry entries[4]{};
+  makePickerEntry(entries[0], "xerif-dev-111-x4pro.bin", "2026-11-08T09:00:00Z");
+  makePickerEntry(entries[1], "xerif-pr-303-772d2c5-x4pro.bin", "2026-11-07T21:00:00Z");
+  makePickerEntry(entries[2], "xerif-dev-000-x4pro.bin", "2026-11-07T18:00:00Z");
+  makePickerEntry(entries[3], "xerif-pr-305-bbb-x4pro.bin", "2026-11-07T12:00:00Z");
+  dev_ota::PickerRow rows[6];
+  const int rowCount = dev_ota::pickerRows(entries, 4, rows);
+  ASSERT_EQ(rowCount, 6);  // 4 entries + 2 headers
+  EXPECT_EQ(rows[0].entry, -1);
+  EXPECT_EQ(rows[0].group, static_cast<uint8_t>(dev_ota::EntryGroup::Pr));
+  EXPECT_EQ(rows[1].entry, 3);  // pr 305 ahead of pr 303 (id desc)
+  EXPECT_EQ(rows[2].entry, 1);
+  EXPECT_EQ(rows[3].entry, -1);
+  EXPECT_EQ(rows[3].group, static_cast<uint8_t>(dev_ota::EntryGroup::Dev));
+  EXPECT_EQ(rows[4].entry, 0);
+  EXPECT_EQ(rows[5].entry, 2);
+}
+
+TEST(DevOtaPolicyPickerRows, HeadersNotSelectableEntriesStayPermutation) {
+  OtaDevVersionEntry entries[3]{};
+  makePickerEntry(entries[0], "xerif-pr-303-772d2c5-x4pro.bin", "2026-11-07T21:00:00Z");
+  makePickerEntry(entries[1], "xerif-dev-111-x4pro.bin", "2026-11-08T09:00:00Z");
+  makePickerEntry(entries[2], "xerif-dev-000-x4pro.bin", "2026-11-07T18:00:00Z");
+  int order[3];
+  dev_ota::pickerOrder(entries, 3, order);
+  // The ordering is a pure permutation of entry indexes: header rows never
+  // enter it, so a selection index can never land on a separator.
+  EXPECT_EQ(order[0], 0);
+  EXPECT_EQ(order[1], 1);
+  EXPECT_EQ(order[2], 2);
+  dev_ota::PickerRow rows[5];
+  ASSERT_EQ(dev_ota::pickerRows(entries, 3, rows), 5);
+  // PR group gone → single dev header; PR entry stays inside the group.
+  EXPECT_EQ(rows[0].entry, -1);
+  EXPECT_EQ(rows[0].group, static_cast<uint8_t>(dev_ota::EntryGroup::Pr));
+  EXPECT_EQ(rows[1].entry, 0);
+  EXPECT_EQ(rows[2].entry, -1);
+  EXPECT_EQ(rows[2].group, static_cast<uint8_t>(dev_ota::EntryGroup::Dev));
+  EXPECT_EQ(rows[3].entry, 1);
+  EXPECT_EQ(rows[4].entry, 2);
+}
+
+TEST(DevOtaPolicyPickerRows, SingleGroupKeepsJustItsOwnHeader) {
+  OtaDevVersionEntry entries[2]{};
+  makePickerEntry(entries[0], "xerif-dev-111-x4pro.bin", "2026-11-08T09:00:00Z");
+  makePickerEntry(entries[1], "xerif-dev-000-x4pro.bin", "2026-11-07T18:00:00Z");
+  dev_ota::PickerRow rows[4];
+  ASSERT_EQ(dev_ota::pickerRows(entries, 2, rows), 3);
+  EXPECT_EQ(rows[0].entry, -1);
+  EXPECT_EQ(rows[0].group, static_cast<uint8_t>(dev_ota::EntryGroup::Dev));
+  EXPECT_EQ(rows[1].entry, 0);
+  EXPECT_EQ(rows[2].entry, 1);
+  const int noRows = dev_ota::pickerRows(entries, 0, rows);
+  EXPECT_EQ(noRows, 0);
+}

@@ -5,6 +5,10 @@
 #include <cstring>
 #include <initializer_list>
 
+// kMaxVersions (the manifest's rolling CI window) bounds the picker's stack
+// key tables; the constant lives beside the client that fetches the window.
+#include "DevOtaClient.h"
+
 namespace dev_ota {
 
 ResumeBind bindPendingEntry(const OtaDevVersionEntry* entries, int count, const char* pendingName,
@@ -46,29 +50,54 @@ bool devNameLabel(const char* name, char* out, size_t cap) {
   return true;
 }
 
-// Display label for a PR asset name "xerif-pr-<num>-<sha>-x4pro.bin" →
-// "pr <num> <sha>". The PR number is what tells a PR entry apart from a
-// develop build in the picker; the sha tells which build of the PR. Returns
-// false when the name doesn't match the pattern.
-bool prNameLabel(const char* name, char* out, size_t cap) {
+// One parse of a PR asset name "xerif-pr-<num>-<sha>-x4pro.bin": the
+// "pr <num> <sha>" row badge AND the group ordering key (PR id) both come
+// from here, so a badge and its group can never disagree on whether an
+// entry is a PR build. num/sha point into `name`. `value` is 0 (still a PR)
+// when <num> is not purely numeric — the badge keeps the raw slice.
+struct PrName {
+  const char* num = nullptr;
+  size_t numLen = 0;
+  long value = 0;
+  const char* sha = nullptr;  // points into `name`: bounded by shaLen
+  size_t shaLen = 0;
+};
+bool parsePrName(const char* name, PrName* out) {
   constexpr char kPrefix[] = "xerif-pr-";
   constexpr char kSuffix[] = "-x4pro.bin";
   const size_t prefixLen = sizeof(kPrefix) - 1;
   const size_t suffixLen = sizeof(kSuffix) - 1;
-  if (!name || strncmp(name, kPrefix, prefixLen) != 0) return false;
+  if (!name || !out || strncmp(name, kPrefix, prefixLen) != 0) return false;
   const size_t nameLen = strlen(name);
   if (nameLen < prefixLen + 2 + suffixLen || strncmp(name + nameLen - suffixLen, kSuffix, suffixLen) != 0) {
     return false;
   }
-  char body[64];
+  const char* body = name + prefixLen;
   const size_t bodyLen = nameLen - prefixLen - suffixLen;
-  if (bodyLen >= sizeof(body)) return false;
-  memcpy(body, name + prefixLen, bodyLen);
-  body[bodyLen] = '\0';
-  const char* dash = strchr(body, '-');
+  const char* dash = static_cast<const char*>(memchr(body, '-', bodyLen));
   if (!dash || dash == body) return false;
-  const size_t numLen = static_cast<size_t>(dash - body);
-  snprintf(out, cap, "pr %.*s %s", static_cast<int>(numLen), body, dash + 1);
+  out->num = body;
+  out->numLen = static_cast<size_t>(dash - body);
+  out->sha = dash + 1;
+  out->shaLen = bodyLen - out->numLen - 1;
+  bool numeric = true;
+  long value = 0;
+  for (size_t i = 0; i < out->numLen && numeric; ++i) {
+    const char c = body[i];
+    if (c < '0' || c > '9') {
+      numeric = false;
+    } else {
+      value = value * 10 + (c - '0');
+    }
+  }
+  out->value = numeric ? value : 0;
+  return true;
+}
+
+bool prNameLabel(const char* name, char* out, size_t cap) {
+  PrName pr;
+  if (!parsePrName(name, &pr)) return false;
+  snprintf(out, cap, "pr %.*s %.*s", static_cast<int>(pr.numLen), pr.num, static_cast<int>(pr.shaLen), pr.sha);
   return true;
 }
 
@@ -112,6 +141,8 @@ void civilFromDays(int64_t z, int* y, unsigned* m, unsigned* d) {
   *y = static_cast<int>(year + (*m <= 2));
 }
 
+// NotFound sentinel for pickerOrder's date key: an unusable stamp is the
+// oldest build.
 constexpr int64_t kNoStampMinutes = INT64_MIN;
 
 const auto digit = [](char c) { return c >= '0' && c <= '9'; };
@@ -146,9 +177,8 @@ bool stampUtcMinutes(const char* iso, int64_t* outMinutes) {
   const int day = (iso[8] - '0') * 10 + (iso[9] - '0');
   const int hour = (iso[11] - '0') * 10 + (iso[12] - '0');
   const int minute = (iso[14] - '0') * 10 + (iso[15] - '0');
-  if (iso[0] < '0' || iso[0] > '9' || iso[1] < '0' || iso[1] > '9' || iso[2] < '0' || iso[2] > '9' ||
-      iso[3] < '0' || iso[3] > '9' || month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 ||
-      minute > 59) {
+  if (iso[0] < '0' || iso[0] > '9' || iso[1] < '0' || iso[1] > '9' || iso[2] < '0' || iso[2] > '9' || iso[3] < '0' ||
+      iso[3] > '9' || month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59) {
     return false;
   }
 
@@ -157,7 +187,7 @@ bool stampUtcMinutes(const char* iso, int64_t* outMinutes) {
   // Offset suffix after the optional seconds / fraction: Z, ±HH:MM, ±HHMM —
   // anything else along the tail is a stamp we refuse to guess about.
   size_t i = 16;
-  if (i < len && iso[i] == ':') ++i;  // seconds colon
+  if (i < len && iso[i] == ':') ++i;                               // seconds colon
   if (i + 2 <= len && digit(iso[i]) && digit(iso[i + 1])) i += 2;  // seconds
   if (i < len && iso[i] == '.') {
     while (i < len && digit(iso[i])) ++i;
@@ -172,7 +202,7 @@ bool stampUtcMinutes(const char* iso, int64_t* outMinutes) {
       int om = -1;
       if (i + 6 <= len && iso[i + 3] == ':' && digit(iso[i + 4]) && digit(iso[i + 5])) {
         om = (iso[i + 4] - '0') * 10 + (iso[i + 5] - '0');
-      } else if (i + 5 <= len && digit(iso[i + 3]) && digit(iso[i + 4])) {
+      } else if (digit(iso[i + 3]) && digit(iso[i + 4])) {
         om = (iso[i + 3] - '0') * 10 + (iso[i + 4] - '0');
       }
       if (om < 0 || oh > 23 || om > 59) return false;
@@ -211,6 +241,95 @@ bool compactDevDate(const char* iso, int offsetMinutes, char* out, size_t cap) {
   snprintf(out, cap, "%02u-%02u %02u:%02u", month, day, static_cast<unsigned>(rem / 60),
            static_cast<unsigned>(rem % 60));
   return true;
+}
+
+EntryGroup entryGroup(const OtaDevVersionEntry& entry) {
+  PrName pr;
+  return parsePrName(entry.name, &pr) ? EntryGroup::Pr : EntryGroup::Dev;
+}
+
+namespace {
+
+// Build instant of an entry's stamp for the DESC comparisons: an unusable
+// stamp is the oldest build, so undated entries drop below dated ones and
+// ties resolve to manifest order (stable sort).
+int64_t buildMinutes(const OtaDevVersionEntry& entry) {
+  int64_t minutes = 0;
+  return stampShapeOk(entry.date) && stampUtcMinutes(entry.date, &minutes) ? minutes : kNoStampMinutes;
+}
+
+struct PickerKey {
+  bool isPr = false;
+  long prNum = 0;  // PR entries: parsed id (0 when the slice is not numeric)
+  int64_t minutes = kNoStampMinutes;
+};
+
+// Strictly-"newer" by the §19 order: PR before dev; PR id descending and
+// newest first within one PR; dev newest first. Equal keys keep the
+// manifest order via the stable insertion sort below.
+bool keyBefore(const PickerKey& a, const PickerKey& b) {
+  if (a.isPr != b.isPr) return a.isPr;
+  if (a.isPr && a.prNum != b.prNum) return a.prNum > b.prNum;
+  return a.minutes > b.minutes;
+}
+
+}  // namespace
+
+void pickerOrder(const OtaDevVersionEntry* entries, int count, int* order) {
+  if (!entries || !order || count <= 0) return;
+  if (count > kMaxVersions) count = kMaxVersions;  // callers cap too; defensive
+
+  PickerKey keys[kMaxVersions];
+  for (int i = 0; i < count; ++i) {
+    PickerKey& key = keys[i];
+    key.minutes = buildMinutes(entries[i]);
+    PrName pr;
+    key.isPr = parsePrName(entries[i].name, &pr);
+    key.prNum = key.isPr ? pr.value : 0;
+    order[i] = i;
+  }
+  // Insertion sort: deterministic (no library sort), stable, and n ≤
+  // kMaxVersions so the O(n²) swings are irrelevant against one SD read.
+  for (int i = 1; i < count; ++i) {
+    const int cur = order[i];
+    int j = i - 1;
+    while (j >= 0 && keyBefore(keys[cur], keys[order[j]])) {
+      order[j + 1] = order[j];
+      --j;
+    }
+    order[j + 1] = cur;
+  }
+}
+
+int pickerRows(const OtaDevVersionEntry* entries, int count, PickerRow* rows) {
+  if (!entries || count <= 0) return 0;
+  if (count > kMaxVersions) count = kMaxVersions;
+  int order[kMaxVersions];
+  pickerOrder(entries, count, order);
+  int prCount = 0;
+  for (int i = 0; i < count; ++i) {
+    if (entryGroup(entries[order[i]]) == EntryGroup::Pr) ++prCount;
+  }
+  int written = 0;
+  if (prCount > 0) {
+    rows[written].entry = -1;
+    rows[written].group = static_cast<uint8_t>(EntryGroup::Pr);
+    ++written;
+  }
+  for (int i = 0; i < count; ++i) {
+    // prCount < count holds wherever i reaches prCount (i stops before it
+    // otherwise), so the dev header is written exactly once when both
+    // groups are populated.
+    if (i == prCount) {
+      rows[written].entry = -1;
+      rows[written].group = static_cast<uint8_t>(EntryGroup::Dev);
+      ++written;
+    }
+    rows[written].entry = static_cast<int16_t>(order[i]);
+    rows[written].group = 0;
+    ++written;
+  }
+  return written;
 }
 
 }  // namespace dev_ota

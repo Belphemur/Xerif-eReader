@@ -9,8 +9,8 @@
 #include <cstdio>
 #include <cstring>
 
-#include "HalPowerManager.h"
 #include "CrossPointSettings.h"
+#include "HalPowerManager.h"
 #include "HapticFeedback.h"
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
@@ -56,6 +56,10 @@ const char* describeDevError(const dev_ota::Error err) {
 // uses — the live IANA offset folds DST, falls back to the last-detected
 // cache offline, and stays 0 (UTC) until a zone has been detected.
 int localClockOffsetMinutes() { return SETTINGS.clockEffectiveOffsetMin(); }
+
+const char* pickGroupLabel(uint8_t group) {
+  return group == static_cast<uint8_t>(dev_ota::EntryGroup::Pr) ? tr(STR_DEV_GROUP_PRS) : tr(STR_DEV_GROUP_DEVS);
+}
 }  // namespace
 
 void DevOtaActivity::onEnter() {
@@ -179,6 +183,9 @@ void DevOtaActivity::fetchManifest() {
 
   {
     RenderLock lock(*this);
+    // §19 grouped display: rebuild the display rows from the fetched
+    // manifest (PR group, then dev group). Selection stays an ENTRY index.
+    displayRowCount_ = static_cast<int16_t>(dev_ota::pickerRows(entries.items, entries.count, displayRows_));
     selectedIndex = 0;
     listScrollTop_ = 0;
     state = LIST;
@@ -404,11 +411,14 @@ void DevOtaActivity::loop() {
 
   if (state == LIST) {
     if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
-      selectedIndex = (selectedIndex + entries.count - 1) % entries.count;
+      // §19: buttons walk ENTRY rows in display order; header rows are
+      // skipped (they are not selectable), so the traversal wraps over the
+      // same modular cycle as before, minus the separator stops.
+      stepSelection(-1);
       keepSelectionVisible();
       requestUpdate();
     } else if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
-      selectedIndex = (selectedIndex + 1) % entries.count;
+      stepSelection(1);
       keepSelectionVisible();
       requestUpdate();
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
@@ -431,11 +441,39 @@ void DevOtaActivity::loop() {
 }
 
 void DevOtaActivity::keepSelectionVisible() {
-  if (selectedIndex < listScrollTop_) {
-    listScrollTop_ = selectedIndex;
-  } else if (selectedIndex >= listScrollTop_ + listVisibleRows_) {
-    listScrollTop_ = selectedIndex - listVisibleRows_ + 1;
+  const int row = displayRowForEntry(selectedIndex);
+  if (row < 0) return;
+  if (row < listScrollTop_) {
+    listScrollTop_ = static_cast<int16_t>(row);
+  } else if (row >= listScrollTop_ + listVisibleRows_) {
+    listScrollTop_ = static_cast<int16_t>(row - listVisibleRows_ + 1);
   }
+}
+
+int DevOtaActivity::displayRowForEntry(const int entry) const {
+  for (int i = 0; i < displayRowCount_; ++i) {
+    if (displayRows_[i].entry == entry) return i;
+  }
+  return -1;
+}
+
+bool DevOtaActivity::stepSelection(const int dir) {
+  if (displayRowCount_ <= 0) return false;
+  int row = displayRowForEntry(selectedIndex);
+  if (row < 0) {
+    // Off-table (a pruned manifest between renders): fall to the first
+    // entry row rather than scrolling nowhere.
+    row = -dir;  // so the wrap search below lands on the first entry
+  }
+  for (int step = 1; step <= displayRowCount_; ++step) {
+    int cand = row + dir * step;
+    cand = ((cand % displayRowCount_) + displayRowCount_) % displayRowCount_;
+    if (displayRows_[cand].entry >= 0) {
+      selectedIndex = displayRows_[cand].entry;
+      return true;
+    }
+  }
+  return false;
 }
 
 void DevOtaActivity::render(RenderLock&&) {
@@ -498,38 +536,52 @@ void DevOtaActivity::render(RenderLock&&) {
     // its header. The window is clamped to the space above the button hints:
     // the full CI window (kMaxVersions) cannot fit at this geometry, so the
     // list scrolls around the selection instead of drawing rows into the
-    // button-hint band where they would be invisible and untappable.
+    // button-hint band where they would be invisible and untappable. The
+    // window counts DISPLAY rows (§19: entry rows + group headers).
     const int listTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + height + rowGap;
     const int listBottom = pageHeight - metrics.buttonHintsHeight;
+    const int rowCount_ = displayRowCount_;
     int visibleRows = 0;
-    for (int used = 0; visibleRows < entries.count; ++visibleRows) {
+    for (int used = 0; visibleRows < rowCount_; ++visibleRows) {
       const int next = used + rowHeight + (visibleRows > 0 ? rowGap : 0);
       if (next > listBottom - listTop) break;
       used = next;
     }
     if (visibleRows <= 0) visibleRows = 1;
-    if (listScrollTop_ > entries.count - visibleRows) listScrollTop_ = entries.count - visibleRows;
+    if (listScrollTop_ > rowCount_ - visibleRows) listScrollTop_ = rowCount_ - visibleRows;
     if (listScrollTop_ < 0) listScrollTop_ = 0;
     listVisibleRows_ = static_cast<int16_t>(visibleRows);
-    const int lastRow = std::min(entries.count, listScrollTop_ + visibleRows);
+    const int lastRow = std::min(rowCount_, listScrollTop_ + visibleRows);
 
     const int localOffset = localClockOffsetMinutes();
     int y = listTop;
     fui::Rect rowRects[dev_ota::kMaxVersions];
-    int rowCount = 0;
+    int touchRows = 0;
     for (int i = listScrollTop_; i < lastRow; ++i) {
+      rowRects[touchRows] = fui::Rect{static_cast<int16_t>(side), static_cast<int16_t>(y),
+                                      static_cast<int16_t>(pageWidth - side * 2), rowHeight};
+      // Center the text's line box in the row like the fui list does.
+      const int textY = y + (rowHeight - labelLine) / 2;
+      if (displayRows_[i].entry < 0) {
+        // Group header (§19): a bold separator above its group — never a
+        // selection target and never a touch target (no rowRect above is
+        // registered for it).
+        renderer.drawText(rowFont, side, textY, pickGroupLabel(displayRows_[i].group), true, EpdFontFamily::BOLD);
+        ++touchRows;  // occupied in the flow, just not touchable
+        y += rowHeight + rowGap;
+        continue;
+      }
+      const int entry = displayRows_[i].entry;
       char label[48];
-      dev_ota::entryLabel(entries.items[i], label, sizeof(label));
+      dev_ota::entryLabel(entries.items[entry], label, sizeof(label));
       // The selection outline is the row rect itself: the hit band registered
       // below is this exact rectangle, so the tap target never drifts.
-      if (i == selectedIndex) {
+      if (entry == selectedIndex) {
         renderer.drawRect(side, y, pageWidth - side * 2, rowHeight);
       }
-      // Center the label's line box in the row like the fui list does.
-      const int textY = y + (rowHeight - labelLine) / 2;
       renderer.drawText(rowFont, side, textY, label);
       char compact[16];
-      if (dev_ota::compactDevDate(entries.items[i].date, localOffset, compact, sizeof(compact))) {
+      if (dev_ota::compactDevDate(entries.items[entry].date, localOffset, compact, sizeof(compact))) {
         const int dateX = pageWidth - side - renderer.getTextWidth(rowFont, compact);
         // Right-align the compact timestamp; drop it rather than overprint
         // the label on a narrow screen. Measured (UI_12 medium): a 28-char
@@ -540,29 +592,32 @@ void DevOtaActivity::render(RenderLock&&) {
           renderer.drawText(rowFont, dateX, textY, compact);
         }
       }
-      rowRects[rowCount++] = fui::Rect{static_cast<int16_t>(side), static_cast<int16_t>(y),
-                                       static_cast<int16_t>(pageWidth - side * 2), rowHeight};
+      ++touchRows;
       y += rowHeight + rowGap;
     }
     // Scroll indicator: a right-edge thumb when the manifest overflows the
     // window. The row rects end one side padding before the screen edge, so
     // the thumb cannot overlap a hit band.
-    if (entries.count > visibleRows) {
+    if (rowCount_ > visibleRows) {
       const int trackH = listBottom - listTop;
-      const int thumbH = std::max(trackH * visibleRows / entries.count, 12);
-      const int thumbY = listTop + (trackH - thumbH) * listScrollTop_ / (entries.count - visibleRows);
+      const int thumbH = std::max(trackH * visibleRows / rowCount_, 12);
+      const int thumbY = listTop + (trackH - thumbH) * listScrollTop_ / (rowCount_ - visibleRows);
       const int thumbX = pageWidth - metrics.listScrollWidth - metrics.scrollBarRightOffset;
       renderer.drawLine(thumbX, thumbY, thumbX, thumbY + thumbH - 1, metrics.listScrollWidth, true);
     }
-    if (rowCount > 0) {
+    if (touchRows > 0) {
       // Publish on this (render) task; loop() routes against the published
       // generation, never the one being rebuilt — the OptionPopup handshake.
+      // Only ENTRY rows register a hit; header rows sit between them and are
+      // dead space (a tap there routes no action).
       touchInteractions.beginPublishCycle();
       const fui::DeviceContext device = uiTarget.deviceContext();
       const fui::InputSnapshot noInput{};
       fui::Frame<dev_ota::kMaxVersions + 1> frame(uiTarget, device, noInput, touchInteractions);
-      for (int i = 0; i < rowCount; ++i) {
-        frame.hit(rowRects[i], TOUCH_ACTION_ROW, static_cast<int16_t>(listScrollTop_ + i), fui::InputTouch);
+      for (int i = listScrollTop_; i < lastRow && touchRows > 0; ++i) {
+        const int entry = displayRows_[i].entry;
+        if (entry < 0) continue;
+        frame.hit(rowRects[i - listScrollTop_], TOUCH_ACTION_ROW, static_cast<int16_t>(entry), fui::InputTouch);
       }
       touchInteractions.publish();
       touchReady = true;
