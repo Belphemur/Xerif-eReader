@@ -269,6 +269,25 @@ class GeneratorVersionFieldTest(unittest.TestCase):
         self.assertIsNone(self.generator.entry_version(
             other, pr_new=name, pr_branch="feature/pr-stamp"))
 
+    def test_carried_pr_version_survives_dev_lane_regeneration(self):
+        # The develop publish lane regenerates the manifest WITHOUT
+        # --pr-new/--pr-branch; carried PR entries keep the version the PR
+        # lane stamped for the same asset (name embeds PR number + head sha)
+        # instead of downgrading the picker to the raw asset name.
+        name = f"xerif-pr-999-{self.short_sha()}-x4pro.bin"
+        stamped = f"2.15.0-dev-feature/pr-999-{self.short_sha()}"
+        self.assertEqual(self.generator.entry_version(name, prior_versions={name: stamped}), stamped)
+
+    def test_dev_entries_always_rederive_version(self):
+        # Dev builds re-derive from the single source even when the prior
+        # manifest carries a field — stale identities must not survive.
+        sha = self.head_sha()
+        name = f"xerif-dev-{sha}-x4pro.bin"
+        expected = subprocess.check_output(
+            [sys.executable, str(GIT_BRANCH), "--print-dev-version", sha],
+            cwd=REPO, text=True).strip()
+        self.assertEqual(self.generator.entry_version(name, prior_versions={name: "stale"}), expected)
+
 
 class GitBranchCliTest(unittest.TestCase):
     """--print-dev-version CLI arg parsing (--branch override)."""

@@ -70,18 +70,24 @@ def dev_version_for(name, branch=None):
     return proc.stdout.decode().strip()
 
 
-def entry_version(name, pr_new=None, pr_branch=None):
+def entry_version(name, pr_new=None, pr_branch=None, prior_versions=None):
     """Optional `version` field for a manifest entry (§14: one schema).
 
     Dev assets always derive it. The PR asset published by this run
-    (--pr-new) derives it with the --pr-branch override; carried PR assets
-    have no branch and omit the field, as do failed lookups, so the device
-    falls back to the asset name.
+    (--pr-new) derives it with the --pr-branch override. Carried PR assets
+    keep the version the PR lane stamped for the same asset (the name
+    embeds PR number + head sha, so the prior-manifest match is exact) —
+    the develop publish lane regenerates the manifest without --pr-new,
+    and without this retention it would silently downgrade every carried
+    PR entry to the raw asset name. A failed dev lookup still drops the
+    field (the device falls back to the asset name).
     """
     if name.startswith(DEV_PREFIX):
         return dev_version_for(name)
     if name == pr_new and pr_branch:
         return dev_version_for(name, branch=pr_branch)
+    if prior_versions and name in prior_versions:
+        return prior_versions[name]
     return None
 
 
@@ -174,6 +180,15 @@ def main():
         assets = release.get("assets", [])
 
     prior = prior_manifest_shas(args.prior) if args.prior else {}
+    prior_versions = {}
+    if args.prior:
+        try:
+            with open(args.prior) as f:
+                prior_versions = {v.get("name", ""): v.get("version")
+                                  for v in json.load(f).get("versions", [])
+                                  if v.get("version")}
+        except (OSError, ValueError):
+            prior_versions = {}
 
     def local_file_for(name):
         if args.new_bin and os.path.basename(args.new_bin) == name:
@@ -200,7 +215,7 @@ def main():
             "sha256": sha256,
             "date": date,
         }
-        version = entry_version(name, args.pr_new, args.pr_branch)
+        version = entry_version(name, args.pr_new, args.pr_branch, prior_versions)
         if version:
             item["version"] = version
         return item
