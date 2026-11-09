@@ -57,14 +57,29 @@ TEST(DictHistoryStore, MoveToFrontDedupeAndCap) {
 
 TEST(DictHistoryStore, SanitizesControlBytesAndTruncatesLongQueries) {
   fake::reset();
-  EXPECT_TRUE(DictHistoryStore::record("bad\tword"));   // tab control byte cuts the tail
-  EXPECT_TRUE(DictHistoryStore::record("semi\nword"));  // embedded newline terminates
+  // A control byte cannot survive the line-per-query shape, so the whole
+  // query is refused (keyboard input cannot produce those anyway).
+  EXPECT_FALSE(DictHistoryStore::record("bad\tword"));
+  EXPECT_FALSE(DictHistoryStore::record("semi\nword"));
   EXPECT_TRUE(DictHistoryStore::record(std::string(200, 'x')));
   auto history = lines();
-  ASSERT_EQ(history.size(), 3u);
-  EXPECT_EQ(history[2], "bad");  // first control byte ends the query
-  EXPECT_EQ(history[1], "semi");
+  ASSERT_EQ(history.size(), 1u);
   EXPECT_EQ(history[0].size(), DictHistoryStore::MAX_QUERY_BYTES);
+}
+
+TEST(DictHistoryStore, Utf8TruncationEndsOnCodepointBoundary) {
+  fake::reset();
+  // "café" with é (2 bytes): a cut that would land inside é rolls back to
+  // the codepoint boundary.
+  const std::string longUtf8 = std::string(128, 'a') + "\xc3\xa9" + "x";
+  EXPECT_TRUE(DictHistoryStore::record(longUtf8));
+  auto history = lines();
+  ASSERT_EQ(history.size(), 1u);
+  EXPECT_EQ(history[0].size(), 127u);  // the é's lead byte straddles the cap and is dropped
+  EXPECT_EQ(history[0].back(), 'a');
+  // A control byte mid-query refuses the whole record.
+  EXPECT_FALSE(DictHistoryStore::record(std::string(50, 'a') + '\n' + std::string(50, 'b')));
+  EXPECT_EQ(lines().size(), 1u);
 }
 
 TEST(DictHistoryStore, TempPublishFailureDamagesOnlyTheRing) {

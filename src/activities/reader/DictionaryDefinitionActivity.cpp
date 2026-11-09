@@ -255,30 +255,33 @@ void DictionaryDefinitionActivity::openSearch() {
   if (SETTINGS.dictionaryHistoryEnabled) {
     DictHistoryStore::load(recents);
   }
-  startActivityForResult(
-      std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH), content.headword, 0,
-                                              InputType::Text, std::move(recents)),
-      [this](const ActivityResult& result) {
-        if (!result.isCancelled && std::holds_alternative<KeyboardResult>(result.data)) {
-          const auto& keyboard = std::get<KeyboardResult>(result.data);
-          if (!keyboard.text.empty()) {
-            if (lookup) {
-              // In-popup recursion: navigateDefinition() runs on the next loop
-              // tick, keeping the lookup history under this activity.
-              lookup->pendingWord = keyboard.text;
-              requestUpdate();
-            } else {
-              // No lookup state (not-found fallback): hand the word back to the
-              // word-select parent, which owns the Dictionary.
-              setResult(ActivityResult(DictionarySearchResult{keyboard.text}));
-              finish();
-            }
-            return;
-          }
+  auto search = makeUniqueNoThrow<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH), content.headword, 0,
+                                                         InputType::Text, std::move(recents));
+  if (!search) {
+    LOG_ERR("DICT", "OOM: search keyboard");
+    return;
+  }
+  startActivityForResult(std::move(search), [this](const ActivityResult& result) {
+    if (!result.isCancelled && std::holds_alternative<KeyboardResult>(result.data)) {
+      const auto& keyboard = std::get<KeyboardResult>(result.data);
+      if (!keyboard.text.empty()) {
+        if (lookup) {
+          // In-popup recursion: navigateDefinition() runs on the next loop
+          // tick, keeping the lookup history under this activity.
+          lookup->pendingWord = keyboard.text;
+          requestUpdate();
+        } else {
+          // No lookup state (not-found fallback): hand the word back to the
+          // word-select parent, which owns the Dictionary.
+          setResult(ActivityResult(DictionarySearchResult{keyboard.text}));
+          finish();
         }
-        clearBeforeNextRender = true;
-        requestUpdate();
-      });
+        return;
+      }
+    }
+    clearBeforeNextRender = true;
+    requestUpdate();
+  });
 }
 
 // Styled path: lay the HTML definition out through the EPUB chapter parser

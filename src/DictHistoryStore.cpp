@@ -6,23 +6,36 @@
 #if __has_include(<common/FsApiConstants.h>)
 #include <common/FsApiConstants.h>
 #endif
+
 #include <algorithm>
-#include <cstdio>
 
 namespace {
-// Whole-file read budget: 50 entries × (query + newline) with headroom.
-constexpr size_t MAX_FILE_BYTES = 4 * 1024 + 512;
+// Whole-file read budget: the store's own worst case, 50 entries of at most
+// MAX_QUERY_BYTES text each plus the newline — a full history must read back
+// whole or record()'s next rewrite would drop entries.
+constexpr size_t MAX_FILE_BYTES = DictHistoryStore::MAX_ENTRIES * (DictHistoryStore::MAX_QUERY_BYTES + 1);
 
-// Queries are single lines. The keyboard cannot submit control bytes, but a
-// defensive cut at the first one keeps a stray newline from corrupting the
-// line-per-query file shape.
+// Bounded front that never runs past the last UTF-8 lead byte: a cut that
+// pushed a full multi-byte codepoint over the budget rolls back to the
+// previous lead so truncated query text stays valid UTF-8.
 std::string sanitizeQuery(const std::string& query) {
+  size_t length = std::min(query.size(), DictHistoryStore::MAX_QUERY_BYTES);
+  if (length < query.size()) {
+    // A byte-granular cap can land inside a multi-byte codepoint: roll back
+    // trailing continuation bytes, then drop the straddling codepoint's lead,
+    // so stored query text stays valid UTF-8.
+    while (length > 0 && (static_cast<unsigned char>(query[length]) & 0xC0) == 0x80) {
+      --length;
+    }
+    if (length > 0 && (static_cast<unsigned char>(query[length]) & 0x80) != 0) --length;
+    if (length == 0) return {};  // defensive: a codepoint cannot fill the cap
+  }
   std::string clean;
-  clean.reserve(std::min(query.size(), DictHistoryStore::MAX_QUERY_BYTES + 1));
-  for (const char c : query) {
-    if (static_cast<unsigned char>(c) < 0x20 || c == 0x7F) break;
-    if (clean.size() == DictHistoryStore::MAX_QUERY_BYTES) break;
-    clean.push_back(c);
+  clean.reserve(length);
+  for (size_t i = 0; i < length; ++i) {
+    const unsigned char c = static_cast<unsigned char>(query[i]);
+    if (c < 0x20 || c == 0x7F) return {};  // control byte cannot survive the line shape
+    clean.push_back(static_cast<char>(c));
   }
   return clean;
 }
@@ -35,7 +48,7 @@ void DictHistoryStore::load(std::vector<std::string>& out) {
 
   std::string content;
   content.resize(MAX_FILE_BYTES);
-  const size_t bytes = static_cast<size_t>(file.read(content.data(), content.size()));
+  const size_t bytes = static_cast<size_t>(std::max(file.read(content.data(), content.size()), 0));
   file.close();
   if (bytes == 0) return;
   content.resize(bytes);
@@ -43,12 +56,20 @@ void DictHistoryStore::load(std::vector<std::string>& out) {
   size_t lineStart = 0;
   while (lineStart < content.size()) {
     size_t lineEnd = content.find('\n', lineStart);
-    if (lineEnd == std::string::npos) lineEnd = content.size();
+    if (lineEnd == std::string::npos) {
+      // A filled buffer's trailing partial line cannot be trusted and
+      // rewriting the file from it would truncate the stored history.
+      if (bytes == content.capacity()) break;
+      lineEnd = content.size();
+    }
     size_t lineLength = lineEnd - lineStart;
     if (lineLength > 0 && content[lineStart + lineLength - 1] == '\r') --lineLength;
     if (lineLength > 0) {
       std::string line = content.substr(lineStart, lineLength);
-      if (line.size() > MAX_QUERY_BYTES) line.resize(MAX_QUERY_BYTES);
+      if (line.size() > MAX_QUERY_BYTES) {
+        line.resize(MAX_QUERY_BYTES);
+        while (!line.empty() && (static_cast<unsigned char>(line.back()) & 0xC0) == 0x80) line.pop_back();
+      }
       out.push_back(std::move(line));
       if (out.size() >= MAX_ENTRIES) return;
     }

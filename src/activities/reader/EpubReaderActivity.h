@@ -366,9 +366,13 @@ class EpubReaderActivity final : public ReaderActivity {
                                   size_t scratchMark);
   // Rasterizes an engine page through the active render mode (gray parity or
   // 1bpp): text + rubies + rules + images/placeholder. Shared by the reader's
-  // own page render and the TTF dictionary selector's repaint hook.
-  void paintTtfPage(const freeink::book::Page& page, void* font, int16_t characterSpacingPx = 0,
-                    int16_t wordSpacingPx = 0);
+  // own page render and the selectors' repaint hooks. `chapterPage` anchors
+  // saved-clip matching to the page actually painted (selector window pages
+  // differ from the reader's ttfPage); `invertSavedClips=false` lets the
+  // selectors repaint a clean page — their own highlights layer on top, so a
+  // selection inside a saved clip must not XOR-cancel against the clip box.
+  void paintTtfPage(const freeink::book::Page& page, void* font, int16_t characterSpacingPx, int16_t wordSpacingPx,
+                    uint16_t chapterPage, bool invertSavedClips = true);
   // Render hook handed to DictionaryWordSelectActivity: repaints the page the
   // selector was opened on (same spine/page members, reader frozen beneath).
   static void renderTtfSelectorPage(void* ctx, GfxRenderer& renderer);
@@ -633,10 +637,10 @@ class EpubReaderActivity final : public ReaderActivity {
   // a clip via its char anchors (layout-independent) and flips each matched
   // box with invertRegion. Runs inside paintTtfPage, after the page ink.
   void ttfDrawClippingHighlights(const freeink::book::Page& page, void* font, int16_t characterSpacingPx,
-                                 int16_t wordSpacingPx) const;
+                                 int16_t wordSpacingPx, uint16_t chapterPage) const;
   // Clipping whose matched box contains the reader point, or -1.
   int ttfClippingAtPoint(const freeink::book::Page& page, void* font, int16_t characterSpacingPx, int16_t wordSpacingPx,
-                         int x, int y) const;
+                         uint16_t chapterPage, int x, int y) const;
 #endif
   void renderStatusBar() const;
   void applyOrientation(uint8_t orientation);

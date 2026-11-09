@@ -2028,13 +2028,38 @@ void GfxRenderer::writeFramebufferRegion(int x, int y, int w, int h, const uint8
   }
 }
 
-// Flips every byte of one plane's aligned region. Same row addressing as
+// Flips every pixel of one plane's aligned region, masking the head and tail
+// bytes so the flip stays inside the requested screen rectangle (the aligned
+// walk expands x to byte multiples; a byte-granular XOR would touch up to 7
+// pixels of neighboring content on each edge). Same panel row addressing as
 // readFramebufferRegion so the selection snapshot pair can restore exactly
-// what the flip changed.
-static void invertPlaneRegion(uint8_t* plane, uint16_t panelWidthBytes, const AlignedMemRect& mem, size_t rowBytes) {
+// what the flip changed. `rowOffset` shifts the region into band-local
+// scratch addressing (strip targets store rows [_stripY0, _stripY0+_stripRows)
+// with the first band row at byte 0).
+static void invertPlaneRegion(uint8_t* plane, uint16_t panelWidthBytes, const AlignedMemRect& mem,
+                              const AlignedMemRect& exact, const int rowOffset) {
+  const size_t rowBytes = mem.w / 8;
+  // MSB-first packing: pixel mem.x+j sits in bit 7-j. Head byte flips pixels
+  // [exact.x .. byteEnd); the tail byte flips its pixels up to the exact
+  // rect's end; interior bytes flip fully.
+  const int exactEnd = static_cast<int>(exact.x) + exact.w;
+  const uint8_t headMask = mem.x != exact.x ? static_cast<uint8_t>(0xFF >> (exact.x - mem.x)) : 0xFF;
+  const int tailCount = exactEnd - (static_cast<int>(mem.x) + static_cast<int>(mem.w) - 8);
+  const uint8_t tailMask = tailCount < 8 ? static_cast<uint8_t>(0xFF << (8 - tailCount)) : 0xFF;
   for (uint16_t row = 0; row < mem.h; ++row) {
-    uint8_t* rowPtr = plane + (static_cast<uint32_t>(mem.y + row) * panelWidthBytes) + (mem.x / 8);
-    for (size_t b = 0; b < rowBytes; ++b) rowPtr[b] ^= 0xFF;
+    uint8_t* rowPtr =
+        plane + (static_cast<uint32_t>(static_cast<int>(mem.y) + static_cast<int>(row) + rowOffset) * panelWidthBytes) +
+        (mem.x / 8);
+    if (rowBytes > 1) {
+      rowPtr[0] ^= headMask;
+      for (size_t b = 1; b < rowBytes - 1; ++b) rowPtr[b] ^= 0xFF;
+      rowPtr[rowBytes - 1] ^= tailMask;
+    } else {
+      // Single-byte rows: both masks constrain the same byte; a full-width
+      // requirement (mem spans more than 8 px) never collapses to one byte
+      // because the aligned walk only widens when the exact rect is wider.
+      rowPtr[0] ^= headMask & tailMask;
+    }
   }
 }
 
@@ -2048,22 +2073,42 @@ void GfxRenderer::invertRegion(const int x, const int y, const int w, const int 
     return;
   }
 
+  // Aligned rect + the exact (unaligned) physical rect the byte masks derive
+  // from: rotate both corners again without the outward x-snap.
   const AlignedMemRect mem = screenRectToAlignedMemRect(orientation, x, y, w, h, panelWidth, panelHeight);
   if (!mem.valid) return;
-  const size_t rowBytes = mem.w / 8;  // exact: mem.w is a multiple of 8
+  AlignedMemRect exact = mem;
+  {
+    int ax = 0, ay = 0, bx = 0, by = 0;
+    rotateCoordinates(orientation, x, y, &ax, &ay, panelWidth, panelHeight);
+    rotateCoordinates(orientation, x + w - 1, y + h - 1, &bx, &by, panelWidth, panelHeight);
+    exact.x = static_cast<uint16_t>(std::min(ax, bx));
+    exact.y = static_cast<uint16_t>(std::min(ay, by));
+    const int exHi = std::max(ax, bx) + 1;
+    exact.w = static_cast<uint16_t>(std::min(exHi, static_cast<int>(panelWidth)) - exact.x);
+    exact.h = static_cast<uint16_t>(std::min(std::max(ay, by) + 1, static_cast<int>(panelHeight)) - exact.y);
+  }
 
   // GRAYSCALE_DUAL: when a dual strip target is bound both plane scratches
-  // flip in one move (the 2-bit gray field moves with them). Without a bound
-  // target the renderer owns no plane storage (planes live in caller scratch
-  // buffers and the panel driver), so only the framebuffer — the BW base,
-  // the same memory the snapshot pair moves — flips.
+  // flip in one move (the 2-bit gray field moves with them); rows clip to the
+  // active band and re-address band-locally (band scratch byte 0 = _stripY0).
+  // Without a bound target the renderer owns no plane storage (planes live in
+  // caller scratch buffers and the panel driver), so only the framebuffer —
+  // the BW base, the same memory the snapshot pair moves — flips.
   if (renderMode == GRAYSCALE_DUAL && _stripActive && _stripBuf != nullptr && _dualBuf != nullptr) {
-    invertPlaneRegion(_stripBuf, panelWidthBytes, mem, rowBytes);
-    invertPlaneRegion(_dualBuf, panelWidthBytes, mem, rowBytes);
+    const int bandTop = std::max(static_cast<int>(exact.y), _stripY0);
+    const int bandBottom = std::min(exact.y + static_cast<int>(exact.h), _stripY0 + _stripRows);
+    if (bandTop >= bandBottom) return;
+    AlignedMemRect band = mem;
+    band.y = static_cast<uint16_t>(bandTop);
+    band.h = static_cast<uint16_t>(bandBottom - bandTop);
+    const int stripOffset = -_stripY0;
+    invertPlaneRegion(_stripBuf, panelWidthBytes, band, exact, stripOffset);
+    invertPlaneRegion(_dualBuf, panelWidthBytes, band, exact, stripOffset);
     return;
   }
   if (frameBuffer == nullptr) return;
-  invertPlaneRegion(frameBuffer, panelWidthBytes, mem, rowBytes);
+  invertPlaneRegion(frameBuffer, panelWidthBytes, mem, exact, 0);
 }
 
 std::string GfxRenderer::truncatedText(const int fontId, const char* text, const int maxWidth,

@@ -76,6 +76,11 @@ class ClipSelectionActivity final : public Activity {
     uint32_t startOffset = UINT32_MAX;
     uint32_t endOffset = UINT32_MAX;
     const char* text = nullptr;
+    // Trimmed token span inside `text` (0..full-length unless the TTF payload
+    // provides a trim): buildSelectedText exports the trimmed range so box
+    // geometry and lookup text agree.
+    uint16_t textOffset = 0;
+    uint16_t textLength = 0;
     bool paragraphStart = false;
     bool isRtl = false;
     bool discretionaryHyphen = false;
@@ -90,7 +95,12 @@ class ClipSelectionActivity final : public Activity {
   // difference between the two data sources.
   void extractWordsTtf();
 #endif
-  size_t pageCount() const { return borrowedPages.empty() ? pages.size() : borrowedPages.size(); }
+  size_t pageCount() const {
+#if defined(CROSSPOINT_TTF_READER)
+    if (ttfMode) return ttfPages.size();  // swipe page navigation over the window
+#endif
+    return borrowedPages.empty() ? pages.size() : borrowedPages.size();
+  }
   const Page& pageAt(size_t index) const { return *(borrowedPages.empty() ? pages[index] : borrowedPages[index]); }
   bool isLookup() const { return mode != Mode::Clip; }
   int firstAction() const { return lookupAvailable ? 0 : 1; }

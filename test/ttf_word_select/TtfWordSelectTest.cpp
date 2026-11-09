@@ -22,15 +22,57 @@ const std::string& emberBytes() {
   return bytes;
 }
 
-freeink::book::Page makePage(const char* text, const uint16_t len) {
+// Chapter codepoint length for a run whose text carries ALREADY-BAKED
+// ligature codepoints: a baked FB03/FB04 chain covers 3 source cps,
+// FB00..FB02 and the lam-alef forms cover 2 (the same weights the consumer
+// walk applies), so a synthetic run can model an engine-shaped chapter range.
+uint16_t bakedCharLen(const char* text, const uint16_t len) {
+  uint16_t cps = 0;
+  uint16_t i = 0;
+  while (i < len) {
+    const auto lead = static_cast<uint8_t>(text[i]);
+    uint32_t cp = lead;
+    uint16_t next = i + 1;
+    if (lead < 0xE0) {
+      cp &= 0x1F;
+    } else {
+      cp &= lead < 0xF0 ? 0x0F : 0x07;
+    }
+    while (next < len && (static_cast<uint8_t>(text[next]) & 0xC0) == 0x80) {
+      cp = (cp << 6) | (static_cast<uint8_t>(text[next]) & 0x3F);
+      ++next;
+    }
+    int arity = 1;
+    if (cp >= 0xFB03 && cp <= 0xFB04) {
+      arity = 3;
+    } else if ((cp >= 0xFB00 && cp <= 0xFB02) || (cp >= 0xFEF5 && cp <= 0xFEFC)) {
+      arity = 2;
+    }
+    cps += static_cast<uint16_t>(arity);
+    i = next;
+  }
+  return cps;
+}
+
+freeink::book::Page makePage(const char* text, const uint16_t len, const bool baked = false) {
   static freeink::book::PageTextRun run{};
+  run = freeink::book::PageTextRun{};
   run.text = text;
   run.charStart = 0;
   run.len = len;
   run.x = 10;
   run.baselineY = 40;
   run.sizePx = 20;
-  run.charLen = len;
+  // Chapter codepoints, not bytes (the engine's charLen contract); `baked`
+  // models an engine run whose ligature folds are already baked in, so
+  // charLen covers the folded cps the decode walk weights.
+  uint16_t cps = 0;
+  for (uint16_t i = 0; i < len;) {
+    ++cps;
+    ++i;
+    while (i < len && (static_cast<uint8_t>(text[i]) & 0xC0) == 0x80) ++i;
+  }
+  run.charLen = baked ? bakedCharLen(text, len) : cps;
   run.styleFlags = freeink::book::StyleNone;
   run.layoutFlags = 0;
   static freeink::book::Page page{};
@@ -94,15 +136,15 @@ TEST(TtfWordSelect, SplitsRunsIntoWhitespaceTokens) {
 namespace {
 
 // Runs the anchor walkthrough on one synthetic run via the Ember fixture.
-bool buildOnEmber(const char* text, freeink::book::TtfWordSelectData& data) {
+bool buildOnEmber(const char* text, freeink::book::TtfWordSelectData& data, const bool baked = false) {
   SelectFace font;
   const std::string& bytes = emberBytes();
   if (bytes.empty()) return false;
   if (!loadSelectFace(font, bytes)) return false;
   freeink::book::FontChain chain;
   chain.add(&font, freeink::book::StyleNone);
-  const auto page = makePage(text, static_cast<uint16_t>(std::strlen(text)));
-  return freeink::book::buildTtfWordSelectData(page, chain, data);
+  const auto page = makePage(text, static_cast<uint16_t>(std::strlen(text)), baked);
+  return freeink::book::buildTtfWordSelectData(page, chain, data, 0, 0);
 }
 
 }  // namespace
@@ -152,7 +194,8 @@ TEST(TtfWordSelect, LigatureCodepointWeightBakedCountsBothCodepoints) {
   // indistinguishable raw-occurrence residual is documented in the design
   // addendum as a bounded, per-run drift.
   freeink::book::TtfWordSelectData data;
-  ASSERT_TRUE(buildOnEmber("a \xef\xac\x81 b", data));  // "a FB01 b"
+  // Engine-baked run: charLen covers both source codepoints behind FB01.
+  ASSERT_TRUE(buildOnEmber("a \xef\xac\x81 b", data, /*baked=*/true));  // "a FB01 b"
   ASSERT_EQ(data.boxes.size(), 3u);
   EXPECT_EQ(data.boxes[1].charStart, 2u);
   EXPECT_EQ(data.boxes[1].charLen, 2u);  // baked fi covers f + i
@@ -163,7 +206,7 @@ TEST(TtfWordSelect, LigatureChainFinalWeighsThreeCodepoints) {
   // A chain final (FB03 = ffi baked from f+f+i) covers three chapter cps:
   // the walk per-baked-cp weight reproduces the engine's fold chain.
   freeink::book::TtfWordSelectData data;
-  ASSERT_TRUE(buildOnEmber("\xef\xac\x83 x", data));  // "FB03 x"
+  ASSERT_TRUE(buildOnEmber("\xef\xac\x83 x", data, /*baked=*/true));  // "FB03 x"
   ASSERT_EQ(data.boxes.size(), 2u);
   EXPECT_EQ(data.boxes[0].charLen, 3u);
   EXPECT_EQ(data.boxes[1].charStart, 4u);  // 3 (FB03) + 1 (space)

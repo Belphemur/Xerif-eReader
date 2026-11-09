@@ -511,8 +511,15 @@ bool KeyboardEntryActivity::cursorPositionFromPoint(const int x, const int y, si
   const Rect content = UITheme::getContentArea(renderer);
 
   const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+  // Recents chips (§F4) claim one row of the blank band above the field; the
+  // field shifts down so a row always exists even on themes whose fixed
+  // reserve is too small to fit one on its own. The tips/keyboard gap
+  // absorbs it (their own guards degrade drawing when tight).
+  const int recentsReserve = recentQueries.empty() || !mappedInput.hasTouch()
+                                 ? 0
+                                 : renderer.getLineHeight(UI_12_FONT_ID) + metrics.verticalSpacing;
   const int inputStartY = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing +
-                          metrics.verticalSpacing * 4 + metrics.keyboardVerticalOffset;
+                          metrics.verticalSpacing * 4 + metrics.keyboardVerticalOffset + recentsReserve;
 
   int availableWidth = content.width;
   if (gpio.deviceIsX3()) {
@@ -829,8 +836,13 @@ void KeyboardEntryActivity::render(RenderLock&&) {
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, title.c_str());
 
   const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+  // Same recents reserve as cursorPositionFromPoint (see it); the two
+  // computations must stay in lock-step or taps miss the field.
+  const int recentsReserve = recentQueries.empty() || !mappedInput.hasTouch()
+                                 ? 0
+                                 : renderer.getLineHeight(UI_12_FONT_ID) + metrics.verticalSpacing;
   const int inputStartY = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing +
-                          metrics.verticalSpacing * 4 + metrics.keyboardVerticalOffset;
+                          metrics.verticalSpacing * 4 + metrics.keyboardVerticalOffset + recentsReserve;
   int inputHeight = 0;
 
   std::string displayText = displayTextForCurrentState();

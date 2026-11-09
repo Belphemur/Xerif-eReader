@@ -188,17 +188,13 @@ void ClipSelectionActivity::extractWordsTtf() {
       word.startOffset = tb.charLen > 0 && tb.charStart != UINT32_MAX ? tb.charStart : UINT32_MAX;
       word.endOffset = tb.charLen > 0 && tb.charStart != UINT32_MAX ? tb.charStart + tb.charLen : UINT32_MAX;
       word.text = tb.text;
-      word.paragraphStart = false;
+      // Note: paragraphStart stays false on the TTF path — trimmed anchors
+      // cannot distinguish a paragraph break from leading punctuation, so
+      // multi-token clips join with spaces (buildSelectedText's gap check).
+      word.textOffset = tb.textOffset;
+      word.textLength = tb.textLength;
       word.isRtl = BidiUtils::startsWithRtl(tb.text + tb.textOffset, 5);
       word.discretionaryHyphen = tb.syntheticHyphen;
-      if (wordCount > 1) {
-        const WordBox& previous = words[wordCount - 2];
-        // Same chapter: a gap longer than the single inter-word space is a
-        // paragraph break; the trimmed char anchors can see it.
-        if (previous.pageOffset == word.pageOffset && previous.endOffset != UINT32_MAX &&
-            word.startOffset > previous.endOffset + 1)
-          word.paragraphStart = true;
-      }
     }
   }
 }
@@ -301,6 +297,8 @@ bool ClipSelectionActivity::extractWords() {
         word.startOffset = block->wordSourceRange(i).start;
         word.endOffset = block->wordSourceRange(i).end;
         word.text = text;
+        word.textOffset = 0;
+        word.textLength = static_cast<uint16_t>(std::strlen(text));
         word.paragraphStart = false;
         word.isRtl = isRtl;
         word.discretionaryHyphen = block->wordHasDiscretionaryHyphen(i);
@@ -470,7 +468,10 @@ bool ClipSelectionActivity::buildSelectedText(const int first, const int last, s
   }
   for (size_t i = 0; i < count; ++i) {
     const WordBox& current = words[order[i]];
-    const char* word = cleanWordStart(current.text);
+    const char* trimmed = current.text + current.textOffset;
+    const char* word = cleanWordStart(trimmed);
+    const size_t spanLength = current.textOffset < current.textLength ? current.textLength - current.textOffset : 0;
+    const size_t wordLength = spanLength - static_cast<size_t>(word - trimmed);
     char separator = '\0';
     if (i > 0) {
       const WordBox& previous = words[order[i - 1]];
@@ -483,7 +484,8 @@ bool ClipSelectionActivity::buildSelectedText(const int first, const int last, s
         separator = ' ';
       }
     }
-    if (!clippingText::append(text, word, separator, CLIPPING_TEXT_MAX, current.discretionaryHyphen)) {
+    if (!clippingText::append(text, std::string_view(word, wordLength), separator, CLIPPING_TEXT_MAX,
+                              current.discretionaryHyphen)) {
       return false;
     }
   }
@@ -788,6 +790,13 @@ Rect ClipSelectionActivity::actionRect() const {
 }
 
 int ClipSelectionActivity::textOffset() const {
+#if defined(CROSSPOINT_TTF_READER)
+  // The TTF hook paints pages at engine coordinates and cannot translate;
+  // offset-scrolling would move the overlay without the page. No-touch TTF
+  // boards keep the cursor on-page instead (all shipped TTF boards have
+  // touch, so this is a guard rail, not the hot path).
+  if (ttfMode) return 0;
+#endif
   if (!mappedInput.hasTouch() && wordCount) {
     const Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
     const WordBox& cursor = words[selected];
@@ -797,6 +806,9 @@ int ClipSelectionActivity::textOffset() const {
 }
 
 int ClipSelectionActivity::textXOffset() const {
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttfMode) return 0;  // see textOffset()
+#endif
   if (mappedInput.hasTouch() || !wordCount) return 0;
   const Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
   const WordBox& cursor = words[selected];

@@ -76,7 +76,8 @@ inline uint32_t chapterCpWeight(FontChain& fonts, const uint32_t cp, const uint8
 
 }  // namespace
 
-bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectData& out) {
+bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectData& out,
+                            const int16_t characterSpacingPx, const int16_t wordSpacingPx) {
   out.boxes.clear();
   out.footnotes.clear();
 
@@ -140,15 +141,19 @@ bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectDat
   out.boxes.reserve(tokenCount);
   char* write = reinterpret_cast<char*>(arena.get());
 
-  // Width of a byte range inside a run: plain advance walk with kerning, the
-  // same convention PagePaint uses when it draws the run.
-  auto measure = [&fonts](const char* text, uint16_t from, uint16_t to, uint16_t sizePx, uint8_t styleFlags) {
+  // Width of a byte range inside a run: advance + kerning + the reader's
+  // spacing knobs replayed exactly like the paint walk (PagePaint's spacingFor:
+  // word spacing rides the space glyph, character spacing everything else), so
+  // token geometry matches painted glyph positions. Justify slack lives in
+  // run.x and needs no replay here.
+  auto measure = [&](const char* text, uint16_t from, uint16_t to, uint16_t sizePx, uint8_t styleFlags) {
     int32_t w = 0;
     uint32_t prev = 0;
     for (uint16_t i = from; i < to;) {
       const uint32_t cp = decodeCp(text, to, i);
       if (prev != 0) w += fonts.kerning(prev, cp, sizePx, styleFlags);
       w += fonts.advance(cp, sizePx, styleFlags);
+      w += cp == ' ' ? wordSpacingPx : characterSpacingPx;
       prev = cp;
     }
     return w;
@@ -163,6 +168,7 @@ bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectDat
   uint16_t measuredTo = 0;
   uint16_t anchorFrom = 0;
   uint32_t anchorCps = 0;
+  bool anchorSafe = true;
   for (size_t t = 0; t < tokenCount; ++t) {
     const TokenRange& token = tokens[t];
     const PageTextRun& run = page.runs[token.run];
@@ -183,6 +189,25 @@ bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectDat
       measuredTo = 0;
       anchorFrom = 0;
       anchorCps = 0;
+      // Re-encode drops soft hyphens, which the consumer cannot see. A run
+      // whose weighted decode count disagrees with charLen has dropped
+      // characters — mark its anchors unavailable rather than persist
+      // guessed ranges (a mismatched clip can highlight the wrong token
+      // after relayout); the drift stays bounded to the run either way.
+      anchorSafe = true;
+      uint16_t effLen = run.len;
+      if ((run.layoutFlags & PageTextRun::LayoutHyphenated) != 0 && effLen > 0 && run.text[effLen - 1] == '-') {
+        --effLen;  // baked synthetic '-' is presentation-only, outside charLen
+      }
+      uint32_t decoded = 0;
+      for (uint16_t i = 0; i < effLen;) {
+        decoded += chapterCpWeight(fonts, decodeCp(run.text, effLen, i), run.styleFlags);
+      }
+      anchorSafe = decoded == run.charLen;
+      if (!anchorSafe) {
+        LOG_DBG("TTFWS", "run charCount mismatch (decoded %u vs %u): anchors disabled for this run",
+                static_cast<unsigned>(decoded), static_cast<unsigned>(run.charLen));
+      }
     }
     penX += measure(run.text, measuredTo, token.start, run.sizePx, run.styleFlags);
     measuredTo = token.start;
@@ -223,7 +248,7 @@ bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectDat
     // trim strips is real chapter text and counts toward the anchor.
     box.charStart = UINT32_MAX;
     box.charLen = 0;
-    if (!BidiUtils::startsWithRtl(text + span.start, 8)) {
+    if (anchorSafe && !BidiUtils::startsWithRtl(text + span.start, 8)) {
       const uint16_t spanFrom = static_cast<uint16_t>(token.start + span.start);
       const uint16_t spanTo = static_cast<uint16_t>(spanFrom + span.length);
       for (uint16_t i = token.start; i < spanFrom;) {
