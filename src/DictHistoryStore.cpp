@@ -45,7 +45,16 @@ void parseRingLines(const std::string_view content, std::vector<std::string>& ou
       std::string line(content.substr(lineStart, lineLength));
       if (line.size() > DictHistoryStore::MAX_QUERY_BYTES) {
         line.resize(DictHistoryStore::MAX_QUERY_BYTES);
+        // Same boundary rule as sanitizeQuery: roll back continuation bytes,
+        // then a cut that left an orphaned multi-byte LEAD byte drops it too
+        // (a dangling 0xC2..0xF4 prefix is not valid UTF-8 either).
         while (!line.empty() && (static_cast<unsigned char>(line.back()) & 0xC0) == 0x80) line.pop_back();
+        if (!line.empty() && static_cast<unsigned char>(line.back()) >= 0xC0 &&
+            line.size() == DictHistoryStore::MAX_QUERY_BYTES) {
+          // Only when the byte AT the cap was this lead's continuation... the
+          // cap landed right after a lead byte: drop it.
+          line.pop_back();
+        }
       }
       out.push_back(std::move(line));
     }
@@ -102,10 +111,36 @@ bool readRingPath(const char* path, std::vector<std::string>& out, bool& readabl
 }
 }  // namespace
 
-void DictHistoryStore::load(std::vector<std::string>& out) {
+// Recovery sources in newest-complete-first order: the stage holds a fully
+// written+synced ring that merely failed to publish; the backup holds the
+// pre-publish ring; the legacy temp is the pre-stage-rename fallback.
+constexpr const char* kRecoveryOrder[] = {STAGE_PATH, BACKUP_PATH, TEMP_PATH};
+
+// Loads the newest available ring: the live file when readable, otherwise the
+// newest recovery copy (the UI's recent chips must survive a failed publish).
+// liveOpened/liveReadable report the LIVE file's state for callers that gate
+// rewrites on it.
+void loadNewestRing(std::vector<std::string>& out, bool& liveReadable, bool& liveOpened) {
   out.clear();
-  bool readable = false;
-  readRingPath(FILE_PATH, out, readable);
+  liveReadable = false;
+  liveOpened = readRingPath(DictHistoryStore::FILE_PATH, out, liveReadable);
+  if (liveOpened && liveReadable) return;  // readable live file (maybe empty): honor it
+  if (liveOpened) return;                  // present-but-unreadable: caller decides
+  for (const char* path : kRecoveryOrder) {
+    std::vector<std::string> staged;
+    bool stagedReadable = false;
+    readRingPath(path, staged, stagedReadable);
+    if (!staged.empty()) {
+      out = std::move(staged);
+      return;
+    }
+  }
+}
+
+void DictHistoryStore::load(std::vector<std::string>& out) {
+  bool liveReadable = false;
+  bool liveOpened = false;
+  loadNewestRing(out, liveReadable, liveOpened);
 }
 
 bool DictHistoryStore::record(const std::string& query) {
@@ -117,29 +152,21 @@ bool DictHistoryStore::record(const std::string& query) {
   // a transient storage error, so the update refuses instead.
   std::vector<std::string> entries;
   bool liveReadable = false;
-  // readRingPath returns TRUE when the file opened (readable or not); a
-  // present-but-unreadable live file must fall into the refuse branch, NOT
-  // fall through as an empty ring (that would overwrite the whole history
-  // on exactly the transient error the guard exists for).
-  const bool liveOpened = readRingPath(FILE_PATH, entries, liveReadable);
-  if (liveOpened && !liveReadable) {
+  bool liveOpened = false;
+  loadNewestRing(entries, liveReadable, liveOpened);
+  // A live file that exists but could not be OPENED (storage-level error) or
+  // opened-but-unreadable must never be replaced by a recovery/empty ring.
+  if ((liveOpened && !liveReadable) || (!liveOpened && Storage.exists(FILE_PATH))) {
     LOG_ERR("DICTH", "History exists but is unreadable; refusing to rewrite");
     return false;
   }
   if (entries.empty()) {
-    // Previous publication may have failed (remove+rename leaves the stage
-    // file behind and no live file); recover from the rotated backup first —
-    // it is staged only after a completed write — then the recovery stage.
-    // A PRESENT recovery file that reads as unreadable refuses the rewrite.
-    // Newest complete ring first: the stage holds a fully written+synced
-    // ring that simply failed to publish, which is newer than the rotated
-    // backup (the pre-failure ring).
-    for (const char* path : {STAGE_PATH, BACKUP_PATH, TEMP_PATH}) {
+    // A PRESENT recovery file that reads as unreadable refuses the rewrite
+    // (a missing one is just no recovery source for that path).
+    for (const char* path : kRecoveryOrder) {
       std::vector<std::string> staged;
       bool stagedReadable = false;
       readRingPath(path, staged, stagedReadable);
-      // A PRESENT recovery file that reads as unreadable refuses the rewrite
-      // (a missing one is just no recovery source for this path).
       if (Storage.exists(path) && !stagedReadable) {
         LOG_ERR("DICTH", "Recovery file unreadable; refusing to rewrite");
         return false;

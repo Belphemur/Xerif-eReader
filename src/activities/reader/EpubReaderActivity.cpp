@@ -5013,6 +5013,13 @@ void EpubReaderActivity::ttfRunPreRenderPass(const freeink::book::LayoutParams& 
       // last step (same ordering paintTtfPage uses).
       freeink::book::PageRenderer::renderRules(page, makeFrameTarget(renderer));
     }
+    // Saved clips invert after the LAST slice so a fast turn serves the page
+    // with its highlights (the fast pass displays this framebuffer without
+    // repainting); the page's run text is still live above the scratch
+    // release. Selector repaints are unaffected — this is the reader's own
+    // prerender, and fast turns never serve selector pages.
+    ttfDrawClippingHighlights(page, params.font, params.characterSpacingPx, params.wordSpacingPx,
+                              static_cast<uint16_t>(nextPage));
     ttfPreRendered.pumping = false;
     ttfPreRendered.ready = true;
     LOG_DBG("ERS", "TTF prerendered page %d/%d (%u slice%s, %u runs)", nextPage, ttfPageCount - 1,
@@ -5497,9 +5504,12 @@ int EpubReaderActivity::ttfClippingAtPoint(const freeink::book::Page& page, void
   const uint32_t layoutSignature =
       readerRenderSpecSignature(SETTINGS.readerRenderSpec(buildViewportWidth, buildViewportHeight));
   for (const auto& tb : data.boxes) {
+    // Same padded rect the highlight paints (±2 px on every edge), so a
+    // long-press on the padding of an isolated highlight deletes it instead
+    // of falling through to the selector.
     if (tb.width <= 0 || x < tb.x - 2 || x >= static_cast<int>(tb.x) + tb.width + 2) continue;
-    const int limitY = static_cast<int>(tb.y) + tb.height;
-    if (y < tb.y || y >= limitY) continue;
+    const int limitY = static_cast<int>(tb.y) + tb.height + 2;
+    if (y < static_cast<int>(tb.y) - 2 || y >= limitY) continue;
     if (tb.charLen == 0 || tb.charStart == UINT32_MAX) continue;
     const uint32_t sourceStart = tb.charStart;
     const uint32_t sourceEnd = tb.charStart + tb.charLen;

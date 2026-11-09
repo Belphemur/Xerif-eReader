@@ -78,23 +78,23 @@ inline uint32_t chapterCpWeight(FontChain& fonts, const uint32_t cp, const uint8
   }
 }
 
-// True when any of the run's first codepoints has a strong RTL class: engine
-// segments are level-homogeneous, so a run holding one strong RTL character
-// was re-encoded in visual order and NO token in the run carries a logical
+// True when any codepoint in the run has a strong RTL class: engine segments
+// are level-homogeneous, so a run holding one strong RTL character was
+// re-encoded in visual order and NO token in the run carries a logical
 // chapter anchor. Token-level startsWithRtl cannot see this: a digits-only
 // token inside a reversed run classifies as non-RTL while its bytes are
-// still reversed. Bounded scan (first 32 characters) keeps the per-run cost
-// tiny; run text is not NUL-terminated so the walk uses the decode helper.
+// still reversed. The scan is linear in the run length (runs are one visual
+// line; bidi_class is a bounded table lookup) — a bounded prefix would miss
+// reversed runs whose strong characters start past it (long neutral/digit
+// visual prefixes).
 bool runStoresVisualOrder(const char* text, const uint16_t to) {
   uint16_t i = 0;
-  uint32_t checked = 0;
-  while (i < to && checked < 32) {
+  while (i < to) {
     const uint32_t cp = decodeCp(text, to, i);
     const uchar cls = bidi_class(cp);
     if (cls == R || cls == AL) return true;
-    ++checked;
   }
-  return false;  // no strong RTL class in the sampled prefix: expect LTR order
+  return false;  // no strong RTL class anywhere in the run: expect LTR order
 }
 
 }  // namespace

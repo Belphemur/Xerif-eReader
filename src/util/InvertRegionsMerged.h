@@ -15,7 +15,7 @@
 // caller's vector in place (no extra allocation on the paint path); the band
 // merge tracks the running LEFT edge too, because the (y, x) order lets a
 // deeper band's rect sit left of an interval already emitted.
-inline void invertRegionsMerged(GfxRenderer& renderer, std::vector<Rect> rects) {
+inline void invertRegionsMerged(GfxRenderer& renderer, std::vector<Rect>& rects) {
   if (rects.empty()) return;
   std::sort(rects.begin(), rects.end(),
             [](const Rect& a, const Rect& b) { return a.y != b.y ? a.y < b.y : a.x < b.x; });

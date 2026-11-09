@@ -147,10 +147,12 @@ void ClipSelectionActivity::onEnter() {
 // (this selector models ranges directly over the flat array).
 void ClipSelectionActivity::extractWordsTtf() {
   wordCount = 0;
+  // Size for the WHOLE loaded window: three dense pages would otherwise
+  // silently truncate the third page out of navigation and selection. The
+  // cap stays UINT16_MAX (WordBox indexing and ClippingResult word fields).
   size_t capacity = 0;
-  if (!ttfPages.empty()) {
-    capacity = std::min<size_t>(UINT16_MAX, std::max<size_t>(MAX_SELECTABLE_WORDS, ttfPages[0].boxes.size() + 10));
-  }
+  for (const auto& payload : ttfPages) capacity += payload.boxes.size();
+  if (capacity > 0) capacity = std::min<size_t>(UINT16_MAX, std::max<size_t>(MAX_SELECTABLE_WORDS, capacity));
   if (capacity == 0) {
     words = nullptr;
     rowCount = 0;
@@ -162,7 +164,13 @@ void ClipSelectionActivity::extractWordsTtf() {
     return;
   }
   rowCount = 0;
-  int16_t lastY = INT16_MIN;
+  // Line-band grouping: a superscript or differently-sized word's box top
+  // differs from its neighbours' on the SAME visual line, so exact-y equality
+  // would split one line into several rows (up/down would then move
+  // sideways). A box joins the current row when its vertical interval
+  // overlaps the row's running band.
+  int16_t bandTop = INT16_MIN;
+  int16_t bandBottom = INT16_MIN;
   size_t lastPage = SIZE_MAX;
   for (size_t pageIdx = 0; pageIdx < ttfPages.size(); ++pageIdx) {
     const auto& payload = ttfPages[pageIdx];
@@ -172,10 +180,16 @@ void ClipSelectionActivity::extractWordsTtf() {
                 static_cast<unsigned>(capacity));
         return;
       }
-      if (tb.y != lastY || pageIdx != lastPage) {
+      if (pageIdx != lastPage || tb.y >= bandBottom || static_cast<int>(tb.y) + tb.height <= bandTop) {
         ++rowCount;
-        lastY = tb.y;
+        bandTop = tb.y;
+        bandBottom = static_cast<int16_t>(tb.y + tb.height);
         lastPage = pageIdx;
+      } else {
+        // Same visual line: widen the band so a taller neighbour cannot split
+        // the row, and keep rows monotonic in reading order.
+        bandTop = std::min(bandTop, tb.y);
+        bandBottom = std::max<int16_t>(bandBottom, static_cast<int16_t>(tb.y + tb.height));
       }
       WordBox& word = words[wordCount++];
       word.x = tb.x;
