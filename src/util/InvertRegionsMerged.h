@@ -35,9 +35,13 @@ inline void invertRegionsMerged(GfxRenderer& renderer, std::vector<Rect> rects) 
         right = std::max(right, rects[j].x + rects[j].width);
       } else {
         renderer.invertRegion(x, y, right - x, bottom - y);
+        // New x segment: its vertical extent restarts at THIS rect — carrying
+        // the previous segment's running bottom would invert a strip of rows
+        // below tokens that were never selected.
         x = rects[j].x;
         right = rects[j].x + rects[j].width;
         y = rects[j].y;
+        bottom = rectBottom;
       }
       bottom = std::max(bottom, rectBottom);
       ++j;

@@ -117,9 +117,12 @@ bool DictHistoryStore::record(const std::string& query) {
   // a transient storage error, so the update refuses instead.
   std::vector<std::string> entries;
   bool liveReadable = false;
-  const bool livePresent = readRingPath(FILE_PATH, entries, liveReadable) && liveReadable;
-  if (livePresent && !liveReadable) {
-    // Present but unreadable (transient storage error): never rewrite.
+  // readRingPath returns TRUE when the file opened (readable or not); a
+  // present-but-unreadable live file must fall into the refuse branch, NOT
+  // fall through as an empty ring (that would overwrite the whole history
+  // on exactly the transient error the guard exists for).
+  const bool liveOpened = readRingPath(FILE_PATH, entries, liveReadable);
+  if (liveOpened && !liveReadable) {
     LOG_ERR("DICTH", "History exists but is unreadable; refusing to rewrite");
     return false;
   }
@@ -128,7 +131,10 @@ bool DictHistoryStore::record(const std::string& query) {
     // file behind and no live file); recover from the rotated backup first —
     // it is staged only after a completed write — then the recovery stage.
     // A PRESENT recovery file that reads as unreadable refuses the rewrite.
-    for (const char* path : {BACKUP_PATH, STAGE_PATH, TEMP_PATH}) {
+    // Newest complete ring first: the stage holds a fully written+synced
+    // ring that simply failed to publish, which is newer than the rotated
+    // backup (the pre-failure ring).
+    for (const char* path : {STAGE_PATH, BACKUP_PATH, TEMP_PATH}) {
       std::vector<std::string> staged;
       bool stagedReadable = false;
       readRingPath(path, staged, stagedReadable);

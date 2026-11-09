@@ -110,7 +110,11 @@ TEST(DictHistoryStore, TempPublishFailureKeepsRecoverableStage) {
   EXPECT_GT(fake::files.count("/DictHistory.txt.bak"), 0u);
   ASSERT_TRUE(DictHistoryStore::record("recovered"));
   auto history = lines();
-  ASSERT_EQ(history.size(), 2u);
+  // The stage holds the NEWEST complete ring (the failed publish's stage is
+  // fully written+synced), so recovery keeps its entries too — one lookup is
+  // not lost to a stale backup.
+  ASSERT_EQ(history.size(), 3u);
   EXPECT_EQ(history.front(), "recovered");
   EXPECT_TRUE(std::any_of(history.begin(), history.end(), [](const std::string& q) { return q == "original"; }));
+  EXPECT_TRUE(std::any_of(history.begin(), history.end(), [](const std::string& q) { return q == "never-appears"; }));
 }
