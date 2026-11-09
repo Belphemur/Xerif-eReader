@@ -5,6 +5,10 @@
 
 #include "TtfWordSelect.h"
 
+extern "C" {
+#include <minibidi.h>  // bidi_class — strong-class scan over a bounded run prefix
+}
+
 #include <BidiUtils.h>
 #include <Logging.h>
 #include <Memory.h>
@@ -72,6 +76,25 @@ inline uint32_t chapterCpWeight(FontChain& fonts, const uint32_t cp, const uint8
     default:
       return 1;
   }
+}
+
+// True when any of the run's first codepoints has a strong RTL class: engine
+// segments are level-homogeneous, so a run holding one strong RTL character
+// was re-encoded in visual order and NO token in the run carries a logical
+// chapter anchor. Token-level startsWithRtl cannot see this: a digits-only
+// token inside a reversed run classifies as non-RTL while its bytes are
+// still reversed. Bounded scan (first 32 characters) keeps the per-run cost
+// tiny; run text is not NUL-terminated so the walk uses the decode helper.
+bool runStoresVisualOrder(const char* text, const uint16_t to) {
+  uint16_t i = 0;
+  uint32_t checked = 0;
+  while (i < to && checked < 32) {
+    const uint32_t cp = decodeCp(text, to, i);
+    const uchar cls = bidi_class(cp);
+    if (cls == R || cls == AL) return true;
+    ++checked;
+  }
+  return false;  // no strong RTL class in the sampled prefix: expect LTR order
 }
 
 }  // namespace
@@ -169,6 +192,7 @@ bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectDat
   uint16_t anchorFrom = 0;
   uint32_t anchorCps = 0;
   bool anchorSafe = true;
+  bool rtlRun = false;
   for (size_t t = 0; t < tokenCount; ++t) {
     const TokenRange& token = tokens[t];
     const PageTextRun& run = page.runs[token.run];
@@ -208,6 +232,7 @@ bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectDat
         LOG_DBG("TTFWS", "run charCount mismatch (decoded %u vs %u): anchors disabled for this run",
                 static_cast<unsigned>(decoded), static_cast<unsigned>(run.charLen));
       }
+      rtlRun = runStoresVisualOrder(run.text, effLen);
     }
     penX += measure(run.text, measuredTo, token.start, run.sizePx, run.styleFlags);
     measuredTo = token.start;
@@ -248,7 +273,7 @@ bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectDat
     // trim strips is real chapter text and counts toward the anchor.
     box.charStart = UINT32_MAX;
     box.charLen = 0;
-    if (anchorSafe && !BidiUtils::startsWithRtl(text + span.start, 8)) {
+    if (anchorSafe && !rtlRun) {
       const uint16_t spanFrom = static_cast<uint16_t>(token.start + span.start);
       const uint16_t spanTo = static_cast<uint16_t>(spanFrom + span.length);
       for (uint16_t i = token.start; i < spanFrom;) {

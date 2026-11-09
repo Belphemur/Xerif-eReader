@@ -84,6 +84,12 @@ class ClipSelectionActivity final : public Activity {
     bool paragraphStart = false;
     bool isRtl = false;
     bool discretionaryHyphen = false;
+    // Engine selection-group id (TTF: page-window global, fragments of one
+    // logical word share it and are index-contiguous). confirmSelection
+    // expands endpoints across same-group fragments so a selection of an
+    // inline-styled word fragment includes the whole word. UINT32_MAX =
+    // none (legacy boxes stay ungrouped).
+    uint32_t selectionGroup = UINT32_MAX;
   };
 
   static constexpr size_t MAX_SELECTABLE_WORDS = 240;

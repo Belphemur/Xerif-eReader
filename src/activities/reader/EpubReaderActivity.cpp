@@ -1548,10 +1548,15 @@ void EpubReaderActivity::startTtfClipSelection(const int initialX, const int ini
     const auto& clipping = std::get<ClippingResult>(result.data);
     const uint16_t startPage = static_cast<uint16_t>(pageNumber + clipping.startPageOffset);
     const uint16_t endPage = static_cast<uint16_t>(pageNumber + clipping.endPageOffset);
-    // Page jump mirrors the legacy section->currentPage write: the
-    // TTF reader's position is ttfPage; the chrome mirrors
-    // (nextPageNumber, char anchors) re-derive on the repaint.
-    if (endPage < pageCount) ttfPage = endPage;
+    // Page jump mirrors the legacy section->currentPage write: the TTF
+    // reader's position is ttfPage and getCurrentPosition() reads
+    // nextPageNumber (section is null), so BOTH must move before
+    // addBookmark()/lookup derive anything from the position; the remaining
+    // char anchors re-derive on the repaint that requestUpdate schedules.
+    if (endPage < pageCount) {
+      ttfPage = endPage;
+      nextPageNumber = endPage;
+    }
     if (clipping.action == ClippingResult::Action::Bookmark) {
       addBookmark();
       showBookmarkMessage = true;

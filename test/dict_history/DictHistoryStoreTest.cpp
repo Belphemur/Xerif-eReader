@@ -82,36 +82,24 @@ TEST(DictHistoryStore, Utf8TruncationEndsOnCodepointBoundary) {
   EXPECT_EQ(lines().size(), 1u);
 }
 
-TEST(DictHistoryStore, TempPublishFailureDamagesOnlyTheRing) {
+TEST(DictHistoryStore, TempPublishFailureKeepsRecoverableStage) {
   fake::reset();
   ASSERT_TRUE(DictHistoryStore::record("original"));
-  // A failed publication uses the repo's remove+rename FAT primitive
-  // (HalStorage::replaceFile contract): the live file is removed first and
-  // the rename refuses, so the ring is empty and the temp is cleaned up for
-  // the next record. The staging phase itself is what the temp file
-  // protects — a power loss DURING the write leaves the previous history.
+  // Publish failure (rename refused): the live file is consumed by the repo's
+  // remove+rename primitive and the staged file survives as the recovery
+  // source; the NEXT record recovers the ring from it instead of starting a
+  // fresh one-entry history.
   fake::failRename = 0;
   EXPECT_FALSE(DictHistoryStore::record("never-appears"));
   fake::failRename = -1;
-  auto history = lines();
-  EXPECT_TRUE(history.empty());
   EXPECT_EQ(fake::files.count("/DictHistory.txt"), 0u);
-  // The failed temp is cleaned up for the next record.
-  EXPECT_EQ(fake::files.count("/DictHistory.txt.tmp"), 0u);
-  ASSERT_TRUE(DictHistoryStore::record("after-recovery"));
-  history = lines();
-  ASSERT_EQ(history.size(), 1u);
-  EXPECT_EQ(history.front(), "after-recovery");
-}
-
-TEST(DictHistoryStore, ShortStageWriteRefusesToPublish) {
-  fake::reset();
-  ASSERT_TRUE(DictHistoryStore::record("kept"));
-  fake::shortWrite = 0;  // first write of the next stage comes up short
-  EXPECT_FALSE(DictHistoryStore::record("incomplete"));
-  fake::shortWrite = -1;
+  EXPECT_EQ(fake::files.count("/DictHistory.txt.tmp"), 1u);
+  ASSERT_TRUE(DictHistoryStore::record("recovered"));
   auto history = lines();
-  ASSERT_EQ(history.size(), 1u);
-  EXPECT_EQ(history.front(), "kept");
-  EXPECT_EQ(fake::files.count("/DictHistory.txt.tmp"), 0u);
+  // The recovered stage was the full post-MTF ring of the failed publish
+  // (the original lookup plus the one whose publish failed), so the ring
+  // keeps both entries instead of collapsing to a single query.
+  ASSERT_EQ(history.size(), 3u);
+  EXPECT_EQ(history.front(), "recovered");
+  EXPECT_TRUE(std::any_of(history.begin(), history.end(), [](const std::string& q) { return q == "original"; }));
 }

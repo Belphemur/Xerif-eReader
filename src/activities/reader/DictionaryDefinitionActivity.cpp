@@ -574,6 +574,12 @@ void DictionaryDefinitionActivity::navigateDefinition(const bool back) {
   } else {
     auto& previous = lookup->history[lookup->depth++];
     previous.query = std::move(lookup->query);
+    // Same recording point as the word selector: the query just resolved to a
+    // definition, so both entry surfaces (word select and this activity's
+    // search) land here. Failures are non-fatal by contract.
+    if (SETTINGS.dictionaryHistoryEnabled) {
+      (void)DictHistoryStore::record(lookup->pendingWord);
+    }
     lookup->query = std::move(lookup->pendingWord);
     previous.page = content.currentPage;
     previous.selectionPage = content.selectionPage;

@@ -471,7 +471,27 @@ bool ClipSelectionActivity::buildSelectedText(const int first, const int last, s
     const char* trimmed = current.text + current.textOffset;
     const char* word = cleanWordStart(trimmed);
     const size_t spanLength = current.textOffset < current.textLength ? current.textLength - current.textOffset : 0;
-    const size_t wordLength = spanLength - static_cast<size_t>(word - trimmed);
+    size_t wordLength = spanLength - static_cast<size_t>(word - trimmed);
+#if defined(CROSSPOINT_TTF_READER)
+    // Engine runs store RTL text in visual order (ChapterLayout L2): export
+    // the trimmed span's codepoints reversed so the saved clip holds logical
+    // source text. Shaped Arabic reads as presentation forms after
+    // reversal — good enough for a plaintext clip; the exact logical text
+    // stays an SDK-side mapping (design-doc addendum).
+    std::string logical;
+    if (ttfMode && current.isRtl && wordLength > 1) {
+      logical.reserve(wordLength);
+      for (size_t pos = wordLength; pos > 0;) {
+        size_t start = pos;
+        --start;
+        while (start > 0 && (static_cast<unsigned char>(word[start]) & 0xC0) == 0x80) --start;
+        logical.append(word + start, pos - start);
+        pos = start;
+      }
+      word = logical.c_str();
+      wordLength = logical.size();
+    }
+#endif
     char separator = '\0';
     if (i > 0) {
       const WordBox& previous = words[order[i - 1]];
@@ -499,8 +519,24 @@ void ClipSelectionActivity::confirmSelection(const ClippingResult::Action action
     return;
   }
 
-  const int first = std::min(rangeStart, selected);
-  const int last = std::max(rangeStart, selected);
+  int first = std::min(rangeStart, selected);
+  int last = std::max(rangeStart, selected);
+  // Expand endpoints to whole logical words: inline styling splits tokens
+  // into fragments that share a selection group and stay index-contiguous —
+  // a selection ending mid-word would otherwise save/lookup a torn token.
+  constexpr uint32_t kNoGroup = UINT32_MAX;
+  const uint32_t endGroup = words[last].selectionGroup;
+  if (endGroup != kNoGroup) {
+    while (last + 1 < static_cast<int>(wordCount) && words[last + 1].selectionGroup == endGroup &&
+           words[last + 1].pageOffset == words[last].pageOffset)
+      ++last;
+  }
+  const uint32_t startGroup = words[first].selectionGroup;
+  if (startGroup != kNoGroup) {
+    while (first > 0 && words[first - 1].selectionGroup == startGroup &&
+           words[first - 1].pageOffset == words[first].pageOffset)
+      --first;
+  }
   ClippingResult result;
   result.action = action;
   const auto heap = HalMemory::getDefaultHeap();

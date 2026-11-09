@@ -175,13 +175,15 @@ TEST(TtfWordSelect, MultiByteUtf8AnchorsCountCodepointsNotBytes) {
   EXPECT_EQ(data.boxes[1].charLen, 4u);
 }
 
-TEST(TtfWordSelect, RtlTokensGetNoAnchor) {
+TEST(TtfWordSelect, RtlRunsDisableAnchorsPerRun) {
   freeink::book::TtfWordSelectData data;
+  // One synthetic run mixing an ASCII token with Arabic: engine segments are
+  // level-homogeneous, so a run holding any strong RTL class is stored in
+  // visual order and NO token in it gets an anchor — the gates, ordered,
+  // keep digital-only tokens from inheriting a wrong anchor either.
   ASSERT_TRUE(buildOnEmber("word \xd9\x83\xd8\xaa\xd8\xa8", data));  // كتب — Arabic
   ASSERT_EQ(data.boxes.size(), 2u);
-  EXPECT_EQ(data.boxes[0].charStart, 0u);
-  // RTL tokens are stored in visual order engine-side: no anchor, so the
-  // clip degrades to text-only (design doc §F3).
+  EXPECT_EQ(data.boxes[0].charStart, UINT32_MAX);
   EXPECT_EQ(data.boxes[1].charStart, UINT32_MAX);
   EXPECT_EQ(data.boxes[1].charLen, 0u);
 }
