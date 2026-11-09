@@ -2028,6 +2028,44 @@ void GfxRenderer::writeFramebufferRegion(int x, int y, int w, int h, const uint8
   }
 }
 
+// Flips every byte of one plane's aligned region. Same row addressing as
+// readFramebufferRegion so the selection snapshot pair can restore exactly
+// what the flip changed.
+static void invertPlaneRegion(uint8_t* plane, uint16_t panelWidthBytes, const AlignedMemRect& mem, size_t rowBytes) {
+  for (uint16_t row = 0; row < mem.h; ++row) {
+    uint8_t* rowPtr = plane + (static_cast<uint32_t>(mem.y + row) * panelWidthBytes) + (mem.x / 8);
+    for (size_t b = 0; b < rowBytes; ++b) rowPtr[b] ^= 0xFF;
+  }
+}
+
+void GfxRenderer::invertRegion(const int x, const int y, const int w, const int h) const {
+  if (w <= 0 || h <= 0) return;
+  if (renderMode == GRAYSCALE_LSB || renderMode == GRAYSCALE_MSB) {
+    // The reader's single-plane strip passes forbid external draws (the
+    // walk does not include the BW base or the other plane), and no
+    // selection surface renders inside one.
+    LOG_ERR("GFX", "invertRegion: single-plane strip pass is not invertible");
+    return;
+  }
+
+  const AlignedMemRect mem = screenRectToAlignedMemRect(orientation, x, y, w, h, panelWidth, panelHeight);
+  if (!mem.valid) return;
+  const size_t rowBytes = mem.w / 8;  // exact: mem.w is a multiple of 8
+
+  // GRAYSCALE_DUAL: when a dual strip target is bound both plane scratches
+  // flip in one move (the 2-bit gray field moves with them). Without a bound
+  // target the renderer owns no plane storage (planes live in caller scratch
+  // buffers and the panel driver), so only the framebuffer — the BW base,
+  // the same memory the snapshot pair moves — flips.
+  if (renderMode == GRAYSCALE_DUAL && _stripActive && _stripBuf != nullptr && _dualBuf != nullptr) {
+    invertPlaneRegion(_stripBuf, panelWidthBytes, mem, rowBytes);
+    invertPlaneRegion(_dualBuf, panelWidthBytes, mem, rowBytes);
+    return;
+  }
+  if (frameBuffer == nullptr) return;
+  invertPlaneRegion(frameBuffer, panelWidthBytes, mem, rowBytes);
+}
+
 std::string GfxRenderer::truncatedText(const int fontId, const char* text, const int maxWidth,
                                        const EpdFontFamily::Style style) const {
   if (!text || maxWidth <= 0) return "";

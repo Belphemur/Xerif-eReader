@@ -728,9 +728,10 @@ bool DictionaryWordSelectActivity::drawHighlightWithSnapshot() {
     const int wordBottom = std::min(screenHeight, static_cast<int>(word.y) + word.height + 2);
 #if defined(CROSSPOINT_TTF_READER)
     if (ttfMode) {
-      // Outline only: the engine font draws the page, and redrawing a token
-      // through GfxRenderer's SD-font drawText would paint the wrong glyphs.
-      renderer.drawRect(wordX, wordY, wordRight - wordX, wordBottom - wordY, true);
+      // Engine glyphs cannot be re-drawn through the SD-font drawText, so the
+      // highlight is the pixel-wise inverse of the box (black box, white text
+      // — same look as the legacy fillRect+drawText pair).
+      renderer.invertRegion(wordX, wordY, wordRight - wordX, wordBottom - wordY);
       continue;
     }
 #endif
@@ -750,9 +751,9 @@ void DictionaryWordSelectActivity::drawHighlightRange() const {
     if (word.width <= 0 || selectedText.empty()) continue;
 #if defined(CROSSPOINT_TTF_READER)
     if (ttfMode) {
-      // Outline highlight — see drawHighlightWithSnapshot.
-      renderer.drawRect(std::max(0, static_cast<int>(word.x) - 2), std::max(0, static_cast<int>(word.y) - 2),
-                        word.width + 4, word.height + 4, true);
+      // Pixel-inverse highlight — see drawHighlightWithSnapshot.
+      renderer.invertRegion(std::max(0, static_cast<int>(word.x) - 2), std::max(0, static_cast<int>(word.y) - 2),
+                            word.width + 4, word.height + 4);
       continue;
     }
 #endif

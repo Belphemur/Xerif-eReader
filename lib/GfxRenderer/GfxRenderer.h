@@ -369,6 +369,13 @@ class GfxRenderer {
   // without re-rendering the whole page.
   size_t readFramebufferRegion(int x, int y, int w, int h, uint8_t* dst, size_t dstCapacity) const;
   void writeFramebufferRegion(int x, int y, int w, int h, const uint8_t* src);
+  // Composite-inverse flip of a screen-coordinate region (same clipping and
+  // rotation walk as readFramebufferRegion): every pixel in the region takes
+  // its opposite level. Selection surfaces (word highlight, saved clips) run
+  // in BW, so the flip lands in the framebuffer; inside an active GRAYSCALE_DUAL
+  // strip target both plane scratches flip together. Single-plane strip passes
+  // (GRAYSCALE_LSB/MSB) never host selection — refusing there is a no-op.
+  void invertRegion(int x, int y, int w, int h) const;
 
   // Text
   // Layout may use advance-only SD font tables; rendered measurement includes kerning and ligatures.
