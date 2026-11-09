@@ -4,6 +4,8 @@ add_font_backend_tests(TtfWordSelectTest
     TtfWordSelectTest.cpp
     ${REPO_ROOT}/src/activities/reader/TtfWordSelect.cpp
     ${REPO_ROOT}/src/util/DictionarySelection.cpp
+    ${REPO_ROOT}/lib/MiniBidi/BidiUtils.cpp
+    ${REPO_ROOT}/lib/MiniBidi/minibidi.c
     ${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont/src/TtfFont.cpp
     ${REPO_ROOT}/lib/Utf8/Utf8.cpp
     ${REPO_ROOT}/lib/Epub/Epub/hyphenation/HyphenationCommon.cpp
@@ -14,6 +16,7 @@ add_font_backend_tests(TtfWordSelectTest
     ${REPO_ROOT}/src/util
     ${REPO_ROOT}/lib
     ${REPO_ROOT}/lib/Memory
+    ${REPO_ROOT}/lib/MiniBidi
     ${REPO_ROOT}/lib/hal
     ${REPO_ROOT}/lib/Utf8
     ${REPO_ROOT}/lib/Epub
@@ -26,3 +29,8 @@ add_font_backend_tests(TtfWordSelectTest
     CROSSPOINT_TTF_READER=1
     EMBER_FIXTURES_DIR="${REPO_ROOT}/test/fixtures/fonts/amazon-ember"
 )
+
+# Vendored upstream C source emits -Wsign-compare under the test build's
+# -Wall/-Wextra; leave the vendored code untouched and silence it here
+# (mirrors test/minibidi_arabic).
+set_source_files_properties(${REPO_ROOT}/lib/MiniBidi/minibidi.c PROPERTIES COMPILE_OPTIONS "-Wno-sign-compare")

@@ -5,6 +5,7 @@
 
 #include "TtfWordSelect.h"
 
+#include <BidiUtils.h>
 #include <Logging.h>
 #include <Memory.h>
 
@@ -43,6 +44,34 @@ inline uint32_t decodeCp(const char* text, const uint16_t to, uint16_t& i) {
     --extra;
   }
   return cp;
+}
+
+// Chapter-codepoint weight of one re-encoded run codepoint. The layout folds
+// ligature chains (ff→FB00 = 2 cps, FB00+i/l → FB03/FB04 = 3 cps) and lam-alef
+// pairs (FEF5..FEFC = 2 cps) into a single baked codepoint before storing run
+// text (ChapterLayout decodeShaped re-encode), so a baked cp covers more
+// chapter codepoints than its own byte decode reveals. A value the active
+// font could have baked is counted as baked; a raw source occurrence of the
+// same codepoint — vanishingly rare EPUB text — drifts one codepoint,
+// bounded to the run (design doc §F3: log-once rule). Soft hyphens drop in
+// the same re-encode and are invisible here; their absence also drifts the
+// anchor within the affected run only.
+inline uint32_t chapterCpWeight(FontChain& fonts, const uint32_t cp, const uint8_t styleFlags) {
+  if (cp >= 0xFEF5 && cp <= 0xFEFC) return fonts.covers(cp) ? 2 : 1;
+  switch (cp) {
+    case 0xFB00:
+      return fonts.ligature('f', 'f', styleFlags) == cp ? 2 : 1;
+    case 0xFB01:
+      return fonts.ligature('f', 'i', styleFlags) == cp ? 2 : 1;
+    case 0xFB02:
+      return fonts.ligature('f', 'l', styleFlags) == cp ? 2 : 1;
+    case 0xFB03:
+      return fonts.ligature(0xFB00, 'i', styleFlags) == cp ? 3 : 1;
+    case 0xFB04:
+      return fonts.ligature(0xFB00, 'l', styleFlags) == cp ? 3 : 1;
+    default:
+      return 1;
+  }
 }
 
 }  // namespace
@@ -132,6 +161,8 @@ bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectDat
   // metric work (kody, PR #113).
   int32_t penX = 0;
   uint16_t measuredTo = 0;
+  uint16_t anchorFrom = 0;
+  uint32_t anchorCps = 0;
   for (size_t t = 0; t < tokenCount; ++t) {
     const TokenRange& token = tokens[t];
     const PageTextRun& run = page.runs[token.run];
@@ -150,9 +181,19 @@ bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectDat
     if (runFirst) {
       penX = run.x;
       measuredTo = 0;
+      anchorFrom = 0;
+      anchorCps = 0;
     }
     penX += measure(run.text, measuredTo, token.start, run.sizePx, run.styleFlags);
     measuredTo = token.start;
+    // Same monotone walk for the chapter-anchor cursor: codepoints (weighted)
+    // up to this token's start, so a skipped token's bytes are counted once.
+    if (anchorFrom < token.start) {
+      for (uint16_t i = anchorFrom; i < token.start;) {
+        anchorCps += chapterCpWeight(fonts, decodeCp(run.text, token.start, i), run.styleFlags);
+      }
+      anchorFrom = token.start;
+    }
 
     // Selection group: a continuation head joins the carried group; any
     // other token starts a fresh logical word. A pairing mismatch (head
@@ -175,6 +216,32 @@ bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectDat
     memcpy(write, rawView.data(), rawView.size());
     write[rawView.size()] = '\0';
     write += rawView.size() + 1;
+    // Chapter anchor: decode-walk the run's re-encoded text from its charStart
+    // (weights fold baked ligatures; soft hyphens stay drift-bounded), gated
+    // to LTR tokens. RTL runs are stored visual order — no anchor, their
+    // clips degrade to text-only per the design doc. Leading punctuation the
+    // trim strips is real chapter text and counts toward the anchor.
+    box.charStart = UINT32_MAX;
+    box.charLen = 0;
+    if (!BidiUtils::startsWithRtl(text + span.start, 8)) {
+      const uint16_t spanFrom = static_cast<uint16_t>(token.start + span.start);
+      const uint16_t spanTo = static_cast<uint16_t>(spanFrom + span.length);
+      for (uint16_t i = token.start; i < spanFrom;) {
+        anchorCps += chapterCpWeight(fonts, decodeCp(run.text, spanFrom, i), run.styleFlags);
+      }
+      anchorFrom = spanFrom;
+      uint32_t len = 0;
+      for (uint16_t i = spanFrom; i < spanTo;) {
+        len += chapterCpWeight(fonts, decodeCp(run.text, spanTo, i), run.styleFlags);
+      }
+      // The encode trim strips trailing punctuation (including a baked
+      // trailing synthetic '-'), so the span never covers it; a mid-token
+      // hyphen is a real chapter codepoint and stays counted.
+      if (len > 0) {
+        box.charStart = run.charStart + anchorCps;
+        box.charLen = static_cast<uint16_t>(len);
+      }
+    }
     // The box covers the trimmed token only: skip leading punctuation the
     // trim stripped, so touch/highlight geometry matches the lookup text.
     box.x = static_cast<int16_t>(penX + measure(text, 0, span.start, run.sizePx, run.styleFlags));

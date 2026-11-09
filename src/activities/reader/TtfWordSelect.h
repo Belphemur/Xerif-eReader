@@ -36,6 +36,14 @@ struct TtfWordBox {
   uint8_t styleFlags;
   uint32_t selectionGroup;  // per-page unique id of the logical word
   bool syntheticHyphen;
+  // Chapter character anchor of the TRIMMED token: codepoints of extracted
+  // text (the Page::charStart coordinate), charStart + charLen = half-open
+  // end — clipping stores and TextBlock::SourceRange share the convention.
+  // Consumer-side walk (no SDK change); charStart = UINT32_MAX when
+  // unavailable: RTL runs are stored in visual order and their clips degrade
+  // to text-only (design doc ttf/2026-11-09 §F3).
+  uint32_t charStart;
+  uint16_t charLen;
 };
 
 struct TtfWordSelectData {

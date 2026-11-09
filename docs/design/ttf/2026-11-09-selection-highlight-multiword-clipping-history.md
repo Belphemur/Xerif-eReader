@@ -305,3 +305,41 @@ section (no dead UI).
    actions (depends on 2).
 4. Saved-clip highlights + TTF `clippingAtPoint` (depends on 2, 3).
 5. `DictHistoryStore` + setting + search-overlay recents (independent).
+
+## Addendum — implementation findings (2026-11-09, from the campaign's
+## first two milestones)
+
+Two assumptions in this doc were checked against code reality during
+implementation. Neither blocks the locked decisions; both residuals are
+bounded and are corrected in the shipped implementation, not silently.
+
+**F1 — “GRAYSCALE_DUAL: XOR both plane buffers” is not a true level
+inversion.** `GfxRenderer` owns no plane storage: the gray planes are
+caller-owned flag-mask scratches, and the composed planes live in the
+panel driver (`Uc8279X4Driver::copyGrayscaleLsb/Msb` compose `p0 =
+base | lsb`, `p1 = p0 ^ msb`, streamed inverted — driver cpp ~636-715).
+XOR-ing the *flag masks* is not the same as complementing the *composed*
+plane pair: e.g. a light-gray (tone 1) pixel on a black base is bucket
+(1,0); flipped masks (0,1) recompose to bucket (1,1) = black, not the
+level-complement dark-gray. A mask-level XOR is a wash, not an inversion.
+Since every selection surface renders in BW (the dictionary/clip selectors
+paint their page with the BW base pass), `invertRegion` ships with exactly
+the contract the selection surfaces need: BW → framebuffer flip; DUAL strip
+target bound → both flag scratches flip (future-safe, no current caller);
+no strip target → framebuffer flip (the snapshot pair's memory);
+GRAYSCALE_LSB/MSB → refuse + error log (the two-pass plane walks forbid
+external draws). The doc's §F1 DUAL language should be read with this
+caveat; delivering the composed-plane inversion inside GfxRenderer would
+require a driver-level primitive and it was not owed by any surface here.
+
+**F3 — ligature substitution does NOT keep both codepoints in run text.**
+`ChapterLayout::decodeShaped` folds ligature chains (ff→FB00, FB00+i/l →
+FB03/FB04) and lam-alef pairs (FEF5..FEFC) into a single codepoint before
+emitSeg re-encodes the run (ChapterLayout.cpp decodeShaped + “Re-encode:
+ligatures bake in” comment), and soft hyphens drop entirely. The shipped
+consumer-side walk therefore weights each decoded run codepoint by the
+fold arity the active font could have produced (queried through
+`FontChain::ligature`/`covers` — the same fold gates the layout uses);
+raw source occurrences of the same codepoints and dropped soft hyphens
+drift the anchor inside the affected run only (≤1 line, log-once rule —
+see TtfWordSelect.cpp `chapterCpWeight`).
