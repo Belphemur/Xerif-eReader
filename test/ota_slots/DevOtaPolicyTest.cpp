@@ -160,7 +160,7 @@ TEST(DevOtaPolicyLabel, UnrecognizedAssetShowsRawName) {
 
 TEST(DevOtaPolicyLabel, CompactDevDateShape) {
   char out[16] = {};
-  ASSERT_TRUE(dev_ota::compactDevDate("2026-11-07T14:03:45+00:00", out, sizeof(out)));
+  ASSERT_TRUE(dev_ota::compactDevDate("2026-11-07T14:03:45+00:00", 0, out, sizeof(out)));
   EXPECT_STREQ(out, "11-07 14:03");
-  EXPECT_FALSE(dev_ota::compactDevDate("2026-11-07 14:03", out, sizeof(out)));
+  EXPECT_FALSE(dev_ota::compactDevDate("2026-11-07 14:03", 0, out, sizeof(out)));
 }

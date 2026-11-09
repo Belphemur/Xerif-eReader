@@ -10,6 +10,7 @@
 #include <cstring>
 
 #include "HalPowerManager.h"
+#include "CrossPointSettings.h"
 #include "HapticFeedback.h"
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
@@ -48,6 +49,13 @@ const char* describeDevError(const dev_ota::Error err) {
       return nullptr;
   }
 }
+
+// The picker's row dates are LOCAL (owner report 2026-11-09: the status bar
+// read 15:02 while the rows showed the manifest's raw UTC 20:56).
+// clockEffectiveOffsetMin() is the same resolution the status bar clock
+// uses — the live IANA offset folds DST, falls back to the last-detected
+// cache offline, and stays 0 (UTC) until a zone has been detected.
+int localClockOffsetMinutes() { return SETTINGS.clockEffectiveOffsetMin(); }
 }  // namespace
 
 void DevOtaActivity::onEnter() {
@@ -505,6 +513,7 @@ void DevOtaActivity::render(RenderLock&&) {
     listVisibleRows_ = static_cast<int16_t>(visibleRows);
     const int lastRow = std::min(entries.count, listScrollTop_ + visibleRows);
 
+    const int localOffset = localClockOffsetMinutes();
     int y = listTop;
     fui::Rect rowRects[dev_ota::kMaxVersions];
     int rowCount = 0;
@@ -520,7 +529,7 @@ void DevOtaActivity::render(RenderLock&&) {
       const int textY = y + (rowHeight - labelLine) / 2;
       renderer.drawText(rowFont, side, textY, label);
       char compact[16];
-      if (dev_ota::compactDevDate(entries.items[i].date, compact, sizeof(compact))) {
+      if (dev_ota::compactDevDate(entries.items[i].date, localOffset, compact, sizeof(compact))) {
         const int dateX = pageWidth - side - renderer.getTextWidth(rowFont, compact);
         // Right-align the compact timestamp; drop it rather than overprint
         // the label on a narrow screen. Measured (UI_12 medium): a 28-char

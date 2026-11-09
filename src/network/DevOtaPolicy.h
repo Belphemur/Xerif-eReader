@@ -42,10 +42,15 @@ ResumeBind bindPendingEntry(const OtaDevVersionEntry* entries, int count, const 
 //    fall back to the dev rules.
 void entryLabel(const OtaDevVersionEntry& entry, char* out, size_t cap);
 
-// Compact an ISO-8601 build date ("2026-11-07T14:03:45+00:00") down to
-// "11-07 14:03" so the timestamp fits beside the row label. False when the
-// field is not the shape the manifest generator emits; the caller then shows
-// no date rather than an overflowing one.
-bool compactDevDate(const char* iso, char* out, size_t cap);
+// Compact an ISO-8601 build date to "MM-DD HH:MM" so the timestamp fits
+// beside the row label, converted to the DEVICE's wall clock: the stamp's
+// own ISO offset ("+00:00", "Z", dev stamps carry the committer's zone) is
+// subtracted to get the UTC instant, then `offsetMinutes` — the device
+// clock's UTC offset, resolved by the caller with the clock's timezone id —
+// is added. Pure so host tests can pin conversions without the settings
+// singleton. False when the field is not the shape the manifest generator
+// emits; digits-that-shape-but-not-a-date fall open to the verbatim UTC
+// slice (the pre-conversion display) instead of hiding the row date.
+bool compactDevDate(const char* iso, int offsetMinutes, char* out, size_t cap);
 
 }  // namespace dev_ota
