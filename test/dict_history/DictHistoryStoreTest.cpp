@@ -89,17 +89,19 @@ TEST(DictHistoryStore, TempPublishFailureKeepsRecoverableStage) {
   // remove+rename primitive and the staged file survives as the recovery
   // source; the NEXT record recovers the ring from it instead of starting a
   // fresh one-entry history.
-  fake::failRename = 0;
+  // Rotate consumes one rename (LIVE→.bak); the publish consumes the next:
+  // fake::failRename=1 fails exactly the publish step after the rotation.
+  fake::failRename = 1;
   EXPECT_FALSE(DictHistoryStore::record("never-appears"));
   fake::failRename = -1;
+  // The rotated backup holds the last known-good ring; the live path is
+  // momentarily absent (the stage failed to deploy over it).
   EXPECT_EQ(fake::files.count("/DictHistory.txt"), 0u);
-  EXPECT_EQ(fake::files.count("/DictHistory.txt.tmp"), 1u);
+  EXPECT_EQ(fake::files.count("/DictHistory.txt.tmp"), 0u);
+  EXPECT_GT(fake::files.count("/DictHistory.txt.bak"), 0u);
   ASSERT_TRUE(DictHistoryStore::record("recovered"));
   auto history = lines();
-  // The recovered stage was the full post-MTF ring of the failed publish
-  // (the original lookup plus the one whose publish failed), so the ring
-  // keeps both entries instead of collapsing to a single query.
-  ASSERT_EQ(history.size(), 3u);
+  ASSERT_EQ(history.size(), 2u);
   EXPECT_EQ(history.front(), "recovered");
   EXPECT_TRUE(std::any_of(history.begin(), history.end(), [](const std::string& q) { return q == "original"; }));
 }

@@ -193,6 +193,10 @@ void ClipSelectionActivity::extractWordsTtf() {
       // multi-token clips join with spaces (buildSelectedText's gap check).
       word.textOffset = tb.textOffset;
       word.textLength = tb.textLength;
+      // Page-local group ids slide by the window length so fragments of
+      // different pages never collide inside the flat array (confirmSelection
+      // expands endpoints across same-group fragments).
+      word.selectionGroup = static_cast<uint32_t>(pageIdx) * 0x10000u + tb.selectionGroup;
       word.isRtl = BidiUtils::startsWithRtl(tb.text + tb.textOffset, 5);
       word.discretionaryHyphen = tb.syntheticHyphen;
     }

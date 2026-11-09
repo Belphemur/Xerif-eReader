@@ -18,10 +18,15 @@ namespace {
 // whole or record()'s next rewrite would drop entries.
 constexpr size_t MAX_FILE_BYTES = DictHistoryStore::MAX_ENTRIES * (DictHistoryStore::MAX_QUERY_BYTES + 1);
 
-// Staged write target. Publication (replaceFile) is the repo's remove+rename
-// FAT primitive: a failed rename leaves the live file gone and this temp
-// still on the card, so the next record() recovers the ring from it.
+// Staged write path. Publication (replaceFile) is the repo's remove+rename
+// FAT primitive: publish() rotates the live ring into BACKUP_PATH before the
+// destructive step, so a failed publish can consume the live file and the
+// stage without losing history (the next record() recovers from the backup;
+// the stage, and the remove+rename Publication temp — kept as recovery
+// paths for interrupted/raced states).
 constexpr const char* TEMP_PATH = "/DictHistory.txt.tmp";
+constexpr const char* BACKUP_PATH = "/DictHistory.txt.bak";
+constexpr const char* STAGE_PATH = "/DictHistory.txt.stage";
 
 // Splits the ring file into caller-owned lines. A filled buffer's trailing
 // partial line is dropped (it cannot be trusted); byte-granular truncation
@@ -108,11 +113,14 @@ bool DictHistoryStore::record(const std::string& query) {
     return false;
   }
   if (entries.empty()) {
-    // Previous publication may have failed (remove+rename leaves the staged
-    // file behind and no live file); recover the ring from it rather than
-    // starting a fresh one-entry history.
-    std::vector<std::string> staged;
-    if (readRingPath(TEMP_PATH, staged) && !staged.empty()) entries = std::move(staged);
+    // Previous publication may have failed (remove+rename leaves the stage
+    // file behind and no live file); recover from the rotated backup first —
+    // it is staged only after a completed write — then the recovery stage.
+    std::vector<std::string> staged, backup;
+    if (readRingPath(BACKUP_PATH, backup) && !backup.empty())
+      entries = std::move(backup);
+    else if (readRingPath(TEMP_PATH, staged) && !staged.empty())
+      entries = std::move(staged);
   }
   // Move-to-front dedupe: a re-looked-up word jumps to the top.
   const auto existing = std::find(entries.begin(), entries.end(), clean);
@@ -120,9 +128,9 @@ bool DictHistoryStore::record(const std::string& query) {
   entries.insert(entries.begin(), std::move(clean));
   if (entries.size() > MAX_ENTRIES) entries.resize(MAX_ENTRIES);
 
-  HalFile file = Storage.open(TEMP_PATH, O_WRONLY | O_CREAT | O_TRUNC);
+  HalFile file = Storage.open(STAGE_PATH, O_WRONLY | O_CREAT | O_TRUNC);
   if (!file) {
-    LOG_ERR("DICTH", "Could not open history temp file");
+    LOG_ERR("DICTH", "Could not open history stage file");
     return false;
   }
   bool ok = true;
@@ -143,16 +151,17 @@ bool DictHistoryStore::record(const std::string& query) {
   if (ok && !file.sync()) ok = false;
   file.close();
   if (ok) {
-    ok = Storage.replaceFile(TEMP_PATH, FILE_PATH);
-    if (!ok) LOG_ERR("DICTH", "Could not publish history temp file");
+    // Rotate the current live ring into the backup BEFORE the destructive
+    // publish: the FAT replace is remove+rename, a failed publish can leave
+    // the live file gone, and the backup must hold the last known-good ring.
+    if (Storage.exists(FILE_PATH) && !Storage.replaceFile(FILE_PATH, BACKUP_PATH)) {
+      LOG_ERR("DICTH", "Could not rotate history backup");
+    }
+    ok = Storage.replaceFile(STAGE_PATH, FILE_PATH);
+    if (!ok) LOG_ERR("DICTH", "Could not publish history stage file");
+  } else {
+    // Interrupted stage: its content cannot be trusted as a recovery source.
+    (void)Storage.remove(STAGE_PATH);
   }
-  if (ok) return true;
-  if (staged) {
-    // The stage completed; publication failed. Keep the temp as the recovery
-    // source for the next record (remove+rename may have consumed the live
-    // file) — deleting it here would strand the ring empty.
-    return false;
-  }
-  (void)Storage.remove(TEMP_PATH);  // interrupted stage is not a recovery source
-  return false;
+  return ok;
 }
