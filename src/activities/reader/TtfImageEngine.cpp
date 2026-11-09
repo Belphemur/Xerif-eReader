@@ -16,6 +16,7 @@
 #include <render/ImageRenderer.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <new>
 
@@ -519,6 +520,30 @@ DecodeResult remapGrayToCache(const ImageSpec& spec, ttfimg::ToneBake4& bake, co
     bake.grayDiscard();
     return DecodeResult::Failed;
   }
+  // ── Text-in-image edge pass (design 2026-11-08-ttf-image-text-in-image.md):
+  // one pool ring delays the cache write/paint by two rows so the band pair
+  // search (mapped source rows d−2..d+2) and the gradient (rows d−1..d+1)
+  // are complete when row d is emitted. The ring holds tone rows ×5, mapped
+  // source rows ×5 and gradient-flag rows ×3 — 13×w bytes, the same
+  // pool-scratch class as the per-row buffers above; no full-image mask is
+  // materialized (the contract's row-buffered branch — task 1, V2). The
+  // serpentine diffuser never sees the replacements: post-dithering model.
+  const bool edgePass = spec.w >= 3 && spec.h >= 3;
+  PoolBytes ringHeap;
+  if (edgePass) {
+    ringHeap = poolMakeBytes(static_cast<size_t>(spec.w) * 13);
+    if (ringHeap.get() == nullptr) {
+      // A ring failure must not produce a 'u' cache without the edge pass
+      // (that bakes a permanently un-enhanced image under the enhanced
+      // identity): fail the decode — the same contract as the per-row
+      // buffer failure just above; the next display pass re-decodes.
+      bake.grayDiscard();
+      return DecodeResult::Failed;
+    }
+  }
+  uint8_t* const toneRing = ringHeap.get();                // 5 × w
+  uint8_t* const mvRing = ringHeap.get() + 5 * spec.w;     // 5 × w mapped source
+  uint8_t* const flagRing = ringHeap.get() + 10 * spec.w;  // 3 × w flag bytes
   bake.beginRemap();
 
   ToneCacheWriter writer;
@@ -534,6 +559,50 @@ DecodeResult remapGrayToCache(const ImageSpec& spec, ttfimg::ToneBake4& bake, co
     bake.grayDiscard();
     return DecodeResult::Failed;
   }
+  // Ring row pointers, border clamped: the gradient only defines interior
+  // pixels (the reference loops y∈[1,h−2], x∈[1,w−2]) so border flag rows
+  // never compute; nullptr rows clip out in decide().
+  const auto toneAt = [&](const int r) -> uint8_t* {
+    return (r >= 0 && r < spec.h) ? toneRing + (r % 5) * spec.w : nullptr;
+  };
+  const auto flagsAt = [&](const int r) -> const uint8_t* {
+    return (r >= 1 && r <= spec.h - 2) ? flagRing + (r % 3) * spec.w : nullptr;
+  };
+  const auto mvAt = [&](const int r) -> const uint8_t* {
+    return (r >= 0 && r < spec.h) ? mvRing + (r % 5) * spec.w : nullptr;
+  };
+  const auto emitRow = [&](const int d, uint8_t* tones) {
+    if (writerActive && !writer.writeRow(tones)) {
+      // The writer dropped the file; the remaining rows still paint (the
+      // same degraded-paint contract the BMP path had).
+      writerActive = false;
+    }
+    if (paint != nullptr && paintToTarget) paintToneRow(*paint, spec, d, tones, spec.w);
+  };
+  // Decides grid row d (gradient flags d−1..d+1, mapped source row d and
+  // tone rows d−2..d+2 are all mature) and emits it: cache write + paint.
+  const auto decideRow = [&](const int d) {
+    ttfimg::EdgeHandling::Pixel p;
+    p.w = spec.w;
+    p.y = d;
+    p.flags[0] = flagsAt(d - 1);
+    p.flags[1] = flagsAt(d);
+    p.flags[2] = flagsAt(d + 1);
+    p.src[0] = mvAt(d - 2);
+    p.src[1] = mvAt(d - 1);
+    p.src[2] = mvAt(d);
+    p.src[3] = mvAt(d + 1);
+    p.src[4] = mvAt(d + 2);
+    const uint8_t* mvRow = mvAt(d);
+    uint8_t* out = toneRing + (d % 5) * spec.w;
+    for (int x = 0; x < spec.w; ++x) {
+      p.x = x;
+      p.mv = mvRow[x];
+      const int lv = ttfimg::EdgeHandling::decide(p);
+      if (lv >= 0) out[x] = static_cast<uint8_t>(lv);
+    }
+    emitRow(d, out);
+  };
   for (int row = 0; row < spec.h; ++row) {
     if (abortPoll != nullptr && abortPoll(abortCtx)) {
       if (writerActive) writer.abort();
@@ -548,15 +617,38 @@ DecodeResult remapGrayToCache(const ImageSpec& spec, ttfimg::ToneBake4& bake, co
       bake.grayDiscard();
       return DecodeResult::Failed;
     }
-    // Serpentine row bake over the adaptive map (beginRemap reset the error
-    // state; the byte-exact contract moves to the 's' cache identity).
-    bake.toneRow(grayRow, toneRow);
-    if (writerActive && !writer.writeRow(toneRow)) {
-      // The writer dropped the file; the remaining rows still paint (the
-      // same degraded-paint contract the BMP path had).
-      writerActive = false;
+    if (edgePass) {
+      // Mapped source row into the ring; the row−1 gradient is now complete
+      // (its mv rows row−2..row are all present).
+      uint8_t* mvSlot = mvRing + (row % 5) * spec.w;
+      for (int x = 0; x < spec.w; ++x) mvSlot[x] = static_cast<uint8_t>(bake.mapv(grayRow[x]));
+      if (row >= 2) {
+        uint8_t* flagSlot = flagRing + ((row - 1) % 3) * spec.w;
+        // Border columns never compute a gradient — they must read 0, not
+        // whatever a rung-out slot retained (the offline model zero-fills).
+        memset(flagSlot, 0, static_cast<size_t>(spec.w));
+        const uint8_t* above = mvRing + ((row - 2) % 5) * spec.w;
+        const uint8_t* mid = mvRing + ((row - 1) % 5) * spec.w;
+        for (int x = 1; x < spec.w - 1; ++x) {
+          flagSlot[x] = ttfimg::EdgeHandling::flagsAt(above, mid, mvSlot, x);
+        }
+      }
+      // Serpentine row bake over the adaptive map (beginRemap reset the error
+      // state). With the edge pass, baked rows land in the tone ring; rows
+      // are written/painted two rows behind the decode (decideRow).
+      bake.toneRow(grayRow, toneRing + (row % 5) * spec.w);
+      if (row >= 2) decideRow(row - 2);
+    } else {
+      bake.toneRow(grayRow, toneRow);
+      if (writerActive && !writer.writeRow(toneRow)) writerActive = false;
+      if (paint != nullptr && paintToTarget) paintToneRow(*paint, spec, row, toneRow, spec.w);
     }
-    if (paint != nullptr && paintToTarget) paintToneRow(*paint, spec, row, toneRow, spec.w);
+  }
+  if (edgePass) {
+    // Tail drain for rows h−2 and h−1 (in-loop decisions covered ≤ h−3;
+    // lower border rows carry no flags, window rows beyond h−1 clip). No
+    // abortPoll here: the drain is pure arithmetic over buffered rows.
+    for (int d = spec.h - 2; d < spec.h; ++d) decideRow(d);
   }
   const bool streamOk = writerActive && writer.finalize();
   gray.close();  // FAT refuses remove on an open handle

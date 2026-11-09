@@ -247,6 +247,175 @@ struct ToneBake4 : ToneBaker {
   }
 };
 
+// ── Text-in-image edge handling (design 2026-11-08-ttf-image-text-in-image.md)
+// Post-dithering pass over the baked grid, keyed by a central-difference luma
+// gradient on the MAPPED source (the epdoptimize reference's gradient device;
+// dx = right−left, dy = down−up, magnitude compared squared). Thresholds keep
+// the reference calibration: 42 band entry, ×1.45 core, residual 95.
+struct EdgeHandling {
+  static constexpr int kThreshold = 42;                      // band entry (the reference's threshold)
+  static constexpr int kEdgeMag2 = kThreshold * kThreshold;  // mag² ≥ 1764
+  static constexpr int kBandRadius = 1;                      // band = dilate(edge, r=1) — the doc's band
+  static constexpr int kLocalRadius = 2;                     // pair-search window radius
+  // Pair-search window: rows d−2..d+2 of the MAPPED SOURCE (the source rows
+  // below the decision frontier are already decoded when row d is decided).
+  // The reference counts its fully-dithered image; the streaming port's
+  // equivalent source of truth is the mapped source itself — pre-pass dither
+  // grain then never re-enters as a pair member, and the bracket carries the
+  // stroke's black even where the settled grid has not reached it (the
+  // contour of a curving stroke). Measured on the script-text probe:
+  // source-bracket strays 82 vs 153 (settled grid) vs 384 (raw grid windows).
+  static constexpr int kPairRows = 5;
+  static constexpr int kResidualMax = 95;  // off-segment source: keep the dither
+  static constexpr int kCovLo = 20;        // cov256 ≤ 0.08·256 = 20.48: extreme
+  static constexpr int kCovHi = 236;       // cov256 ≥ 0.92·256 = 235.52: extreme
+
+  // Edge bit (the flag byte; band dilation reads it over the 3×3 window).
+  static constexpr uint8_t kFlagEdge = 1;
+
+  // Nearest palette LEVEL (0..3) of a mapped source value — the reference's
+  // "quantized" color, orientation-free.
+  static int paletteLevelOf(const int mv) {
+    int t = (mv + 42) / 85;
+    if (t < 0) t = 0;
+    if (t > 3) t = 3;
+    return t;
+  }
+
+  // Squared gradient magnitude at interior column x from three mapped rows.
+  static long gradientMag2(const uint8_t* above, const uint8_t* mid, const uint8_t* below, const int x) {
+    const int dx = mid[x + 1] - mid[x - 1];
+    const int dy = below[x] - above[x];
+    return static_cast<long>(dx) * dx + static_cast<long>(dy) * dy;
+  }
+
+  // Flag byte for one interior pixel (the reference loops only y∈[1,h−2],
+  // x∈[1,w−2]; border pixels never flag).
+  static uint8_t flagsAt(const uint8_t* above, const uint8_t* mid, const uint8_t* below, const int x) {
+    return gradientMag2(above, mid, below, x) >= kEdgeMag2 ? kFlagEdge : static_cast<uint8_t>(0);
+  }
+
+  // Deterministic unit-interval noise (0..255), the same bit-mix family as
+  // the F2 threshold-noise offset, salt-shifted and extracted from a
+  // different hash window so the mix decision decorrelates from the
+  // quantizer offset (that one uses (h >> 17) & 15 of the unsalted mix).
+  static uint8_t noise(const int x, const int y, const uint32_t salt) {
+    uint32_t h = (salt + 1) * 2654435761u + (static_cast<uint32_t>(x) + 1) * 374761393u +
+                 (static_cast<uint32_t>(y) + 1) * 668265263u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    h ^= h >> 16;
+    return static_cast<uint8_t>((h >> 13) & 0xFF);
+  }
+
+  // Inputs for one grid pixel's edge decision (see decide()). The src rows
+  // are the mapped source values of rows d−2..d+2 (kPairRows entries;
+  // nullptr rows clip out of the window), the flag rows d−1..d+1
+  // (kFlagRows entries) carry each pixel's flagsAt() byte, and mv is the
+  // source pixel's own mapped value.
+  static constexpr int kFlagRows = 3;
+  struct Pixel {
+    const uint8_t* flags[kFlagRows];
+    const uint8_t* src[kPairRows];
+    int mv;
+    int x;
+    int y;  // absolute grid row — the noise key
+    int w;
+  };
+
+  // The reference ladder's antialiasing for one band pixel. Returns the
+  // replacement palette LEVEL (0..3), or −1 to keep the dithered grid value:
+  //   local pair (the two palette levels the mapped source window actually
+  //   brackets, scored by the reference's distance + 8·min(count)) →
+  //   coverage projection → residual ≤ 95 → coverage extremes emit the
+  //   nearer pair end (crisp), else noise decides the end.
+  // Two reference steps are NOT ported, both measured on the script-text
+  // probe (2026-11-08 campaign notes):
+  //   • the strength gate (noise ≥ 0.75 keeps the dithered value) — the kept
+  //     values ARE the FS mid-level grain the soak flagged (21% of the AA
+  //     band on the fixture); band coverage mixing is already deterministic
+  //     and tone-faithful, so the gate only reintroduced noise;
+  //   • the nearest-palette steps for core pixels (EdgePreservation and the
+  //     core-in-band override) — at 4 levels the AA ramp's middle pixels sit
+  //     half a level from both pair ends, so a nearest-palette emission
+  //     paints a consistent mid-gray ring around every stroke; the stroke
+  //     CORE itself stays black through the bake's kStrokeMap anchor.
+  static int decide(const Pixel& p) {
+    int result = -1;  // keep the dithered grid value
+    bool band = false;
+    for (int r = 0; r < kFlagRows && !band; ++r) {
+      const uint8_t* row = p.flags[r];
+      if (row == nullptr) continue;
+      for (int ox = -kBandRadius; ox <= kBandRadius; ++ox) {
+        const int nx = p.x + ox;
+        if (nx < 0 || nx >= p.w) continue;
+        if (row[nx] & kFlagEdge) {
+          band = true;
+          break;
+        }
+      }
+    }
+    if (!band) return result;
+    // Pair search over the radius-2 square of the mapped source: each
+    // window pixel contributes its nearest palette level.
+    uint8_t counts[4] = {0, 0, 0, 0};
+    for (int r = 0; r < kPairRows; ++r) {
+      const uint8_t* row = p.src[r];
+      if (row == nullptr) continue;
+      for (int ox = -kLocalRadius; ox <= kLocalRadius; ++ox) {
+        const int nx = p.x + ox;
+        if (nx < 0 || nx >= p.w) continue;
+        ++counts[paletteLevelOf(row[nx])];
+      }
+    }
+    // Pair selection: over the levels actually present in the window, the
+    // reference scores distinct pairs by distance + 8·min(count) and needs
+    // a score >= 45. For our 4-level grays the distance term (>=85) always
+    // clears the gate, but the MAXIMIZATION matters: it anchors the pair to
+    // the far-apart stroke/paper levels even in windows the pre-pass dither
+    // has contaminated with mid-level grain (top-two-by-count alone would
+    // pick the contamination as a bracket member).
+    int bestLo = -1;
+    int bestHi = -1;
+    int bestScore = -1;
+    for (int lo = 0; lo < 4; ++lo) {
+      if (counts[lo] == 0) continue;
+      for (int hi = lo + 1; hi < 4; ++hi) {
+        if (counts[hi] == 0) continue;
+        const int score = (hi - lo) * 85 + 8 * (counts[lo] < counts[hi] ? counts[lo] : counts[hi]);
+        if (score > bestScore) {
+          bestScore = score;
+          bestLo = lo;
+          bestHi = hi;
+        }
+      }
+    }
+    if (bestLo < 0) return result;  // only one distinct level: no bracket
+    const int loVal = bestLo * 85;
+    const int hiVal = bestHi * 85;
+    const int range = hiVal - loVal;
+    int cov256 = (p.mv - loVal) * 256 / range;
+    if (cov256 < 0) cov256 = 0;
+    if (cov256 > 256) cov256 = 256;
+    // Projection residual: distance from the source value to the segment.
+    int mixed = p.mv;
+    if (mixed < loVal) mixed = loVal;
+    if (mixed > hiVal) mixed = hiVal;
+    const int residual = p.mv > mixed ? p.mv - mixed : mixed - p.mv;
+    if (residual <= kResidualMax) {
+      if (cov256 <= kCovLo || cov256 >= kCovHi) {
+        // Extreme coverage: the source value is already ~one palette end —
+        // emit its nearest palette color, which in 4-level terms is always
+        // the nearer end (0.08·range < half a step).
+        result = paletteLevelOf(p.mv);
+      } else {
+        // Mix: pick the high end with probability = coverage.
+        result = cov256 > noise(p.x, p.y, 11) ? bestHi : bestLo;
+      }
+    }
+    return result;
+  }
+};
+
 // Retained verbatim for A/B on device and as the revert switch's reference
 // bake (design 2026-11-08 §5.2); the quality decodes use ToneBake4.
 struct FloydSteinberg4 {
