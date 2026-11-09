@@ -443,3 +443,27 @@ Host pins: `DevOtaPolicyTest` (the PR-entry-over-develop bind, the
 refuse-instead-of-default contract, the legacy name-only bind, the label
 rules) and `test_dev_version_stamp.py` (branch-override derivation, carried
 PR retention, dev re-derivation).
+
+### 18. The dev channel ships on X4 Pro releases (2026-11-09)
+
+**Decision.** On the X4 Pro the dev-channel settings entry is present in
+EVERY build — stable releases and RCs included (`CROSSPOINT_DEV_OTA=1` is
+defined in `env:x4pro-gh_release` and `env:x4pro-gh_release_rc`, matching the
+dev envs). Other boards keep the §7 gating (entry compiled out of release
+builds).
+
+**Rationale.** The machinery was never release-gated: the install plumbing,
+the boot hook and the picker all compile into every build (§7), because the
+running-dev dance's completion pass executes in whichever slot boots next.
+Only the UI entry was hidden behind `#if CROSSPOINT_DEV_OTA`, which the
+release envs did not define — so an X4 Pro on a stable release could not see
+the channel that was one reboot away. That hiddenness bought nothing: the
+entry cannot break a stable install (routing is by source, §15; a dev
+selection lands in the dev slot and the running stable firmware is never
+overwritten), and the recovery combo (Power + Next) always boots the stable
+slot, so opting into a dev build remains reversible without cables.
+
+**Consequence.** X4 Pro devices on a stable release can opt into a dev build
+(and back) purely from Settings. A release image for X4 Pro now shows:
+Check for Updates, SD Firmware Update, Firmware Slots, Dev Channel — all
+unconditional. Non-X4-Pro release envs are unchanged.

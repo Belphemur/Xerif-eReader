@@ -158,8 +158,9 @@ void SettingsActivity::rebuildSettings() {
   if (!BoardConfig::isPicco()) {
     addAction(SettingsSection::General, StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates);
     addAction(SettingsSection::General, StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate);
-    // Slot chooser ships in every build (design §3). The dev-channel entry is
-    // compiled out of release builds (design §7).
+    // Slot chooser ships in every build (design §3). The dev-channel entry
+    // ships in every X4 Pro build including releases (design §18); other
+    // boards gate it to dev builds (design §7).
     addAction(SettingsSection::General, StrId::STR_FIRMWARE_SLOTS, SettingAction::FirmwareSlots);
 #if CROSSPOINT_DEV_OTA
     addAction(SettingsSection::General, StrId::STR_DEV_CHANNEL, SettingAction::DevChannel);
