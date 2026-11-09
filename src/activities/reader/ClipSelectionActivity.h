@@ -2,6 +2,10 @@
 
 #include <Epub/Page.h>
 
+#if defined(CROSSPOINT_TTF_READER)
+#include "TtfWordSelect.h"
+#endif
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -36,6 +40,21 @@ class ClipSelectionActivity final : public Activity {
                         std::span<const std::unique_ptr<Page>> borrowedPages, int marginLeft, int marginTop,
                         Selection selection, int initialX = -1, int initialY = -1);
 
+#if defined(CROSSPOINT_TTF_READER)
+  // TTF path (design doc ttf/2026-11-09 §F2): per-chapter-page word payloads
+  // built by the reader from the engine (buildTtfWordSelectData, one entry
+  // per selection-window page, in window order), with the reader repainting
+  // the shown page through the render hook (offset = that entry's index).
+  // Token text arenas are owned here until the activity exits.
+  struct PageRenderFn {
+    void* ctx;
+    void (*renderPage)(void*, GfxRenderer&, uint16_t pageOffset);
+  };
+  ClipSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                        std::vector<freeink::book::TtfWordSelectData> ttfPages, PageRenderFn renderPage,
+                        int initialX = -1, int initialY = -1, Mode mode = Mode::Clip);
+#endif
+
   // Restore a previous selection (page offsets relative to the first page) on enter.
   void setInitialSelection(const Selection& selection) { initialSelection = selection; }
 
@@ -65,6 +84,12 @@ class ClipSelectionActivity final : public Activity {
   static constexpr size_t MAX_SELECTABLE_WORDS = 240;
 
   bool extractWords();
+#if defined(CROSSPOINT_TTF_READER)
+  // Maps the per-page engine payloads into the flat WordBox array
+  // (design doc ttf/2026-11-09 §F2). Shared downstream logic sees no
+  // difference between the two data sources.
+  void extractWordsTtf();
+#endif
   size_t pageCount() const { return borrowedPages.empty() ? pages.size() : borrowedPages.size(); }
   const Page& pageAt(size_t index) const { return *(borrowedPages.empty() ? pages[index] : borrowedPages[index]); }
   bool isLookup() const { return mode != Mode::Clip; }
@@ -90,12 +115,18 @@ class ClipSelectionActivity final : public Activity {
   int textXOffset() const;
   void cancel();
   bool buildSelectedText(int first, int last, std::string& text) const;
+  void paintPage(GfxRenderer& renderer, int offsetX, int offset) const;
   void drawSelection() const;
   bool renderIncremental();
   void ditherGapBetween(const WordBox& a, const WordBox& b, int offsetX, int offset) const;
 
   std::vector<std::unique_ptr<Page>> pages;
   std::span<const std::unique_ptr<Page>> borrowedPages;
+#if defined(CROSSPOINT_TTF_READER)
+  bool ttfMode = false;
+  std::vector<freeink::book::TtfWordSelectData> ttfPages;  // owns the token text
+  PageRenderFn ttfRender{};
+#endif
   Selection initialSelection;
   const int marginLeft;
   const int marginTop;

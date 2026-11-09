@@ -7,8 +7,10 @@
 #include <Memory.h>
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "BookmarkEntry.h"
@@ -370,6 +372,14 @@ class EpubReaderActivity final : public ReaderActivity {
   // Render hook handed to DictionaryWordSelectActivity: repaints the page the
   // selector was opened on (same spine/page members, reader frozen beneath).
   static void renderTtfSelectorPage(void* ctx, GfxRenderer& renderer);
+  // One selector page repaint at ttfPage + offset (offset 0 = the reader's
+  // page). Shared by both selector hooks below.
+  void paintTtfSelectorPage(uint16_t pageOffset);
+#if defined(CROSSPOINT_TTF_READER)
+  // Render hook handed to ClipSelectionActivity: the offset selects within
+  // the 3-page selection window (chapter page = ttfPage + offset).
+  static void renderTtfClipSelectorPage(void* ctx, GfxRenderer& renderer, uint16_t pageOffset);
+#endif
   bool ttfResolveTargetPage(int& targetOut, const freeink::book::LayoutParams& params, bool& needFullBuild);
   // Consume-on-paint (§3.2): clears the restore target and exactly the source
   // latch its origin names, plus any pending preview seed. Runs only after the
@@ -573,7 +583,7 @@ class EpubReaderActivity final : public ReaderActivity {
   // openDictionaryWordSelect so the activity never reads the mutable
   // SETTINGS.touchLongPressAction global.
   void openDictionaryWordSelect(int touchX = -1, int touchY = -1,
-                                TouchLongPressMode mode = TouchLongPressMode::Dictionary);
+                                TouchLongPressMode mode = TouchLongPressMode::Dictionary, std::string lookupText = {});
   // Lazily loads the book's sync metadata (series info) once per book, only
   // when vocabulary history is enabled. Shared by both word-select paths.
   void ensureVocabularyMetadata();
@@ -589,6 +599,19 @@ class EpubReaderActivity final : public ReaderActivity {
   void startClipSelection(int initialX = -1, int initialY = -1,
                           ClipSelectionActivity::Mode mode = ClipSelectionActivity::Mode::Clip);
   int clippingAtPoint(const Page& page, int x, int y) const;
+#if defined(CROSSPOINT_TTF_READER)
+  // TTF clip/lookup selection (design doc ttf/2026-11-09 §F2): reads the
+  // 3-page window from the TTF runtime and parks it in the shared selector.
+  void startTtfClipSelection(int initialX, int initialY, ClipSelectionActivity::Mode mode,
+                             ClipSelectionActivity::Selection restoreSelection);
+  // Shared TTF lookup funnel behind openDictionaryWordSelect's TTF branch:
+  // builds the page payload, hands it to DictionaryWordSelectActivity, and
+  // lets the caller own the result callback (clip selections chain a
+  // selection re-open on no-touch devices).
+  bool openTtfDictionarySelect(int touchX, int touchY, TouchLongPressMode mode, std::string lookupText,
+                               std::function<void(const ActivityResult&)> onResult,
+                               const VocabularyContext* vocabulary = nullptr);
+#endif
   void openClippings();
   void applyProgressChange(const ProgressChangeResult& progress);
   bool launchKOReaderSync();

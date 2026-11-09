@@ -1,6 +1,7 @@
 #include "ClipSelectionActivity.h"
 
 #include <Arduino.h>
+#include <BidiUtils.h>
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <HalMemory.h>
@@ -56,6 +57,22 @@ ClipSelectionActivity::ClipSelectionActivity(GfxRenderer& renderer, MappedInputM
       initialX(initialX),
       initialY(initialY),
       mode(mode) {}
+
+#if defined(CROSSPOINT_TTF_READER)
+ClipSelectionActivity::ClipSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                                             std::vector<freeink::book::TtfWordSelectData> ttfPages,
+                                             const PageRenderFn renderPage, const int initialX, const int initialY,
+                                             const Mode mode)
+    : Activity("ClipSelection", renderer, mappedInput),
+      marginLeft(0),
+      marginTop(0),
+      initialX(initialX),
+      initialY(initialY),
+      mode(mode),
+      ttfMode(true),
+      ttfPages(std::move(ttfPages)),
+      ttfRender(renderPage) {}
+#endif
 
 ClipSelectionActivity::ClipSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                              std::span<const std::unique_ptr<Page>> borrowedPages, const int marginLeft,
@@ -122,7 +139,78 @@ void ClipSelectionActivity::onEnter() {
   requestUpdate();
 }
 
+#if defined(CROSSPOINT_TTF_READER)
+// TTF path: map the per-page engine payloads into the flat legacy WordBox
+// array. Everything downstream (drag, text building, confirm) is shared, so
+// this only translates geometry and the char anchors. Rows continue across
+// the window's pages like the legacy per-line walk; group ids are not used
+// (this selector models ranges directly over the flat array).
+void ClipSelectionActivity::extractWordsTtf() {
+  wordCount = 0;
+  size_t capacity = 0;
+  if (!ttfPages.empty()) {
+    capacity = std::min<size_t>(UINT16_MAX, std::max<size_t>(MAX_SELECTABLE_WORDS, ttfPages[0].boxes.size() + 10));
+  }
+  if (capacity == 0) {
+    words = nullptr;
+    rowCount = 0;
+    return;
+  }
+  words = makeUniqueNoThrow<WordBox[]>(capacity);
+  if (!words) {
+    LOG_ERR("CLIP", "OOM: selection words (%u bytes)", static_cast<unsigned>(capacity * sizeof(WordBox)));
+    return;
+  }
+  rowCount = 0;
+  int16_t lastY = INT16_MIN;
+  size_t lastPage = SIZE_MAX;
+  for (size_t pageIdx = 0; pageIdx < ttfPages.size(); ++pageIdx) {
+    const auto& payload = ttfPages[pageIdx];
+    for (const auto& tb : payload.boxes) {
+      if (wordCount >= capacity) {
+        LOG_ERR("CLIP", "Selectable word cap hit (%u); multi-page selection truncated",
+                static_cast<unsigned>(capacity));
+        return;
+      }
+      if (tb.y != lastY || pageIdx != lastPage) {
+        ++rowCount;
+        lastY = tb.y;
+        lastPage = pageIdx;
+      }
+      WordBox& word = words[wordCount++];
+      word.x = tb.x;
+      word.y = tb.y;
+      word.width = tb.width;
+      word.height = tb.height;
+      word.row = static_cast<uint16_t>(rowCount - 1);
+      word.pageOffset = static_cast<uint8_t>(pageIdx);
+      word.pageWordIndex = static_cast<uint16_t>(&tb - payload.boxes.data());
+      word.startOffset = tb.charLen > 0 && tb.charStart != UINT32_MAX ? tb.charStart : UINT32_MAX;
+      word.endOffset = tb.charLen > 0 && tb.charStart != UINT32_MAX ? tb.charStart + tb.charLen : UINT32_MAX;
+      word.text = tb.text;
+      word.paragraphStart = false;
+      word.isRtl = BidiUtils::startsWithRtl(tb.text + tb.textOffset, 5);
+      word.discretionaryHyphen = tb.syntheticHyphen;
+      if (wordCount > 1) {
+        const WordBox& previous = words[wordCount - 2];
+        // Same chapter: a gap longer than the single inter-word space is a
+        // paragraph break; the trimmed char anchors can see it.
+        if (previous.pageOffset == word.pageOffset && previous.endOffset != UINT32_MAX &&
+            word.startOffset > previous.endOffset + 1)
+          word.paragraphStart = true;
+      }
+    }
+  }
+}
+#endif
+
 bool ClipSelectionActivity::extractWords() {
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttfMode) {
+    extractWordsTtf();
+    return words != nullptr;
+  }
+#endif
   wordCount = 0;
   size_t capacity = 0;
   if (mode == Mode::DefinitionLookup) {
@@ -726,7 +814,13 @@ void ClipSelectionActivity::ditherGapBetween(const WordBox& a, const WordBox& b,
   }
 }
 
+// Legacy-only differential band swap: the TTF hook repaints whole pages
+// through the reader (too heavy for a band swap), so it falls back to a
+// full repaint there.
 bool ClipSelectionActivity::renderIncremental() {
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttfMode) return false;
+#endif
   if (actionPopup.isActive() || mappedInput.hasTouch()) return false;
   if (lastRenderedPageOffset < 0 || lastRenderedPageOffset != currentPageOffset) return false;
   const int offset = textOffset();
@@ -779,10 +873,10 @@ bool ClipSelectionActivity::renderIncremental() {
   if (left < right && top < bottom) {
     renderer.setClipRect(left, top, right - left, bottom - top);
     auto scope = renderer.getFontCacheManager()->createPrewarmScope();
-    page.render(renderer, fontId, marginLeft + offsetX, marginTop + offset);
+    pageAt(currentPageOffset).render(renderer, fontId, marginLeft + offsetX, marginTop + offset);
     scope.endScanAndPrewarm();
     renderer.fillRect(left, top, right - left, bottom - top, false);
-    page.render(renderer, fontId, marginLeft + offsetX, marginTop + offset);
+    pageAt(currentPageOffset).render(renderer, fontId, marginLeft + offsetX, marginTop + offset);
     drawSelection();
     renderer.setClipRect(clip[0], clip[1], clip[2], clip[3]);
   }
@@ -794,6 +888,22 @@ bool ClipSelectionActivity::renderIncremental() {
   lastRenderedSelected = selected;
   lastRenderedRangeStart = rangeStart;
   return true;
+}
+
+void ClipSelectionActivity::paintPage(GfxRenderer& renderer, const int offsetX, const int offset) const {
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttfMode) {
+    if (ttfRender.renderPage != nullptr) {
+      ttfRender.renderPage(ttfRender.ctx, renderer, currentPageOffset);
+    }
+    return;
+  }
+#endif
+  auto* fcm = renderer.getFontCacheManager();
+  auto scope = fcm->createPrewarmScope();
+  pageAt(currentPageOffset).render(renderer, fontId, marginLeft + offsetX, marginTop + offset);
+  scope.endScanAndPrewarm();
+  pageAt(currentPageOffset).render(renderer, fontId, marginLeft + offsetX, marginTop + offset);
 }
 
 void ClipSelectionActivity::drawSelection() const {
@@ -838,11 +948,7 @@ void ClipSelectionActivity::render(RenderLock&&) {
   const auto clip = renderer.getClipRect();
   const Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
   renderer.setClipRect(safe.x, safe.y, safe.width, safe.height);
-  auto* fcm = renderer.getFontCacheManager();
-  auto scope = fcm->createPrewarmScope();
-  pageAt(currentPageOffset).render(renderer, fontId, marginLeft + offsetX, marginTop + offset);
-  scope.endScanAndPrewarm();
-  pageAt(currentPageOffset).render(renderer, fontId, marginLeft + offsetX, marginTop + offset);
+  paintPage(renderer, offsetX, offset);
   if (wordCount != 0) drawSelection();
   renderer.setClipRect(clip[0], clip[1], clip[2], clip[3]);
 
