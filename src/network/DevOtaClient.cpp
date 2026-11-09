@@ -209,6 +209,12 @@ Error installFromManifestEntry(const OtaDevVersionEntry& entry, ProgressCallback
     }
   };
 
+  // §16 write-phase latch: set before the first erase so a later resume can
+  // tell the dev slot may already be partially written. The dance's refusal
+  // path reads it; a manual install leaves an inert lone latch key behind
+  // (harmless — no pending record exists to dispatch it).
+  pendingInstallMarkWriteStarted();
+
   const firmware_flash::Result flash = firmware_flash::flashFromSdPathInto(STAGING_PATH, dev, wrappedProgress, &fctx,
                                                                            /*alreadyValidated=*/false);
   Storage.remove(STAGING_PATH);

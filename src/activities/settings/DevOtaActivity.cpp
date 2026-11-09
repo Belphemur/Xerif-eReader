@@ -16,6 +16,7 @@
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "components/UiAppHelpers.h"
+#include "network/DevOtaPolicy.h"
 #include "network/OtaBootSwitch.h"
 #include "network/OtaSlots.h"
 #include "util/MemoryClaimGateDevice.h"
@@ -27,22 +28,6 @@ namespace {
 // mid-write can corrupt the written slot.
 constexpr uint16_t DEV_OTA_MIN_BATTERY_PCT = 20;
 
-// Display label for a dev asset name "xerif-dev-<sha>-x4pro.bin" → "dev <sha12>".
-// Returns false when the name doesn't match the pattern; callers then show
-// the raw asset name.
-bool devNameLabel(const char* name, char* out, size_t cap) {
-  constexpr char kPrefix[] = "xerif-dev-";
-  const size_t prefixLen = sizeof(kPrefix) - 1;
-  if (!name || strncmp(name, kPrefix, prefixLen) != 0) return false;
-  const char* sha = name + prefixLen;
-  const char* dash = strchr(sha, '-');
-  if (!dash || dash == sha) return false;
-  const size_t shaLen = static_cast<size_t>(dash - sha);
-  const size_t shown = shaLen < 12 ? shaLen : 12;
-  snprintf(out, cap, "dev %.*s", static_cast<int>(shown), sha);
-  return true;
-}
-
 // The dance's completion pass runs in the stable slot, so that image must
 // contain the bootFinalize() resume hook (main.cpp). Images advertise the
 // hook through the flash-scannable kResumeHookMarker, not through the
@@ -50,32 +35,6 @@ bool devNameLabel(const char* name, char* out, size_t cap) {
 // An older stable image boots normally and never consumes the flag, leaving
 // the device on a stable slot with no slot chooser. Refusing the dance here
 // is the fail-safe direction.
-
-// Compact an ISO-8601 build date ("2026-11-07T14:03:45+00:00") down to
-// "11-07 14:03" so the timestamp fits beside the row label. False when the
-// field is not the shape the manifest generator emits; the caller then shows
-// no date rather than an overflowing one.
-bool compactDevDate(const char* iso, char* out, size_t cap) {
-  if (!iso || strlen(iso) < 16) return false;
-  const auto digit = [](char c) { return c >= '0' && c <= '9'; };
-  if (iso[4] != '-' || iso[7] != '-' || iso[10] != 'T' || iso[13] != ':') return false;
-  for (const int i : {5, 6, 8, 9, 11, 12, 14, 15}) {
-    if (!digit(iso[i])) return false;
-  }
-  snprintf(out, cap, "%.2s-%.2s %.2s:%.2s", iso + 5, iso + 8, iso + 11, iso + 14);
-  return true;
-}
-
-// Row/confirm label: the stamped version when the manifest carries one (build
-// identity), else the compact "dev <sha>" label, else the raw asset name
-// (older manifests, PR entries).
-void rowLabel(const OtaDevVersionEntry& entry, char* out, size_t cap) {
-  if (entry.version[0]) {
-    snprintf(out, cap, "%s", entry.version);
-  } else if (!devNameLabel(entry.name, out, cap)) {
-    snprintf(out, cap, "%s", entry.name);
-  }
-}
 
 const char* describeDevError(const dev_ota::Error err) {
   switch (err) {
@@ -127,7 +86,7 @@ void DevOtaActivity::onWifiSelectionComplete(const bool success) {
     if (autoResume) {
       // The dance reboot expects this boot to finish the install; a WiFi
       // failure must not leave the flag armed for an every-boot retry loop.
-      dev_ota::pendingInstallClear();
+      refuseDance();
     }
     finish();
     return;
@@ -141,6 +100,29 @@ void DevOtaActivity::onWifiSelectionComplete(const bool success) {
   fetchManifest();
 }
 
+// §16 unwind contract for a REFUSED dev-channel dance (the SD dances have
+// SdFirmwareUpdateActivity::unwindDance). Target = the dev slot = the
+// firmware the device ran before the dance. This boot is on the worker
+// (stable); restoring otadata to the dev slot sends the next boot straight
+// back to the pre-dance state. Guards:
+//  - manual (non-resume) calls are inert: no dance exists to unwind;
+//  - the §16 write latch true means the dev slot may already be partially
+//    written — selecting it would boot-loop, so the worker stays selected
+//    and the user exits through the FAILED screen (stable carries the slot
+//    chooser).
+void DevOtaActivity::refuseDance() {
+  if (!autoResume) return;
+  if (dev_ota::pendingInstallWriteStarted()) {
+    LOG_ERR("DEVOTA", "dev slot may already be written; keeping the worker slot");
+    dev_ota::pendingInstallClear();
+    return;
+  }
+  if (!ota_boot::switchTo(ota_slots::devSlot())) {
+    LOG_ERR("DEVOTA", "unwind: otadata restore to the dev slot failed");
+  }
+  dev_ota::pendingInstallClear();
+}
+
 void DevOtaActivity::fetchManifest() {
   dev_ota::Error res;
   {
@@ -151,7 +133,7 @@ void DevOtaActivity::fetchManifest() {
 
   if (res != dev_ota::Error::OK) {
     LOG_ERR("DEVOTA", "manifest fetch failed (%d)", static_cast<int>(res));
-    if (autoResume) dev_ota::pendingInstallClear();
+    if (autoResume) refuseDance();
     {
       RenderLock lock(*this);
       failedDetail = describeDevError(res);
@@ -162,18 +144,28 @@ void DevOtaActivity::fetchManifest() {
   }
 
   if (autoResume) {
-    // The dance's completion pass: install the version recorded in the flag,
-    // or the newest one when the requested asset has since been pruned.
-    int target = 0;
-    if (pendingVersion[0] != '\0') {
-      for (int i = 0; i < entries.count; ++i) {
-        if (strcmp(entries.items[i].name, pendingVersion) == 0) {
-          target = i;
-          break;
-        }
-      }
+    // §16 dance identity: bind the recorded selection (name +, since the
+    // consent fix, the arm-time SHA-256) to the freshly fetched manifest.
+    // Missing or changed entries refuse — with the record bound as recorded
+    // the newest entry must never wear the selection as a fallback (that
+    // fallback once flashing an unrelated develop build into the dev slot).
+    uint8_t digest[32];
+    const bool haveDigest = dev_ota::pendingInstallGetDigest(digest);
+    int target = -1;
+    const dev_ota::ResumeBind bind =
+        dev_ota::bindPendingEntry(entries.items, entries.count, pendingVersion, haveDigest ? digest : nullptr, &target);
+    if (bind == dev_ota::ResumeBind::Exact) {
+      beginInstall(target);
+      return;
     }
-    beginInstall(target);
+    LOG_ERR("DEVOTA", "pending selection not bindable (%d, %s)", static_cast<int>(bind), pendingVersion);
+    refuseDance();
+    {
+      RenderLock lock(*this);
+      failedDetail = tr(STR_DEV_RESUME_REFUSED);
+      state = FAILED;
+    }
+    requestUpdate();
     return;
   }
 
@@ -191,7 +183,7 @@ void DevOtaActivity::promptInstall(const int index) {
   selectedIndex = index;
 
   char label[48];
-  rowLabel(entries.items[index], label, sizeof(label));
+  dev_ota::entryLabel(entries.items[index], label, sizeof(label));
   const char* options[] = {tr(STR_CANCEL), tr(STR_INSTALL)};
   // Default is Cancel: a stray confirm press must never land on Install.
   confirmPopup.show(tr(STR_DEV_INSTALL_PROMPT), label, options, 2, 0, [this, index](const int idx) {
@@ -213,6 +205,20 @@ void DevOtaActivity::beginInstall(const int index) {
   if (index < 0 || index >= entries.count) return;
   selectedIndex = index;
 
+  // A manifest entry without a digest can never be verified — refuse before
+  // any dance is armed, instead of failing the whole dance in the worker
+  // slot after the reboot (installFromManifestEntry refuses these too).
+  if (!entries.items[index].hasSha) {
+    LOG_ERR("DEVOTA", "manifest entry has no SHA-256; refusing %s", entries.items[index].name);
+    {
+      RenderLock lock(*this);
+      failedDetail = tr(STR_DEV_SHA_MISSING);
+      state = FAILED;
+    }
+    requestUpdate();
+    return;
+  }
+
   // Running-dev dance (design §5): the running slot is never a write target,
   // so record the request and reboot into stable; the boot hook finishes the
   // install from there (two reboots total).
@@ -229,10 +235,16 @@ void DevOtaActivity::beginInstall(const int index) {
       requestUpdate();
       return;
     }
+    // The pending payload names the asset; the arm-time digest records the
+    // exact bytes the user consented to (§16 dance identity). The resume
+    // pass binds against both — an entry re-published under the same name
+    // with different bytes, or a naming that has since been pruned, is a
+    // refusal, never a different build.
     if (!dev_ota::pendingInstallSet(entries.items[index].name, dev_ota::PendingKind::DevChannel) ||
-        !ota_boot::switchTo(ota_slots::stableSlot())) {
-      // Either failure leaves the device on the dev slot with at most a stale
-      // flag; clear it so no boot hook fires on a request nobody can see.
+        !dev_ota::pendingInstallSetDigest(entries.items[index].sha256)) {
+      // Either failure leaves the device on the dev slot with at most a
+      // stale flag; clear it so no boot hook fires on a request nobody can
+      // see, and never switch away — the dance never left the ground.
       dev_ota::pendingInstallClear();
       {
         RenderLock lock(*this);
@@ -261,7 +273,7 @@ void DevOtaActivity::runInstall() {
         // A resumed install that fails here must not leave the flag armed:
         // every boot would reconnect WiFi and fail again until the battery
         // recovers (the same no-retry-loop rule as the WiFi-failure path).
-        dev_ota::pendingInstallClear();
+        refuseDance();
       }
       {
         RenderLock lock(*this);
@@ -295,7 +307,7 @@ void DevOtaActivity::runInstall() {
 
   if (res != dev_ota::Error::OK) {
     LOG_ERR("DEVOTA", "install failed (%d)", static_cast<int>(res));
-    if (autoResume) dev_ota::pendingInstallClear();
+    if (autoResume) refuseDance();
     {
       RenderLock lock(*this);
       failedDetail = describeDevError(res);
@@ -498,7 +510,7 @@ void DevOtaActivity::render(RenderLock&&) {
     int rowCount = 0;
     for (int i = listScrollTop_; i < lastRow; ++i) {
       char label[48];
-      rowLabel(entries.items[i], label, sizeof(label));
+      dev_ota::entryLabel(entries.items[i], label, sizeof(label));
       // The selection outline is the row rect itself: the hit band registered
       // below is this exact rectangle, so the tap target never drifts.
       if (i == selectedIndex) {
@@ -508,7 +520,7 @@ void DevOtaActivity::render(RenderLock&&) {
       const int textY = y + (rowHeight - labelLine) / 2;
       renderer.drawText(rowFont, side, textY, label);
       char compact[16];
-      if (compactDevDate(entries.items[i].date, compact, sizeof(compact))) {
+      if (dev_ota::compactDevDate(entries.items[i].date, compact, sizeof(compact))) {
         const int dateX = pageWidth - side - renderer.getTextWidth(rowFont, compact);
         // Right-align the compact timestamp; drop it rather than overprint
         // the label on a narrow screen. Measured (UI_12 medium): a 28-char
@@ -553,10 +565,23 @@ void DevOtaActivity::render(RenderLock&&) {
     if (confirmPopup.processRender(renderer, mappedInput)) return;
   } else if (state == INSTALLING) {
     renderer.drawText(UI_10_FONT_ID, side, pageHeight / 6, runningLine);
+    if (autoResume) {
+      // §16 dance: this boot runs in the worker slot (stable) finishing the
+      // dev install — say so instead of silently showing the worker slot's
+      // version as if it were an ordinary install.
+      renderer.drawText(UI_10_FONT_ID, side, pageHeight / 6 + height + metrics.verticalSpacing, tr(STR_DEV_RESUMING));
+    }
     renderer.drawCenteredText(UI_10_FONT_ID, top, installWriting ? tr(STR_DEV_WRITING) : tr(STR_DEV_DOWNLOADING));
     const int barY = top + height + metrics.verticalSpacing;
     GUI.drawProgressBar(renderer, Rect{side, barY, pageWidth - side * 2, metrics.progressBarHeight},
                         installPercent < 0 ? 0 : installPercent, 100);
+    // The download/write screens must say WHICH build is being installed
+    // (brief 2026-11-09): the picker's row label (stamped version, "pr <num>"
+    // / "dev <sha>" tag, or the asset name), the exact entry the user or the
+    // dance resumed picked.
+    char installTarget[48];
+    dev_ota::entryLabel(entries.items[selectedIndex], installTarget, sizeof(installTarget));
+    renderer.drawCenteredText(UI_10_FONT_ID, barY + metrics.progressBarHeight + metrics.verticalSpacing, installTarget);
   } else if (state == FAILED) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATE_FAILED), true, EpdFontFamily::BOLD);
     if (failedDetail != nullptr) {

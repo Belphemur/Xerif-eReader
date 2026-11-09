@@ -18,6 +18,28 @@ target_link_libraries(OtaSlotsTest PRIVATE
 
 gtest_discover_tests(OtaSlotsTest)
 
+# Dev-channel picker policies (DevOtaPolicy.h): pure host-side decisions —
+# the §16 dance-identity binding (name + arm-time SHA-256) and the entry
+# labels. No device stubs needed; OtaJson.h is POD-only.
+add_executable(DevOtaPolicyTest
+  DevOtaPolicyTest.cpp
+  ${REPO_ROOT}/src/network/DevOtaPolicy.cpp
+)
+
+target_include_directories(DevOtaPolicyTest PRIVATE
+  ${REPO_ROOT}/src
+  # OtaJson.h pulls OtaJsonManifest.h from lib/OtaSignature (same include
+  # layout the device build resolves through the pio lib deps).
+  ${REPO_ROOT}/lib/OtaSignature
+)
+
+target_link_libraries(DevOtaPolicyTest PRIVATE
+  crosspoint_test_common
+  GTest::gtest_main
+)
+
+gtest_discover_tests(DevOtaPolicyTest)
+
 # §15/§16 install-time slot auto-selection: the pure routing decision points
 # (classifier + §16 matrix). No device stubs needed — the routing header is
 # dependency-free by design so the host suite can pin every matrix row.

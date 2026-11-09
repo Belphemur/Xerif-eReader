@@ -53,6 +53,10 @@ class DevOtaActivity : public Activity {
 
   void onWifiSelectionComplete(bool success);
   void fetchManifest();
+  // §16 refusal path for a resumed dance: clear the pending record and
+  // restore otadata to the dev slot (the pre-dance firmware) unless the
+  // write phase already started. See the definition for the full contract.
+  void refuseDance();
   // Keep the scroll window (listScrollTop_..listVisibleRows_) containing
   // selectedIndex after a button move.
   void keepSelectionVisible();
