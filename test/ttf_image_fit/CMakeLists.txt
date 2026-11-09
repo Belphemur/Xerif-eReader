@@ -6,7 +6,6 @@
 add_executable(TtfImageFitTest
   TtfImageFitTest.cpp
   TtfImageTextureTest.cpp
-  TtfImageEdgeTest.cpp
   stubs/Stubs.cpp
   stubs/ImageDecoderFactory.cpp
   ${REPO_ROOT}/src/activities/reader/TtfImageCache.cpp

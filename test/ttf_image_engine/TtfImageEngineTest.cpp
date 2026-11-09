@@ -72,11 +72,10 @@ TEST(CacheIdentity, PolicyLetterSeparatesBakes) {
   ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 10, 20, 100, 80), kDir, true, a, sizeof(a)));
   ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 10, 20, 100, 80), kDir, false, b, sizeof(b)));
   EXPECT_STRNE(a, b);
-  // 'u' = the texture bake + the text-in-image edge pass (edge-core
-  // nearest-palette preservation and band two-color antialiasing — design
-  // 2026-11-08-ttf-image-text-in-image.md); 't' was the pre-edge-pass
-  // texture bake; 'l' = legacy.
-  EXPECT_NE(strstr(a, "/iu"), nullptr);
+  // 't' = the adaptive two-phase bake with flat-field snap, threshold-noise
+  // and stroke anchoring (design 2026-11-08-ttf-image-texture-quality.md §5
+  // as-built); 's' was the pre-texture adaptive bake; 'l' = legacy.
+  EXPECT_NE(strstr(a, "/it"), nullptr);
   EXPECT_NE(strstr(b, "/il"), nullptr);
 }
 

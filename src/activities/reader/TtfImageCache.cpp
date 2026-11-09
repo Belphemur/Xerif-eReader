@@ -230,10 +230,8 @@ bool cacheNameFor(const ImageSpec& spec, const char* dir, const bool qualityTone
   // 'r' was the fixed ToneBake4 map (2026-11-08 §5.2); 's' is the adaptive
   // two-phase bake (2026-11-08 §2, amendment 2); 't' is the texture bake
   // (full diffusion, threshold noise, flat-run snap, stroke anchor —
-  // texture design §2.2–§2.4, 2026-11-08); 'u' adds the text-in-image edge
-  // pass (edge-core nearest-palette preservation + band two-color
-  // antialiasing — text-in-image design 2026-11-08).
-  constexpr char kQualityCacheRevision = 'u';
+  // texture design §2.2–§2.4, 2026-11-08).
+  constexpr char kQualityCacheRevision = 't';
   // Identity: generation + href + placement (+ the tone policy, so the
   // quality revert switch never mixes bakes in one file). hrefExt (an
   // overlong Page href, paint-side only) IS the href for the identity.
