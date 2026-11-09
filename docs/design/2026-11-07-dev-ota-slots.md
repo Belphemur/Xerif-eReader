@@ -542,3 +542,40 @@ branch/sha decode, cross-reference resolution and first-entry conflict
 rule, no-manifest/no-match verbatim, fit-or-shape-clamp over every
 capacity, branch-then-sha shrink steps, badge shrink-to-number, garbage
 verbatim, entry-vs-slot one-badge parity).
+
+### 21. The dance arm turns otadata to the worker — and the boot hook
+routes, never silently discards, a pending record (2026-11-09)
+
+**Decision (owner hardware report, X4 Pro).** Restarting to install a dev
+build came back on Home: a record the boot hook found outside its
+completion slot was cleared as "stale" with no visible state. Two real
+defects and one contract hardening:
+
+- **The §5 arm skipped its otadata switch.** `beginInstall` armed the
+  DevChannel dance (record + arm-time digest) and called plain
+  `ESP.restart()`: without `ota_boot::switchTo(stableSlot())` the reboot
+  re-entered the target slot, the record could only classify as stale, and
+  the user's consent was discarded. Every other dance arm (armSwapDance,
+  the §16 stable lane) already switches in the same chain. The arm now
+  switches to the worker first, failing safe — a failed switch disarms the
+  record and shows the FAILED screen instead of switching away on a
+  promise nobody can see.
+- **The boot hook now routes rather than discards** (`dev_ota::resumeRoute`,
+  pure, pinned in the host suite): a DevChannel record in the WORKER slot
+  is the normal completion pass; a DevChannel record in the TARGET (dev)
+  slot means the arm's switch never landed (crash before the restart) —
+  the consent-bound auto-resume re-enters the flow and all of its gates
+  (manifest bind, battery, resume-hook marker) re-run; every failing gate
+  disarms the record visibly, so the terminal states stay terminal and no
+  boot ever flashes without a fresh bind. Non-DevChannel records keep the
+  stale clear: their arms switch atomically, and a re-enter from the
+  target slot would rewrite flash beyond the consent contract.
+- **An unroutable record is visible.** A record without a usable kind
+  (binding incomplete) shows the refusal on the Dev picker's FAILED screen
+  (`STR_DEV_RESUME_REFUSED`, record already disarmed) — never a silent
+  Home landing. The resume-hook-marker refusal disarms the record too: a
+  completion that can never run must not replay the FAILED screen on
+  every boot forever.
+
+Pinned in `DevOtaPolicyResumeRoute` (kind × slot matrix: worker
+completions, DevChannel re-entry, §16 stale).
