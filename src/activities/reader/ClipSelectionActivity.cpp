@@ -470,15 +470,18 @@ bool ClipSelectionActivity::buildSelectedText(const int first, const int last, s
     const WordBox& current = words[order[i]];
     const char* trimmed = current.text + current.textOffset;
     const char* word = cleanWordStart(trimmed);
-    const size_t spanLength = current.textOffset < current.textLength ? current.textLength - current.textOffset : 0;
-    size_t wordLength = spanLength - static_cast<size_t>(word - trimmed);
+    // textLength is a SPAN measured from textOffset (not an absolute end), so
+    // the exportable length is the span minus only the prefix cleanWordStart
+    // skipped — a token that trimmed leading punctuation keeps its tail.
+    const size_t skip = static_cast<size_t>(word - trimmed);
+    size_t wordLength = current.textLength > skip ? current.textLength - skip : 0;
 #if defined(CROSSPOINT_TTF_READER)
     // Engine runs store RTL text in visual order (ChapterLayout L2): export
     // the trimmed span's codepoints reversed so the saved clip holds logical
     // source text. Shaped Arabic reads as presentation forms after
     // reversal — good enough for a plaintext clip; the exact logical text
     // stays an SDK-side mapping (design-doc addendum).
-    std::string logical;
+    std::string logical, logicalWord;
     if (ttfMode && current.isRtl && wordLength > 1) {
       logical.reserve(wordLength);
       for (size_t pos = wordLength; pos > 0;) {
@@ -488,8 +491,9 @@ bool ClipSelectionActivity::buildSelectedText(const int first, const int last, s
         logical.append(word + start, pos - start);
         pos = start;
       }
-      word = logical.c_str();
-      wordLength = logical.size();
+      logicalWord = std::move(logical);
+      word = logicalWord.c_str();
+      wordLength = logicalWord.size();
     }
 #endif
     char separator = '\0';

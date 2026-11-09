@@ -8,13 +8,13 @@
 // Coalescing for XOR-based selection/clip inversion: the +2 px padding around
 // adjacent highlighted tokens makes their padded boxes touch or overlap, and
 // inverting them separately would cancel the shared band (XOR twice = restore).
-// Group the rects into same-line bands (same top edge and height — all padded
-// boxes on one line share them) and merge x-intervals that touch, then invert
-// each merged rectangle once. This nuance exists only for screen-rect fills;
-// crossing rectangles must be a real single-region overlap.
+// Rects are grouped by VERTICAL INTERVAL OVERLAP (tokens on one visual line
+// from runs with different sizePx share the line band even though their exact
+// top/height differ — superscript runs, mixed-size spans), then merged by
+// ascending x with touch/overlap, and each merged rectangle is inverted once.
 inline void invertRegionsMerged(GfxRenderer& renderer, const std::vector<Rect>& rects) {
   if (rects.empty()) return;
-  // Sort by (y, x) so same-line boxes are contiguous.
+  // Sort by (y, x) so a vertical run of overlapping rects is contiguous.
   std::vector<Rect> sorted(rects);
   std::sort(sorted.begin(), sorted.end(), [](const Rect& a, const Rect& b) {
     if (a.y != b.y) return a.y < b.y;
@@ -22,14 +22,17 @@ inline void invertRegionsMerged(GfxRenderer& renderer, const std::vector<Rect>& 
   });
   size_t i = 0;
   while (i < sorted.size()) {
-    // One band = a maximal run sharing the same top edge (padded boxes on a
-    // line share y and height, so an exact key is enough).
+    // Band = a maximal chain whose vertical intervals overlap: grow the band's
+    // bottom while the next rect starts above it. Tokens on the same visual
+    // line overlap; lines with tight spacing may overlap by 1-2 px too, which
+    // still merges the rare edge case instead of XOR-restoring a seam.
     int x = sorted[i].x;
     int y = sorted[i].y;
     int right = sorted[i].x + sorted[i].width;
-    const int bottom = sorted[i].y + sorted[i].height;
+    int bottom = sorted[i].y + sorted[i].height;
     size_t j = i + 1;
-    while (j < sorted.size() && sorted[j].y == y && sorted[j].y + sorted[j].height == bottom) {
+    while (j < sorted.size() && sorted[j].y < bottom) {
+      const int rectBottom = sorted[j].y + sorted[j].height;
       if (sorted[j].x <= right) {
         right = std::max(right, sorted[j].x + sorted[j].width);
       } else {
@@ -37,6 +40,7 @@ inline void invertRegionsMerged(GfxRenderer& renderer, const std::vector<Rect>& 
         x = sorted[j].x;
         right = sorted[j].x + sorted[j].width;
       }
+      bottom = std::max(bottom, rectBottom);
       ++j;
     }
     renderer.invertRegion(x, y, right - x, bottom - y);

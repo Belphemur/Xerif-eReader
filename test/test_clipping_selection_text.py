@@ -588,6 +588,26 @@ int main() {
     expect(activity, 2, 2, "alpha");
     assert(activity.words[1].text == visualSecond);  // Export must not change navigation order.
   }
+  // HK7u regression: textLength is a span from textOffset, not an end
+  // offset — a token that trimmed leading punctuation keeps its tail.
+  {
+    const std::vector<std::string> trimmedCase{"(alpha)", "beta"};
+    const int nextRow = loadLine(activity, trimmedCase, false);
+    activity.words[0].text = "(alpha)";
+    activity.words[0].textOffset = 1;
+    activity.words[0].textLength = 5;
+    activity.words[1].text = "beta";
+    activity.words[1].textOffset = 0;
+    activity.words[1].textLength = 4;
+    // Same-row sequence (batch 0's start offsets overlap the trimmed batch);
+    // keep the separator check gapped by padding the anchors.
+    activity.words[0].startOffset = 100;
+    activity.words[0].endOffset = 104;
+    activity.words[1].startOffset = 106;
+    activity.words[1].endOffset = 109;
+    expect(activity, 0, 1, "alpha beta");
+    (void)nextRow;
+  }
   const std::vector<std::string> ltr{"alpha", "אחד", "שני", "beta"};
   loadLine(activity, ltr, false);
   expect(activity, 0, 3, "alpha אחד שני beta");

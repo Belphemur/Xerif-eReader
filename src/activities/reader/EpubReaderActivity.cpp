@@ -5468,8 +5468,11 @@ void EpubReaderActivity::ttfDrawClippingHighlights(const freeink::book::Page& pa
                                static_cast<uint16_t>(cachedChapterTotalPageCount), layoutSignature, tb.selectionGroup,
                                sourceStart, sourceEnd)) {
         // Same padded band as the selection highlight (see the dictionary
-        // selector). Coordinates are page-logical screen space.
-        matched.emplace_back(static_cast<int>(tb.x) - 2, tb.y - 2, tb.width + 4, tb.height + 4);
+        // selector). Coordinates are page-logical screen space, clamped like
+        // the dictionary branch: negative edges become huge uint16_t inside
+        // invertRegion's aligned-rect walk.
+        matched.emplace_back(std::max(0, static_cast<int>(tb.x) - 2), std::max(0, static_cast<int>(tb.y) - 2),
+                             tb.width + 4, tb.height + 4);
         ++highlightedWords;
         break;
       }
