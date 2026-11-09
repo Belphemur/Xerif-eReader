@@ -152,6 +152,46 @@ artifacts — and the same order of cost (~2× box-average).
   `imageDecodeQuality` (the predecode worker and relayout already read it — follow
   the same threading).
 
+## Decision log (coding-philosophy: DRY > SOLID > KISS, strict priority)
+
+1. **DRY — one DPID implementation, two callers.** The resize knowledge already
+   exists twice (app inline loop `TtfImageEngine.cpp:299-375`; SDK `RowScaler`
+   `ImageRenderer.cpp:18-19`) — an existing fork. DPID lands once and both decoder
+   paths consume it; a second copy is deleted where the fork allows. What the loser
+   (SOLID-shaped per-path abstraction with duplicate internals) costs: two DPID
+   copies drifting — the app path sharp, the SDK path smeared — the exact asymmetry
+   the soak chain flagged. Task 1 verifies the fork's real shape before unifying
+   ("two call sites with different futures are not one behavior" — if the SDK
+   RowScaler is shared with legacy in a way that resists a parameter, the documented
+   DRY debt is recorded rather than forced).
+2. **SOLID — legacy decode stays bit-identical via a selectable scaler, never a
+   default change.** Flipping the shared default would silently rewrite the legacy
+   bitmap reader's output; the correctness invariant (legacy unchanged) outranks the
+   simpler "just change RowScaler". Same rule inside the pass: scratch-allocation
+   failure fails the decode before any row is written (the established ring-alloc
+   fail-closed shape) — no partial-image decode can ship.
+3. **SOLID — "Sharp" is a whole-pass gate.** The setting disables the entire CLAHE
+   pass, so "Sharp" output is byte-identical to CLAHE-off by construction — one
+   gate, testable, not a scattering of conditions.
+4. **KISS — λ fixed at 1.0 as a plain constant.** No setting, no config row, no pow.
+   The λ=0 degenerate path stays solely as a regression pin. A tunable λ would be a
+   knob nobody has asked to tune.
+5. **KISS — DPID absorbs blur+resize+sharpen as one pass.** The offline recipe's
+   three stages collapse because DPID's area-average *is* the anti-alias filter and
+   its detail weight *is* the sharpening; keeping the three separate stages next to
+   DPID would be machinery whose job vanished.
+6. **Lifetime rule — the full-image scratch is pool-owned and call-scoped.**
+   `PoolBytes` from the arena, acquired at decode start, released before return; no
+   raw owning pointer outlives it; rows handed to ToneBake4 are consumed
+   synchronously within the call. The PSRAM policy correction
+   (2026-11-08-ttf-image-text-in-image.md) legitimizes the size; the arena model
+   (`TtfBookRuntime.h:9-15`) owns the memory.
+7. **Equal values, different jobs — CLAHE's clip limit and ToneBake4's percentile
+   clip are not one knob.** Both bound a histogram, but CLAHE's clip governs
+   per-tile redistribution (local), ToneBake4's percentile clip governs global
+   dynamic range; collapsing them would silently narrow one artifact's guarantee.
+   Recorded so no future "twin constant" consolidation unifies them.
+
 ## Gates and delivery
 
 Same battery: fresh-from-scratch ctest (never report stale binaries),
