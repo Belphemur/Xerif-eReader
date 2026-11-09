@@ -37,7 +37,7 @@
 // BMP branch); the suite drives them directly so BMP coverage needs no Epub.
 namespace ttfimg {
 DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, size_t size, ToneBake4* bake,
-                           GfxRenderer* legacyPaint, bool (*abortPoll)(void*), void* abortCtx);
+                           GfxRenderer* legacyPaint, bool (*abortPoll)(void*), void* abortCtx, bool clahe = false);
 DecodeResult remapGrayToCache(const ImageSpec& spec, ToneBake4& bake, const char* writePath, bool caching,
                               GfxRenderer* paint, bool paintToTarget, bool (*abortPoll)(void*), void* abortCtx,
                               bool* cacheStreamOk);
@@ -221,12 +221,12 @@ TEST(ImageFitBlit, BlitCoversBoxBelowThePhysicalPanelHeight) {
   const auto spec = makeSpec(100, 600, 100, 150);
   ttfimg::ToneCacheWriter writer;
   char path[256];
-  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, path, sizeof(path)));
+  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, false, path, sizeof(path)));
   ASSERT_TRUE(writer.begin(path, spec.w, spec.h));
   std::vector<uint8_t> tones(static_cast<size_t>(spec.w), 0);  // all-black rows
   for (int i = 0; i < spec.h; ++i) ASSERT_TRUE(writer.writeRow(tones.data()));
   ASSERT_TRUE(writer.finalize());
-  ASSERT_TRUE(ttfimg::blitFromCache(r, spec, "/books/epub_x/ficache", true));
+  ASSERT_TRUE(ttfimg::blitFromCache(r, spec, "/books/epub_x/ficache", true, false));
   expectBoxCoverage(r, spec);
 }
 
@@ -612,19 +612,19 @@ void expectDecodeCacheBlit(freeink::book::BookSource& source, freeink::book::Boo
   spec.generation = 9;
 
   char cachePath[256];
-  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, cachePath, sizeof(cachePath)));
+  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, false, cachePath, sizeof(cachePath)));
   const auto res = ttfimg::decodeAndCache(spec, cachePath, source, book.zip(), scratch, &epub, &r,
                                           /*qualityTone=*/true, /*caching=*/true, nullptr, nullptr,
                                           /*paintToTarget=*/true);
   ASSERT_EQ(res, ttfimg::DecodeResult::Ok) << kind;
   // The published cache is valid and complete...
-  EXPECT_TRUE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true)) << kind;
+  EXPECT_TRUE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true, false)) << kind;
   // ...no temp debris survives the publish...
   EXPECT_FALSE(storage.exists((std::string(cachePath) + ".t").c_str())) << kind;
   EXPECT_FALSE(storage.exists((std::string(cachePath) + ".g").c_str())) << kind;
   // ...and the blit covers the placement box (portrait, below physical height).
   r.fillWhite();
-  EXPECT_TRUE(ttfimg::blitFromCache(r, spec, "/books/epub_x/ficache", true)) << kind;
+  EXPECT_TRUE(ttfimg::blitFromCache(r, spec, "/books/epub_x/ficache", true, false)) << kind;
   expectBoxCoverage(r, spec);
 }
 
@@ -740,14 +740,14 @@ TEST(ImageFitFallback, GrayOpenFailureStillPaintsTheImage) {
   snprintf(spec.href, sizeof(spec.href), "OEBPS/images/small.bmp");
   spec.generation = 11;
   char cachePath[256];
-  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, cachePath, sizeof(cachePath)));
+  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, false, cachePath, sizeof(cachePath)));
   const auto res = ttfimg::decodeAndCache(spec, cachePath, source, book.zip(), scratch, &epub, &r, true, true, nullptr,
                                           nullptr, true);
   storage.failOpenForWriteAtCall = 0;
   EXPECT_EQ(res, ttfimg::DecodeResult::Ok);
   // The image painted (legacy single pass) and no cache/temp debris exists.
   expectBoxCoverage(r, spec);
-  EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true));
+  EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true, false));
 }
 
 TEST(ImageFitFallback, GrayWriteFailureStopsRetryingWrites) {
@@ -777,13 +777,13 @@ TEST(ImageFitFallback, GrayWriteFailureStopsRetryingWrites) {
   snprintf(spec.href, sizeof(spec.href), "OEBPS/images/small.bmp");
   spec.generation = 14;
   char cachePath[256];
-  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, cachePath, sizeof(cachePath)));
+  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, false, cachePath, sizeof(cachePath)));
   const auto res = ttfimg::decodeAndCache(spec, cachePath, source, book.zip(), scratch, &epub, &r, true, true, nullptr,
                                           nullptr, true);
   HalFile::failWriteAtCall = 0;
   EXPECT_EQ(res, ttfimg::DecodeResult::Ok);
   expectBoxCoverage(r, spec);
-  EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true));
+  EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true, false));
   // Exactly three write attempts: the sticky gate stopped the retry storm
   // after the first failure (the 24-row collect used to attempt every row).
   EXPECT_EQ(HalFile::writeCallCount, 3);
@@ -813,13 +813,13 @@ TEST(ImageFitFallback, GrayMidStreamWriteFailureStillPaintsTheImage) {
   snprintf(spec.href, sizeof(spec.href), "OEBPS/images/small.bmp");
   spec.generation = 12;
   char cachePath[256];
-  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, cachePath, sizeof(cachePath)));
+  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, false, cachePath, sizeof(cachePath)));
   const auto res = ttfimg::decodeAndCache(spec, cachePath, source, book.zip(), scratch, &epub, &r, true, true, nullptr,
                                           nullptr, true);
   HalFile::failWriteAtCall = 0;
   EXPECT_EQ(res, ttfimg::DecodeResult::Ok);
   expectBoxCoverage(r, spec);
-  EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true));
+  EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true, false));
 }
 
 // Phase-2 read-failure fallbacks (review round 3): a failed gray re-open or a
@@ -848,7 +848,7 @@ void expectReadFailureStillPaints(const int failReadAtCall, const int failOpenFo
   snprintf(spec.href, sizeof(spec.href), "OEBPS/images/small.bmp");
   spec.generation = 13;
   char cachePath[256];
-  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, cachePath, sizeof(cachePath)));
+  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, false, cachePath, sizeof(cachePath)));
   // Arm the injections only after the last ASSERT: a failing ASSERT returns
   // early, and leaked injections would fail every later ImageFit* test.
   HalFile::failReadAtCall = failReadAtCall;
@@ -861,7 +861,7 @@ void expectReadFailureStillPaints(const int failReadAtCall, const int failOpenFo
   storage.failOpenForReadAtCall = 0;
   EXPECT_EQ(res, ttfimg::DecodeResult::Ok);
   expectBoxCoverage(r, spec);
-  EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true));
+  EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true, false));
 }
 }  // namespace
 

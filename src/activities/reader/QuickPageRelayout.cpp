@@ -25,6 +25,9 @@ namespace {
 // construction.
 void paintTtfPageImages(const freeink::book::Page& page, freeink::book::TtfBookRuntime& ttf, GfxRenderer& renderer) {
   const bool qualityTone = SETTINGS.imageDecodeQuality != 0;
+  // Picture detail (DPID design §Contract 4): CLAHE gate rides with the
+  // quality tone policy.
+  const bool clahe = qualityTone && SETTINGS.pictureDetail != 0;
   if (!qualityTone) {
     // Revert switch: the previous image paint path verbatim.
     const freeink::book::BookStatus st = freeink::book::PageRenderer::renderImages(
@@ -65,7 +68,8 @@ void paintTtfPageImages(const freeink::book::Page& page, freeink::book::TtfBookR
     spec.h = static_cast<int16_t>(img.height);
     spec.orientation = static_cast<uint8_t>(renderer.getOrientation());
 
-    if (ttfimg::hasValidCache(spec, dir, qualityTone) && ttfimg::blitFromCache(renderer, spec, dir, qualityTone)) {
+    if (ttfimg::hasValidCache(spec, dir, qualityTone, clahe) &&
+        ttfimg::blitFromCache(renderer, spec, dir, qualityTone, clahe)) {
       continue;
     }
     // A cache hit that failed to blit (unreadable file, torn payload) falls
@@ -77,7 +81,7 @@ void paintTtfPageImages(const freeink::book::Page& page, freeink::book::TtfBookR
     // rule 1); on gate timeout the space stays blank and a later pass
     // retries, typically onto the worker's fresh cache.
     char cachePath[256];
-    if (!ttfimg::cacheNameFor(spec, dir, qualityTone, cachePath, sizeof(cachePath))) continue;
+    if (!ttfimg::cacheNameFor(spec, dir, qualityTone, clahe, cachePath, sizeof(cachePath))) continue;
     const uint64_t hash = ImageDecodeGate::pathHash(cachePath);
     if (!ImageDecodeGate::acquireForeground(hash)) continue;
     // Decode bus: the worker yields its in-flight decode at the next band
@@ -101,7 +105,7 @@ void paintTtfPageImages(const freeink::book::Page& page, freeink::book::TtfBookR
       const size_t scratchMark = ttf.scratch().mark();
       const ttfimg::DecodeResult res =
           ttfimg::decodeAndCache(spec, cachePath, ttf.source(), ttf.catalog().zip(), ttf.scratch(), ttf.decodeEpub(),
-                                 &renderer, qualityTone, /*caching=*/true, nullptr, nullptr);
+                                 &renderer, qualityTone, /*caching=*/true, nullptr, nullptr, true, clahe);
       ttf.scratch().release(scratchMark);
       if (res != ttfimg::DecodeResult::Ok) {
         LOG_DBG("QPR", "TTF image decode: kind=%d %s", static_cast<int>(res),

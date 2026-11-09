@@ -68,18 +68,18 @@ struct ImageSpec {
 // validName blob). Keyed by the generation, the placement and the tone
 // policy: a layout change or a policy flip picks a fresh file; stale ones
 // live until the book cache sweep (epub/<hash> clearCache) removes it.
-bool cacheNameFor(const ImageSpec& spec, const char* dir, bool qualityTone, char* out, size_t cap);
+bool cacheNameFor(const ImageSpec& spec, const char* dir, bool qualityTone, bool clahe, char* out, size_t cap);
 
 // Cache lookup: header dims must match the placement (±1, the same bounded
 // tolerance ImageBlock uses) and the file must cover the full payload.
-bool hasValidCache(const ImageSpec& spec, const char* dir, bool qualityTone);
+bool hasValidCache(const ImageSpec& spec, const char* dir, bool qualityTone, bool clahe);
 
 // Tone-row blit through `renderer` from the cache (no decode). DirectPixel
 // writes are band-clipped; rows are drawn at (x, y). The blit runs per
 // DirectPixelWriter pass through the strip/jointed gray planes (row-by-row
 // reads like ImageBlock's streaming path), in the orientation the renderer
 // reached the tone pointer at the read.
-bool blitFromCache(GfxRenderer& renderer, const ImageSpec& spec, const char* dir, bool qualityTone);
+bool blitFromCache(GfxRenderer& renderer, const ImageSpec& spec, const char* dir, bool qualityTone, bool clahe);
 
 enum class DecodeResult : uint8_t {
   Ok = 0,      // cache written (when caching) + rows painted
@@ -100,7 +100,7 @@ enum class DecodeResult : uint8_t {
 DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freeink::book::BookSource& source,
                             const freeink::book::ZipCatalog& zip, freeink::book::Arena& scratch, Epub* epub,
                             GfxRenderer* paint, bool qualityTone, bool caching, bool (*abortPoll)(void* ctx),
-                            void* abortCtx, bool paintToTarget = true);
+                            void* abortCtx, bool paintToTarget = true, bool clahe = false);
 // The probe/extract run against spec.hrefExt when set (overlong href — see
 // ImageSpec), else spec.href.
 

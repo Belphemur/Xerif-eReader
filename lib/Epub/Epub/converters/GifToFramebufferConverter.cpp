@@ -207,6 +207,12 @@ void qFlushRemainder(GifContext& ctx) {
 }
 
 void renderCanvasRow(const uint8_t* grayRow, int srcY, GifContext& ctx) {
+  // DPID pass-through: raw source rows go to the app-side scaler; the
+  // converter's own resize (qRenderCanvasRow / legacy Bayer) never runs.
+  if (ctx.quality && ctx.collect && ctx.config->sourceRowFn != nullptr) {
+    if (!ctx.config->sourceRowFn(ctx.config->sourceUser, srcY, grayRow)) ctx.success = false;
+    return;
+  }
   if (ctx.quality) {
     qRenderCanvasRow(grayRow, srcY, ctx);
     return;
@@ -557,6 +563,16 @@ bool GifToFramebufferConverter::decodeGifSource(const char* imagePath, uint8_t* 
     }
   }
 
+  // DPID pass-through: report the canvas dims once, before the first row —
+  // the app-side scaler allocates its scratch here. false aborts (the
+  // engine's legacy fallback paints).
+  if (ctx.quality && ctx.collect && config.sourceDimsFn != nullptr &&
+      !config.sourceDimsFn(config.sourceUser, ctx.srcWidth, ctx.srcHeight)) {
+    ctx.success = false;
+    if (ctx.caching) ctx.cache.abort();
+    return false;
+  }
+
   int delayMs = 0;
   ctx.lastYieldMs = millis();
   const int frameState = gif->playFrame(false, &delayMs, &ctx);
@@ -572,7 +588,9 @@ bool GifToFramebufferConverter::decodeGifSource(const char* imagePath, uint8_t* 
     if (ctx.caching) ctx.cache.abort();
     return false;
   }
-  if (ctx.quality) {
+  if (ctx.quality && !(ctx.collect && config.sourceRowFn != nullptr)) {
+    // Sink mode: every row went to the app-side scaler; no converter-side
+    // accumulate state exists to flush.
     qFlushRemainder(ctx);
     if (!ctx.success) {
       LOG_ERR("GIF", "GIF quality flush failed: %s", label);

@@ -224,14 +224,18 @@ bool readValidCacheHeader(HalFile& cacheFile, const int expectedWidth, const int
   return cacheFile.size() >= expectedSize;
 }
 
-bool cacheNameFor(const ImageSpec& spec, const char* dir, const bool qualityTone, char* out, const size_t cap) {
+bool cacheNameFor(const ImageSpec& spec, const char* dir, const bool qualityTone, const bool clahe, char* out,
+                  const size_t cap) {
   // Quality bake revision: bump when the bake algorithm changes so stale
   // caches re-decode. 'q' was the plain Floyd–Steinberg4 bake (2026-11-07);
   // 'r' was the fixed ToneBake4 map (2026-11-08 §5.2); 's' is the adaptive
   // two-phase bake (2026-11-08 §2, amendment 2); 't' is the texture bake
   // (full diffusion, threshold noise, flat-run snap, stroke anchor —
-  // texture design §2.2–§2.4, 2026-11-08).
-  constexpr char kQualityCacheRevision = 't';
+  // texture design §2.2–§2.4, 2026-11-08); 'v' is the DPID detail-
+  // preserving resize feeding the same texture bake (DPID design
+  // 2026-11-09; 'u' was burned by the reverted edge pass); 'w' adds the
+  // CLAHE local-contrast pass on top (the Enhanced pictureDetail value —
+  // the setting flips re-decode, never mix bakes).
   // Identity: generation + href + placement (+ the tone policy, so the
   // quality revert switch never mixes bakes in one file). hrefExt (an
   // overlong Page href, paint-side only) IS the href for the identity.
@@ -250,14 +254,14 @@ bool cacheNameFor(const ImageSpec& spec, const char* dir, const bool qualityTone
   // Full 64-bit hash in the name: a truncated identity would let two records
   // of the same dimensions and generation share one file, and the header
   // check (dims only) would paint one image's pixels under the other's key.
-  const int n = snprintf(out, cap, "%s/i%c%08x-%016llx.pxc", dir, qualityTone ? kQualityCacheRevision : 'l',
+  const int n = snprintf(out, cap, "%s/i%c%08x-%016llx.pxc", dir, qualityTone ? (clahe ? 'w' : 'v') : 'l',
                          static_cast<unsigned>(spec.generation), static_cast<unsigned long long>(hash));
   return n > 0 && static_cast<size_t>(n) < cap;
 }
 
-bool hasValidCache(const ImageSpec& spec, const char* dir, const bool qualityTone) {
+bool hasValidCache(const ImageSpec& spec, const char* dir, const bool qualityTone, const bool clahe) {
   char path[256];
-  if (!cacheNameFor(spec, dir, qualityTone, path, sizeof(path))) return false;
+  if (!cacheNameFor(spec, dir, qualityTone, clahe, path, sizeof(path))) return false;
   HalFile cacheFile;
   if (!Storage.openFileForRead("TIMGE", path, cacheFile)) return false;
   uint16_t cachedWidth = 0;

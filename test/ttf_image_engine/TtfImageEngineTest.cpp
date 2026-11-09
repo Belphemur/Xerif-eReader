@@ -44,16 +44,16 @@ ttfimg::ImageSpec makeSpec(const uint32_t generation, const int x, const int y, 
 TEST(CacheIdentity, DeterministicForSameSpec) {
   char a[256], b[256];
   const auto spec = makeSpec(0x1234, 10, 20, 100, 80);
-  ASSERT_TRUE(ttfimg::cacheNameFor(spec, kDir, true, a, sizeof(a)));
-  ASSERT_TRUE(ttfimg::cacheNameFor(spec, kDir, true, b, sizeof(b)));
+  ASSERT_TRUE(ttfimg::cacheNameFor(spec, kDir, true, false, a, sizeof(a)));
+  ASSERT_TRUE(ttfimg::cacheNameFor(spec, kDir, true, false, b, sizeof(b)));
   EXPECT_STREQ(a, b);
 }
 
 TEST(CacheIdentity, GenerationChangesTheName) {
   // Layout invalidation: a new generation must not reuse the old cache.
   char a[256], b[256];
-  ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 10, 20, 100, 80), kDir, true, a, sizeof(a)));
-  ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(2, 10, 20, 100, 80), kDir, true, b, sizeof(b)));
+  ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 10, 20, 100, 80), kDir, true, false, a, sizeof(a)));
+  ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(2, 10, 20, 100, 80), kDir, true, false, b, sizeof(b)));
   EXPECT_STRNE(a, b);
 }
 
@@ -61,27 +61,31 @@ TEST(CacheIdentity, PlacementChangesTheName) {
   // Dither/bake identity is placement-keyed: two placements of one image get
   // separate caches (the .fibp placement is part of the identity, §5.4).
   char a[256], b[256];
-  ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 10, 20, 100, 80), kDir, true, a, sizeof(a)));
-  ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 12, 20, 100, 80), kDir, true, b, sizeof(b)));
+  ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 10, 20, 100, 80), kDir, true, false, a, sizeof(a)));
+  ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 12, 20, 100, 80), kDir, true, false, b, sizeof(b)));
   EXPECT_STRNE(a, b);
 }
 
 TEST(CacheIdentity, PolicyLetterSeparatesBakes) {
   // The quality revert switch must never mix tone bakes in one file.
-  char a[256], b[256];
-  ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 10, 20, 100, 80), kDir, true, a, sizeof(a)));
-  ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 10, 20, 100, 80), kDir, false, b, sizeof(b)));
+  char a[256], b[256], c[256];
+  ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 10, 20, 100, 80), kDir, true, false, a, sizeof(a)));
+  ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 10, 20, 100, 80), kDir, false, false, b, sizeof(b)));
+  ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 10, 20, 100, 80), kDir, true, true, c, sizeof(c)));
   EXPECT_STRNE(a, b);
-  // 't' = the adaptive two-phase bake with flat-field snap, threshold-noise
-  // and stroke anchoring (design 2026-11-08-ttf-image-texture-quality.md §5
-  // as-built); 's' was the pre-texture adaptive bake; 'l' = legacy.
-  EXPECT_NE(strstr(a, "/it"), nullptr);
+  EXPECT_STRNE(a, c);
+  // 'v' = the DPID detail-preserving resize feeding the texture bake (design
+  // 2026-11-09-ttf-image-dpid-clahe.md; 't' was the pre-DPID texture bake,
+  // 'u' burned by the reverted edge pass); 'w' = DPID + CLAHE (Enhanced);
+  // 'l' = legacy.
+  EXPECT_NE(strstr(a, "/iv"), nullptr);
   EXPECT_NE(strstr(b, "/il"), nullptr);
+  EXPECT_NE(strstr(c, "/iw"), nullptr);
 }
 
 TEST(CacheIdentity, RefusesOverlongDir) {
   char small[8];
-  EXPECT_FALSE(ttfimg::cacheNameFor(makeSpec(1, 0, 0, 10, 10), kDir, true, small, sizeof(small)));
+  EXPECT_FALSE(ttfimg::cacheNameFor(makeSpec(1, 0, 0, 10, 10), kDir, true, false, small, sizeof(small)));
 }
 
 // ── cache validity + writer format ──────────────────────────────────────────
@@ -89,7 +93,7 @@ TEST(CacheIdentity, RefusesOverlongDir) {
 TEST(CacheValidity, AbsentCacheIsInvalid) {
   auto& storage = HalStorage::getInstance();
   storage.files.clear();
-  EXPECT_FALSE(ttfimg::hasValidCache(makeSpec(1, 0, 0, 16, 8), kDir, true));
+  EXPECT_FALSE(ttfimg::hasValidCache(makeSpec(1, 0, 0, 16, 8), kDir, true, false));
 }
 
 TEST(CacheValidity, WrittenCacheIsValid) {
@@ -98,13 +102,13 @@ TEST(CacheValidity, WrittenCacheIsValid) {
   const auto spec = makeSpec(1, 0, 0, 16, 8);
   ttfimg::ToneCacheWriter writer;
   char path[256];
-  ASSERT_TRUE(ttfimg::cacheNameFor(spec, kDir, true, path, sizeof(path)));
+  ASSERT_TRUE(ttfimg::cacheNameFor(spec, kDir, true, false, path, sizeof(path)));
   ASSERT_TRUE(writer.begin(path, 16, 8));
   uint8_t row[16] = {};
   for (int i = 0; i < 8; ++i) ASSERT_TRUE(writer.writeRow(row));
   ASSERT_TRUE(writer.finalize());
 
-  EXPECT_TRUE(ttfimg::hasValidCache(spec, kDir, true));
+  EXPECT_TRUE(ttfimg::hasValidCache(spec, kDir, true, false));
 }
 
 TEST(CacheValidity, HeaderDimsToleranceAndPayloadGuard) {
@@ -146,7 +150,7 @@ TEST(CacheValidity, TruncatedPayloadIsInvalid) {
   const auto spec = makeSpec(1, 0, 0, 16, 8);
   ttfimg::ToneCacheWriter writer;
   char path[256];
-  ASSERT_TRUE(ttfimg::cacheNameFor(spec, kDir, true, path, sizeof(path)));
+  ASSERT_TRUE(ttfimg::cacheNameFor(spec, kDir, true, false, path, sizeof(path)));
   ASSERT_TRUE(writer.begin(path, 16, 8));
   uint8_t row[16] = {};
   for (int i = 0; i < 8; ++i) ASSERT_TRUE(writer.writeRow(row));
@@ -154,7 +158,7 @@ TEST(CacheValidity, TruncatedPayloadIsInvalid) {
   // Simulate a torn file: cut the payload.
   std::string& data = storage.files[path];
   data.resize(4 + ((16 + 3) / 4) * 5);  // 5 of 8 rows
-  EXPECT_FALSE(ttfimg::hasValidCache(spec, kDir, true));
+  EXPECT_FALSE(ttfimg::hasValidCache(spec, kDir, true, false));
 }
 
 TEST(ToneWriter, PacksTwoBitPixelsMsbFirst) {

@@ -205,3 +205,59 @@ discipline. Marker `DPID_CLAHE_DONE`, final report
 Develop moves constantly (11 OTA commits landed during the previous campaign). The
 brief's task 0 re-bases the PR onto origin/develop before implementation and amends
 this doc in lockstep if the rebase shifts any number above.
+
+## As-built (implementation 2026-11-09)
+
+Amendments to the decision log, applied in the same commit as the code they
+govern (DRY > SOLID > KISS priority held throughout):
+
+1. **Item 1 (DRY — "two callers") corrected: there were three resize copies.**
+   The GIF converter's `qRenderCanvasRow` carried a third duplicate of the box
+   band math (with the same per-row `sum/(x1-x0)` truncation as the BMP loop).
+   DPID lands once in `DpidScaler` (app-side, `src/activities/reader/`) and all
+   three TTF paths consume it: SDK rows via the additive
+   `ImageRenderer::renderSourceRows` pass-through (freeink-sdk `ba2910d`; the
+   legacy `render()` box path is untouched, so `PageRenderer`'s ordered-dither
+   decode stays bit-identical by construction), BMP rows in random-access mode
+   (the PSRAM item buffer is re-readable — no ring), GIF rows via the
+   converter's `RenderConfig::sourceDimsFn/sourceRowFn` sink (raw rows out,
+   converter's own resize bypassed). Recorded debt: the SDK `RowScaler` /
+   `ProgResample` / GIF upscale tabs still duplicate shrink logic for
+   non-TTF callers.
+2. **Item 2 (fail-closed) restated as a degradation ladder, chosen before the
+   first row.** `attachScaler` tries detail+CLAHE → CLAHE only (detail off) →
+   λ0 fractional box (no image buffer; the whole contract's truncation fix
+   survives even the ladder's bottom) → fail the decode. Each rung is a
+   separate allocation; a plan is fixed before any row is written, so no
+   partial-image state can exist. A streaming detail pass whose full-depth
+   source ring would exceed the 128 KB cap degrades to λ0 (a partial ring
+   would read wrong patch rows — never silent corruption).
+3. **Unit-space rule (the probe's second bug, pinned):** `edge(i) = i·src/dst`
+   is in SOURCE-axis units (65536 per source pixel). Source-axis enumeration
+   keeps `cover()`; the row→band direction is the inverse and uses
+   `bandOverlap()` against band edges directly. Reusing `cover()` across axes
+   silently mis-weights boundary bands.
+4. **Cache identity carries the setting:** `kQualityCacheRevision` `'t'` →
+   `'v'` (DPID-only) / `'w'` (DPID+CLAHE) — `'u'` stays burned by the reverted
+   edge pass. The pictureDetail flip re-decodes on the next paint, never mixes
+   bakes, and needs no reflash.
+5. **CLAHE geometry as-built:** tile grid 8×8 (`kClaheTiles`), per-bin cap
+   `area/128` (= OpenCV clip 2.0 mapping), clip redistribution in bounded
+   rounds (max 4), CDF→LUT with the Zuiderveld min/max anchoring, bilinear
+   blend of the 4 surrounding tile centers at Q4 fixed point, edge positions
+   pin the edge tile. A constant tile maps identity (clip+redistribute would
+   invent a ramp and drift flat fields — probe: 137→142 before the guard).
+   Resizes too small for the grid (tile < 2 px) skip CLAHE deterministically,
+   so Enhanced == Sharp byte-for-byte on those images.
+6. **Memory as-built:** the full-image scratch is one call-scoped
+   `PoolBytes` (PSRAM) sized by `DpidScaler::scratchBytes()` — 480×800
+   quality decode ≈ 384 KB image + ~26 KB ring + ~49 KB tables + rows. The
+   SDK decode arena (192 KB) is untouched; DPID never allocates from it.
+7. **λ stays 1.0** as the plain constant (item 4 holds); the λ=0 path exists
+   only as the ladder's bottom rung and the regression pin.
+
+Host evidence (TtfImageFitTest): 42/42 including the new DpidScaler suite
+(stroke-energy pin, no-ringing, flat-field exactness, λ0 ≡ pass-1, streaming ≡
+random parity, tiny-image skip, border coverage, emit-abort) and the CLAHE
+suite (flat-tile identity, local-contrast expansion, determinism, degenerate
+grid equality, cache-letter separation `/iv`, `/iw`, `/il`).

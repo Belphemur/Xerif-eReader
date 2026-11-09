@@ -19,12 +19,15 @@
 #include <cstring>
 #include <new>
 
+#include "DpidScaler.h"
 #include "Epub/converters/DirectPixelWriter.h"
 #include "Epub/converters/GifToFramebufferConverter.h"
 #include "Epub/converters/ImageDecoderFactory.h"
 #include "Epub/converters/ImageToFramebufferDecoder.h"
 
 namespace {
+
+struct BmpSource;  // defined with the BMP row decoder below
 
 // --- tone codecs -------------------------------------------------------------
 
@@ -267,21 +270,145 @@ struct BmpSource {
 
 }  // namespace
 
-// Quality BMP decode, phase 1 (design 2026-11-08 §2.1 amendment 2): decode
-// to averaged gray rows and feed the adaptive bake's collection pass. No
-// tone, cache or paint here — decodeAndCache runs the shared remap pass
-// (remapGrayToCache) once the histogram is complete. `bake` carries the
-// gray temp (the caller ran beginCollect).
-// Paints one baked tone row at its placement (shared by every phase-2 remap
-// and the storage-failure legacy fallback; defined below the BMP decoder's
-// helpers).
+// DpidScaler plumbing shared by the SDK JPEG/PNG streaming decode and the
+// BMP row decoder (design 2026-11-09-ttf-image-dpid-clahe.md): the scaler's
+// destination rows become the bake's collect rows; the scratch block is a
+// call-scoped PSRAM PoolBytes (decision log 6). Degradation ladder inside
+// attachScaler: detail+clahe -> clahe only (detail off) -> λ0 fractional box
+// (no image buffer), each attempt a fresh allocation; the mode is fixed
+// before the first row, so no partial-image state can exist.
 void paintToneRow(GfxRenderer& paint, const ImageSpec& spec, int rowIdx, const uint8_t* toneRow, int width);
 
-// `legacyPaint` (optional) selects the storage-failure fallback: instead of
-// collecting gray rows the decoder bakes with the caller-prepared (degenerate)
-// map and paints each row — no cache, no temp.
+struct DpidCtx {
+  ttfimg::DpidScaler scaler;
+  PoolBytes block;
+  GrayCollectCtx* gray = nullptr;  // existing collect/abort state
+  const ttfimg::ImageSpec* spec = nullptr;
+  bool clahe = false;     // pictureDetail == Enhanced
+  bool attached = false;  // dims hook ran; begin() succeeded
+  // BMP random-access provider state
+  BmpSource* bmp = nullptr;
+  uint8_t* bits = nullptr;  // BmpSource bit scratch (rowBytes)
+  // Storage-failure fallback sink (BMP): degenerate map + direct paint.
+  GfxRenderer* legacyPaint = nullptr;
+  uint8_t* toneRow = nullptr;  // [dstW], owned by the caller
+};
+
+bool dpidPollFn(void* user) {
+  auto* c = static_cast<DpidCtx*>(user);
+  if (c->gray != nullptr && c->gray->abortPoll != nullptr && c->gray->abortPoll(c->gray->abortCtx)) {
+    c->gray->aborted = true;
+    return true;
+  }
+  return false;
+}
+
+// Destination-row sink: collect mode feeds bake->collectRow (histogram +
+// gray temp, remap owns the bake); the BMP legacyPaint fallback bakes with
+// the caller's degenerate map and paints each row directly.
+bool dpidEmitFn(void* user, const int rowIdx, const uint8_t* dstRow) {
+  auto* c = static_cast<DpidCtx*>(user);
+  GrayCollectCtx* g = c->gray;
+  if (g->aborted) return false;
+  if (g->abortPoll != nullptr && g->abortPoll(g->abortCtx)) {
+    g->aborted = true;
+    return false;
+  }
+  if (g->bake == nullptr) return false;
+  if (c->legacyPaint != nullptr) {
+    g->bake->toneRow(dstRow, c->toneRow);
+    paintToneRow(*c->legacyPaint, *c->spec, rowIdx, c->toneRow, c->spec->w);
+    return true;
+  }
+  if (g->bake->grayWriteFailed()) {
+    g->collectFailed = true;
+    return false;
+  }
+  g->bake->collectRow(dstRow);
+  return true;
+}
+
+// BMP provider: reads the requested source row out of the resident PSRAM
+// item buffer (no decode involved — bit reuse of the row decoder). Foreground
+// takeover polls here: the provider is the only per-row hook the encoder loop
+// sees.
+bool dpidBmpRowFn(void* user, const int srcY, uint8_t* out) {
+  auto* c = static_cast<DpidCtx*>(user);
+  if (dpidPollFn(user)) return false;
+  return c->bmp->readRowGray(srcY, out, c->bits);
+}
+
+// Attaches a DpidScaler to `ctx` for one decode, walking the degradation
+// ladder. false = even the tiny λ0 block could not be allocated (the caller
+// fails the decode; nothing has been written yet).
+bool attachScaler(DpidCtx& c, const int srcW, const int srcH, const int dstW, const int dstH, const bool clahe,
+                  const bool randomAccess) {
+  DpidScaler::Plan p{srcW, srcH, dstW, dstH, clahe, true, randomAccess};
+  size_t need = DpidScaler::scratchBytes(p);
+  c.block = poolMakeBytes(need);
+  if (!c.block) {
+    // Keep CLAHE (the Enhanced promise) and drop only the detail pass.
+    DpidScaler::Plan p2 = p;
+    p2.detail = false;
+    need = DpidScaler::scratchBytes(p2);
+    c.block = poolMakeBytes(need);
+    if (!c.block && p2.clahe) {
+      p2.clahe = false;  // λ0 fractional box: the small accumulator block
+      need = DpidScaler::scratchBytes(p2);
+      c.block = poolMakeBytes(need);
+    }
+    if (!c.block) return false;
+    p = p2;
+  }
+  return c.scaler.begin(p, c.block.get(), need, &dpidEmitFn, &c, &dpidPollFn, &c,
+                        randomAccess ? &dpidBmpRowFn : nullptr, randomAccess ? &c : nullptr);
+}
+
+// Streaming row entry for renderSourceRows (the width comes from the SDK;
+// anything other than the placed plan's source width means a different
+// decode — refuse it).
+bool dpidRowFn(void* user, const uint16_t y, const uint8_t* gray, const uint16_t width) {
+  auto* c = static_cast<DpidCtx*>(user);
+  if (width != c->scaler.srcWidth()) {
+    if (c->gray != nullptr) c->gray->aborted = true;
+    return false;
+  }
+  c->scaler.feedSourceRow(y, gray);
+  return !(c->gray != nullptr && c->gray->aborted);
+}
+
+// Dims hook: single call before the first row; allocates the block here so
+// the JPEG power-of-two pre-scale (which sets srcW/srcH) is already known.
+bool dpidDimsFn(void* user, const uint16_t srcW, const uint16_t srcH) {
+  auto* c = static_cast<DpidCtx*>(user);
+  c->attached = attachScaler(*c, srcW, srcH, c->spec->w, c->spec->h, c->clahe, false);
+  return c->attached;
+}
+
+// GIF converter hooks: the RenderConfig callbacks have the (int, const
+// uint8_t*) row shape, the DpidScaler expects the same.
+bool dpidGifDimsFn(void* user, const int srcW, const int srcH) {
+  auto* c = static_cast<DpidCtx*>(user);
+  c->attached = attachScaler(*c, srcW, srcH, c->spec->w, c->spec->h, c->clahe, false);
+  return c->attached;
+}
+
+bool dpidGifRowFn(void* user, const int srcY, const uint8_t* gray) {
+  auto* c = static_cast<DpidCtx*>(user);
+  if (!c->attached) return false;
+  c->scaler.feedSourceRow(srcY, gray);
+  return !(c->gray != nullptr && c->gray->aborted);
+}
+
+// Quality BMP decode (DPID design 2026-11-09 §Contract 2): the source rows
+// re-read out of the resident PSRAM item buffer feed the app-side DpidScaler
+// in random-access mode; the scaler's destination rows go through the same
+// sinks as every decoder (bake->collectRow in collect mode; degenerate-map
+// paint in the storage-failure fallback). `legacyPaint` (optional) selects
+// that fallback: instead of collecting gray rows the destination rows bake
+// with the caller-prepared (degenerate) map and paint — no cache, no temp.
 DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const size_t size, ttfimg::ToneBake4* bake,
-                           GfxRenderer* legacyPaint, bool (*abortPoll)(void* ctx), void* abortCtx) {
+                           GfxRenderer* legacyPaint, bool (*abortPoll)(void* ctx), void* abortCtx, const bool clahe) {
   if (bake == nullptr) return DecodeResult::Failed;
   BmpSource src;
   src.file.attach(data, size);
@@ -296,106 +423,48 @@ DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const siz
   const int dstH = spec.h;
   if (srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) return DecodeResult::Failed;
 
-  const bool areaScale = (srcW >= 2 * dstW) || (srcH >= 2 * dstH);
   const size_t bitsBytes = src.rowBytes;
   PoolBytes bits{poolMakeBytes(bitsBytes ? bitsBytes : 1)};
-  const size_t grayLen = srcW + static_cast<size_t>(dstW) + (legacyPaint != nullptr ? static_cast<size_t>(dstW) : 0);
-  PoolBytes gray{poolMakeBytes(grayLen)};  // gray (srcW) + averaged (dstW) + legacy tone (dstW)
-  if (!bits || !gray) {
+  PoolBytes toneRowBlock;
+  uint8_t* toneRow = nullptr;
+  if (legacyPaint != nullptr) {
+    toneRowBlock = poolMakeBytes(static_cast<size_t>(dstW));
+    toneRow = toneRowBlock.get();
+    if (!bits || !toneRow) return DecodeResult::Failed;
+  } else if (!bits) {
     return DecodeResult::Failed;
   }
-  uint8_t* grayRow = gray.get();
-  uint8_t* avgRow = grayRow + srcW;
-  uint8_t* toneRow = avgRow + dstW;
 
-  std::unique_ptr<uint32_t[]> sums;
-  std::unique_ptr<uint16_t[]> counts;
-  if (areaScale) {
-    sums.reset(new (std::nothrow) uint32_t[dstW]);
-    counts.reset(new (std::nothrow) uint16_t[dstW]);
-    if (!sums || !counts) {
-      return DecodeResult::Failed;
-    }
-  }
+  DpidCtx dpid;
+  GrayCollectCtx sinkCtx;
+  sinkCtx.bake = bake;
+  sinkCtx.abortPoll = abortPoll;
+  sinkCtx.abortCtx = abortCtx;
+  dpid.gray = &sinkCtx;
+  dpid.spec = &spec;
+  dpid.clahe = clahe;
+  dpid.bmp = &src;
+  dpid.bits = bits.get();
+  dpid.legacyPaint = legacyPaint;
+  dpid.toneRow = toneRow;
+  if (!attachScaler(dpid, srcW, srcH, dstW, dstH, clahe, true)) return DecodeResult::Failed;
 
-  int loadedRow = -1;  // single gray-row cache: raster-order visits are monotonic
-  for (int dstY = 0; dstY < dstH; ++dstY) {
-    const int y0 = areaScale ? dstY * srcH / dstH : (dstY * srcH) / dstH;
-    const int y1 = (dstY + 1) * srcH / dstH;
-    const int yCount = areaScale ? (y1 - y0 == 0 ? 1 : y1 - y0) : 1;
-    if (areaScale) {
-      memset(sums.get(), 0, dstW * sizeof(uint32_t));
-      for (int c = 0; c < dstW; ++c) counts[c] = 0;
-    }
-    for (int k = 0; k < yCount; ++k) {
-      // Descending source-row visits keep the single-row cache valid.
-      int sy;
-      if (areaScale) {
-        sy = (k == 0) ? y0 : ((y1 - k) > y0 ? y1 - k : y0);
-      } else {
-        sy = (dstY * srcH) / dstH;
-        if (sy > srcH - 1) sy = srcH - 1;
-      }
-      // Foreground takeover aborts at the source-row boundary — the same
-      // hook the GIF converter and the SDK row sink honor.
-      if (abortPoll != nullptr && abortPoll(abortCtx)) {
-        return DecodeResult::Busy;
-      }
-      if (sy != loadedRow) {
-        if (!src.readRowGray(sy, grayRow, bits.get())) {
-          return DecodeResult::Failed;
-        }
-        loadedRow = sy;
-      }
-      if (areaScale) {
-        for (int dstX = 0; dstX < dstW; ++dstX) {
-          const int x0 = dstX * srcW / dstW;
-          const int x1 = (dstX + 1) * srcW / dstW;
-          if (x1 > x0) {
-            uint32_t sum = 0;
-            for (int x = x0; x < x1; ++x) sum += grayRow[x];
-            sums[dstX] += sum / (x1 - x0);
-            ++counts[dstX];
-          } else {
-            // Vertical-only shrink (areaScale turned on by the height axis)
-            // leaves an empty box span here — nearest-neighbor the column
-            // instead of letting counts stay 0 (which bakes black).
-            sums[dstX] += grayRow[x0 < srcW ? x0 : srcW - 1];
-            ++counts[dstX];
-          }
-        }
-      } else {
-        // Nearest otherwise (the converter family's today-behavior): collect
-        // the sampled luma; the row bakes once, below the source-row loop.
-        for (int dstX = 0; dstX < dstW; ++dstX) {
-          int srcX = dstX * srcW / dstW;
-          if (srcX > srcW - 1) srcX = srcW - 1;
-          avgRow[dstX] = grayRow[srcX];
-        }
-      }
-    }
-    if (areaScale) {
-      for (int dstX = 0; dstX < dstW; ++dstX) {
-        const uint32_t avg = counts[dstX] != 0 ? sums[dstX] / counts[dstX] : 0;
-        avgRow[dstX] = static_cast<uint8_t>(avg > 255 ? 255 : avg);
-      }
-    }
-    if (legacyPaint != nullptr) {
-      // Storage-failure fallback: bake with the caller-prepared map and paint.
-      bake->toneRow(avgRow, toneRow);
-      paintToneRow(*legacyPaint, spec, dstY, toneRow, dstW);
-    } else {
-      // Phase 1: histogram + gray temp only (the remap pass bakes).
-      bake->collectRow(avgRow);
-      if (bake->grayWriteFailed()) return DecodeResult::Failed;  // engine legacy-passes
-    }
+  if (!dpid.scaler.runRandom(&dpidBmpRowFn, &dpid)) {
+    return sinkCtx.aborted ? DecodeResult::Busy : DecodeResult::Failed;
   }
+  if (!dpid.scaler.finish()) {
+    if (sinkCtx.aborted) return DecodeResult::Busy;
+    return legacyPaint != nullptr ? DecodeResult::Failed : DecodeResult::Failed;
+  }
+  if (sinkCtx.aborted) return DecodeResult::Busy;
+  if (sinkCtx.collectFailed) return DecodeResult::Failed;  // engine legacy-passes
   return DecodeResult::Ok;
 }
 
-bool blitFromCache(GfxRenderer& renderer, const ImageSpec& spec, const char* dir, const bool qualityTone) {
+bool blitFromCache(GfxRenderer& renderer, const ImageSpec& spec, const char* dir, const bool qualityTone,
+                   const bool clahe) {
   char path[256];
-  if (!cacheNameFor(spec, dir, qualityTone, path, sizeof(path))) return false;
+  if (!cacheNameFor(spec, dir, qualityTone, clahe, path, sizeof(path))) return false;
   HalFile cacheFile;
   if (!Storage.openFileForRead("TIMGE", path, cacheFile)) return false;
   uint16_t cachedWidth = 0;
@@ -574,8 +643,8 @@ DecodeResult remapGrayToCache(const ImageSpec& spec, ttfimg::ToneBake4& bake, co
 DecodeResult legacyPaintPass(const ImageSpec& spec, const ImageInfo::Kind kind, freeink::book::BookSource& source,
                              const freeink::book::ZipCatalog& zip, freeink::book::Arena& scratch, Epub* epub,
                              const uint8_t* psramImage, const size_t imageSize, ttfimg::ToneBake4& bake,
-                             GfxRenderer* paint, const bool paintToTarget, bool (*abortPoll)(void* ctx),
-                             void* abortCtx) {
+                             GfxRenderer* paint, const bool paintToTarget, bool (*abortPoll)(void* ctx), void* abortCtx,
+                             const bool clahe) {
   bake.beginLegacyFallback();
   if (paint == nullptr || !paintToTarget) return DecodeResult::Ok;  // worker: no cache producible
   if (kind == ImageInfo::Kind::Png || kind == ImageInfo::Kind::Jpeg) {
@@ -627,13 +696,13 @@ DecodeResult legacyPaintPass(const ImageSpec& spec, const ImageInfo::Kind kind, 
     return decoded ? DecodeResult::Ok : DecodeResult::Failed;
   }
   // BMP: the row decoder paints in legacy mode.
-  return decodeBmpRows(spec, psramImage, imageSize, &bake, paint, abortPoll, abortCtx);
+  return decodeBmpRows(spec, psramImage, imageSize, &bake, paint, abortPoll, abortCtx, clahe);
 }
 
 DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freeink::book::BookSource& source,
                             const freeink::book::ZipCatalog& zip, freeink::book::Arena& scratch, Epub* epub,
                             GfxRenderer* paint, const bool qualityTone, const bool caching,
-                            bool (*abortPoll)(void* ctx), void* abortCtx, const bool paintToTarget) {
+                            bool (*abortPoll)(void* ctx), void* abortCtx, const bool paintToTarget, const bool clahe) {
   const char* const href = (spec.hrefExt != nullptr && spec.hrefExt[0] != '\0') ? spec.hrefExt : spec.href;
   const ZipEntry* entry = zip.find(href);
   if (entry == nullptr) return DecodeResult::Skip;
@@ -653,13 +722,6 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
   const BookStatus probe = probeImage(source, *entry, scratch, &info);
   if (probe != BookStatus::Ok) return DecodeResult::Failed;
 
-  freeink::book::PageImage sdkImage{};
-  sdkImage.href = href;
-  sdkImage.x = spec.x;
-  sdkImage.y = spec.y;
-  sdkImage.width = static_cast<uint16_t>(spec.w);
-  sdkImage.height = static_cast<uint16_t>(spec.h);
-
   // Abort tracking lives in the file anon namespace (see trackAbort).
 
   // JPEG/PNG under the legacy policy keep today's behavior exactly (§5.6):
@@ -669,12 +731,14 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
   }
 
   if (info.kind == ImageInfo::Kind::Png || info.kind == ImageInfo::Kind::Jpeg) {
-    // Quality decode (§5.3 corrected + §2.1 amendment 2): phase 1 — SDK gray
-    // rows (area-averaged exactly as the foreground fallback's SDK stack)
-    // feed the adaptive bake's collection (histogram + gray temp); then the
-    // shared remap pass bakes, caches and paints. Decode cost on first view
-    // is unchanged (one decode) plus one small disk pass; steady state is
-    // the cache as before.
+    // Quality decode (DPID design 2026-11-09 §Contract 2): the SDK streams
+    // UNSCALED source gray rows (renderSourceRows; the legacy RowScaler box
+    // stays untouched for the PageRenderer path) and the app-side
+    // DpidScaler turns them into destination rows — fractional pass 1
+    // (truncation bug gone by construction), detail-weighted pass 2, then
+    // optional CLAHE — feeding the same adaptive bake's collection. The
+    // shared remap pass then bakes, caches and paints exactly as before:
+    // worker/foreground parity by construction is untouched.
     ttfimg::ToneBake4 bake(spec.w);
     if (!bake.ok()) return DecodeResult::Failed;
     char grayPath[280];
@@ -692,21 +756,41 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
     ctx.abortCtx = abortCtx;
 
     if (collecting) {
-      ctx.bake = &bake;
-      ctx.w = static_cast<uint16_t>(spec.w);
-      ctx.abortPoll = abortPoll;
-      ctx.abortCtx = abortCtx;
-
-      const BookStatus st = freeink::book::ImageRenderer::render(source, zip, sdkImage, scratch, &grayCollectFn, &ctx);
+      DpidCtx dpid;
+      dpid.gray = &ctx;
+      dpid.spec = &spec;
+      dpid.clahe = clahe;
+      const BookStatus st = freeink::book::ImageRenderer::renderSourceRows(
+          source, zip, href, static_cast<uint16_t>(spec.w), static_cast<uint16_t>(spec.h), scratch, &dpidDimsFn, &dpid,
+          &dpidRowFn, &dpid);
       if (st != BookStatus::Ok || ctx.aborted) {
         bake.grayDiscard();
         if (ctx.aborted) return DecodeResult::Busy;
+        return st == BookStatus::Unsupported ? DecodeResult::Skip : DecodeResult::Failed;
+      }
+      if (!dpid.attached) {
+        // The whole allocation ladder failed (even the ~8 KB λ0 block): the
+        // image still paints through the legacy pass (memory doctrine — the
+        // same shape as the gray-temp failure, review round 1).
+        return legacyPaintPass(spec, info.kind, source, zip, scratch, epub, nullptr, 0, bake, paint, paintToTarget,
+                               abortPoll, abortCtx, clahe);
+      }
+      // dpidRowFn/emit stop on abort; finish() applies pass 2 + CLAHE and
+      // streams the destination rows through dpidEmitFn.
+      const bool finished = dpid.scaler.finish();
+      if (ctx.aborted) {
+        bake.grayDiscard();
+        return DecodeResult::Busy;
+      }
+      if (!finished) {
+        bake.grayDiscard();
+        return DecodeResult::Failed;
+      }
+      if (ctx.collectFailed) {
         // Gray temp died mid-collect: the phase-1 render stopped early and
         // the legacy pass still paints (storage-failure doctrine, round 1).
-        if (ctx.collectFailed)
-          return legacyPaintPass(spec, info.kind, source, zip, scratch, epub, nullptr, 0, bake, paint, paintToTarget,
-                                 abortPoll, abortCtx);
-        return st == BookStatus::Unsupported ? DecodeResult::Skip : DecodeResult::Failed;
+        return legacyPaintPass(spec, info.kind, source, zip, scratch, epub, nullptr, 0, bake, paint, paintToTarget,
+                               abortPoll, abortCtx, clahe);
       }
       if (bake.grayDone()) {
         bool cacheStreamOk = false;
@@ -717,7 +801,7 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
           // Phase-2 storage failure (gray re-open/read): still paint — the
           // legacy pass repaints the whole box, replacing any remap rows.
           return legacyPaintPass(spec, info.kind, source, zip, scratch, epub, nullptr, 0, bake, paint, paintToTarget,
-                                 abortPoll, abortCtx);
+                                 abortPoll, abortCtx, clahe);
         }
         // Degraded cache stream: rows painted, no cache — skip the publish.
         if (publishing && !cacheStreamOk) return DecodeResult::Ok;
@@ -730,7 +814,7 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
     }
     if (collecting) bake.grayDiscard();  // failed grayDone: release temp + handle
     return legacyPaintPass(spec, info.kind, source, zip, scratch, epub, nullptr, 0, bake, paint, paintToTarget,
-                           abortPoll, abortCtx);
+                           abortPoll, abortCtx, clahe);
   }
 
   if (info.kind == ImageInfo::Kind::Gif || info.kind == ImageInfo::Kind::Bmp) {
@@ -769,10 +853,12 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
       // Select the converter by the SNIFFED kind, not the href: ImageProbe
       // identified this GIF from its bytes, so a mismatched or extensionless
       // href must still reach the GIF converter (it would otherwise get no
-      // decoder and stay blank). The shared ToneBake4 collects; the converter
-      // paints nothing and writes no cache in this mode (the remap pass owns
-      // both). The renderer stays live for the converter's geometry reads;
-      // it is simply not drawn through in collect mode.
+      // decoder and stay blank). Collect mode routes the RAW source rows
+      // through the app-side DpidScaler (one resize for every decoder —
+      // design 2026-11-09 §Decision log 1); the converter paints nothing and
+      // writes no cache (the remap pass owns both). The renderer stays live
+      // for the converter's geometry reads; it is simply not drawn through
+      // in collect mode.
       RenderConfig config;
       config.x = spec.x;
       config.y = spec.y;
@@ -782,21 +868,43 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
       config.useDithering = true;
       config.performanceMode = false;
       config.useExactDimensions = true;
-      config.abortPoll = abortPoll;
-      config.abortCtx = abortCtx;
       config.qualityTone = true;        // GIF bake policy (§5.6)
       config.toneCollect = collecting;  // §2.1: phase 1 only; false = legacy paint
       config.toneBake = &bake;
       AbortTracker tracker{abortPoll, abortCtx};
       config.abortPoll = &trackAbort;
       config.abortCtx = &tracker;
+      DpidCtx dpid;
+      GrayCollectCtx sinkCtx;
+      sinkCtx.bake = &bake;
+      sinkCtx.abortPoll = abortPoll;  // raw hook; the tracker stays converter-side
+      sinkCtx.abortCtx = abortCtx;
+      dpid.gray = &sinkCtx;
+      dpid.spec = &spec;
+      dpid.clahe = clahe;
+      if (collecting && paint != nullptr) {
+        config.sourceDimsFn = &dpidGifDimsFn;
+        config.sourceRowFn = &dpidGifRowFn;
+        config.sourceUser = &dpid;
+      }
       ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(".gif");
       decoded = decoder != nullptr && paint != nullptr &&
                 decoder->decodeToFramebuffer(image.get(), imageSize, *paint, config);
       aborted = tracker.fired;
+      if (decoded && collecting && !dpid.attached) {
+        // Dims hook never fired (empty GIF / zero rows): nothing collected.
+        decoded = false;
+      }
+      if (decoded && collecting && dpid.attached) {
+        // Pass 2 + optional CLAHE + the emit walk into the bake's collect.
+        decoded = dpid.scaler.finish();
+        if (!decoded && sinkCtx.aborted) aborted = true;
+      }
+      if (sinkCtx.aborted) aborted = true;
     } else {
-      const DecodeResult bmpRes = decodeBmpRows(spec, image.get(), imageSize, &bake,
-                                                collecting || !paintToTarget ? nullptr : paint, abortPoll, abortCtx);
+      const DecodeResult bmpRes =
+          decodeBmpRows(spec, image.get(), imageSize, &bake, collecting || !paintToTarget ? nullptr : paint, abortPoll,
+                        abortCtx, clahe);
       decoded = bmpRes == DecodeResult::Ok;
       aborted = bmpRes == DecodeResult::Busy;
     }
@@ -809,7 +917,7 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
       // decode itself was the paint attempt — Failed stands.
       if (!collecting) return DecodeResult::Failed;
       return legacyPaintPass(spec, info.kind, source, zip, scratch, epub, image.get(), imageSize, bake, paint,
-                             paintToTarget, abortPoll, abortCtx);
+                             paintToTarget, abortPoll, abortCtx, clahe);
     }
     if (collecting && bake.grayDone()) {
       bool cacheStreamOk = false;
@@ -819,7 +927,7 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
       if (remap != DecodeResult::Ok) {
         // Phase-2 storage failure (gray re-open/read): still paint.
         return legacyPaintPass(spec, info.kind, source, zip, scratch, epub, image.get(), imageSize, bake, paint,
-                               paintToTarget, abortPoll, abortCtx);
+                               paintToTarget, abortPoll, abortCtx, clahe);
       }
       // Degraded cache stream: rows painted, no cache — skip the publish.
       if (publishing && !cacheStreamOk) return DecodeResult::Ok;
@@ -834,7 +942,7 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
     if (!collecting) return DecodeResult::Ok;
     bake.grayDiscard();  // failed grayDone: release temp + handle
     return legacyPaintPass(spec, info.kind, source, zip, scratch, epub, image.get(), imageSize, bake, paint,
-                           paintToTarget, abortPoll, abortCtx);
+                           paintToTarget, abortPoll, abortCtx, clahe);
   }
 
   return DecodeResult::Skip;  // Kind::Unknown — not decodable (SVG/WebP)

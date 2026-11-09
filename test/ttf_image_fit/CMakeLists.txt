@@ -6,10 +6,12 @@
 add_executable(TtfImageFitTest
   TtfImageFitTest.cpp
   TtfImageTextureTest.cpp
+  DpidScalerTest.cpp
   stubs/Stubs.cpp
   stubs/ImageDecoderFactory.cpp
   ${REPO_ROOT}/src/activities/reader/TtfImageCache.cpp
   ${REPO_ROOT}/src/activities/reader/TtfImageEngine.cpp
+  ${REPO_ROOT}/src/activities/reader/DpidScaler.cpp
   ${REPO_ROOT}/lib/Epub/Epub/blocks/ImageDecodeGate.cpp
   ${REPO_ROOT}/lib/Epub/Epub/converters/GifToFramebufferConverter.cpp
   ${REPO_ROOT}/lib/Epub/Epub/converters/ImageToFramebufferDecoder.cpp

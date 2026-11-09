@@ -307,11 +307,11 @@ struct ToneCacheWriter {
 // validName blob). Keyed by the generation, the placement and the tone
 // policy: a layout change or a policy flip picks a fresh file; stale ones
 // live until the book cache sweep (epub/<hash> clearCache) removes it.
-bool cacheNameFor(const ImageSpec& spec, const char* dir, bool qualityTone, char* out, size_t cap);
+bool cacheNameFor(const ImageSpec& spec, const char* dir, bool qualityTone, bool clahe, char* out, size_t cap);
 
 // Cache lookup: header dims must match the placement (±1, the same bounded
 // tolerance ImageBlock uses) and the file must cover the full payload.
-bool hasValidCache(const ImageSpec& spec, const char* dir, bool qualityTone);
+bool hasValidCache(const ImageSpec& spec, const char* dir, bool qualityTone, bool clahe);
 
 // Header check shared by hasValidCache and the paint-side blit: dims within
 // ±1 of the placement and a payload that covers every row.

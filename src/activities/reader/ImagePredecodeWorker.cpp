@@ -257,8 +257,11 @@ bool ImagePredecodeWorker::abortTrampoline(void* ctx) {
 
 void ImagePredecodeWorker::processJob(const ttfimg::ImageSpec& spec) {
   const bool qualityTone = SETTINGS.imageDecodeQuality != 0;  // §5.6 revert switch
+  // Picture detail (DPID design §Contract 4): CLAHE gate rides with the
+  // quality tone policy — only meaningful when the quality bake runs.
+  const bool clahe = qualityTone && SETTINGS.pictureDetail != 0;
   char cachePath[256];
-  if (!ttfimg::cacheNameFor(spec, cacheDir_, qualityTone, cachePath, sizeof(cachePath))) {
+  if (!ttfimg::cacheNameFor(spec, cacheDir_, qualityTone, clahe, cachePath, sizeof(cachePath))) {
     LOG_DBG("IPR", "Cache path overflow: %s", spec.href);
     return;
   }
@@ -266,7 +269,7 @@ void ImagePredecodeWorker::processJob(const ttfimg::ImageSpec& spec) {
 
   // The cache can appear between enqueue and dequeue (foreground decoded it,
   // or an earlier sighting's job): re-check before any work (§5.4).
-  if (ttfimg::hasValidCache(spec, cacheDir_, qualityTone)) return;
+  if (ttfimg::hasValidCache(spec, cacheDir_, qualityTone, clahe)) return;
 
   // Foreground-activity pause: never checked mid-decode — an in-flight
   // decode only ends via the claim's abort flag (§5.7 rule 1).
@@ -294,7 +297,7 @@ void ImagePredecodeWorker::processJob(const ttfimg::ImageSpec& spec) {
   if (!sessionValid_.load(std::memory_order_acquire)) return;
   // Re-check AFTER acquiring the claim: the foreground can publish the cache
   // while this job waited for the claim; decoding now would truncate it.
-  if (ttfimg::hasValidCache(spec, cacheDir_, qualityTone)) return;
+  if (ttfimg::hasValidCache(spec, cacheDir_, qualityTone, clahe)) return;
 
   // Decode under the capture-time orientation: the converters and the scratch
   // paint clamp against an orientation-aware screen width (a portrait default
@@ -318,7 +321,7 @@ void ImagePredecodeWorker::processJob(const ttfimg::ImageSpec& spec) {
   const ttfimg::DecodeResult res =
       ttfimg::decodeAndCache(spec, cachePath, *source_, *zip_, *decodeArena_, epub_, &scratchRenderer_, qualityTone,
                              /*caching=*/true, &ImagePredecodeWorker::abortTrampoline, &abortCtx,
-                             /*paintToTarget=*/false);
+                             /*paintToTarget=*/false, clahe);
   decodeArena_->release(arenaMark);
   ImageDecodeGate::releaseDecodeBus();
   // An aborted or failed decode never leaves a file (the engine drops the
