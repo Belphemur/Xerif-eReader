@@ -281,6 +281,13 @@ void ImagePredecodeWorker::processJob(const ttfimg::ImageSpec& spec) {
   // DRAM + PSRAM gates (§5.7 rule 1): a decode that fails its gate is
   // deferred, not forced.
   if (!ttfimg::decodeGatesOk()) {
+    // INFO on the first deferral only (the flash test reads the budget
+    // headroom directly from serial — PSRAM budget 2026-11-09); retries stay
+    // silent so a memory-stuck backlog cannot spam serial.
+    if (spec.deferrals == 0) {
+      LOG_INF("IPR", "Decode deferred (DRAM/PSRAM gate): %s psram free %u KiB", spec.href,
+              static_cast<unsigned>(HalMemory::getPsramHeap().freeBytes / 1024));
+    }
     deferJob(spec);
     return;
   }

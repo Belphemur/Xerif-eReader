@@ -107,6 +107,27 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
 // Full decode gates for a worker job (the #292 heap-gate precedents).
 bool decodeGatesOk();
 
+// PSRAM budget for one image decode (owner directive 2026-11-09): the TTF
+// reader boards are all 8 MB PSRAM S3s (platformio.ini gates
+// CROSSPOINT_TTF_READER to -DBOARD_HAS_PSRAM boards) and the reader uses
+// ~1 MB of it, so the decode ladder may claim up to 5 MB. The old 256 KiB
+// gate floor let full-page decodes start, fail the ~432 KiB rung-1 scratch
+// allocation and silently degrade to the ladder's bottom rung.
+constexpr size_t kPsramBudgetBytes = 5u * 1024u * 1024u;
+
+// Pre-budget floor: boards (or host runs) whose total PSRAM cannot back the
+// budget keep the old behavior instead of never decoding.
+constexpr size_t kPsramSmallPsramFloorBytes = 256u * 1024u;
+
+// Pure gate decision: a decode may start only when the budget floor is met.
+// Boards whose total PSRAM is below the budget fall back to the small floor;
+// PSRAM-less builds (0 total bytes) defer like any gate-starved job, and the
+// ladder inside the decode still degrades every rung it cannot fit.
+constexpr bool psramBudgetOk(const size_t psramTotal, const size_t psramFree) {
+  const size_t floor = psramTotal >= kPsramBudgetBytes ? kPsramBudgetBytes : kPsramSmallPsramFloorBytes;
+  return psramFree >= floor;
+}
+
 #endif  // CROSSPOINT_TTF_READER
 
 }  // namespace ttfimg

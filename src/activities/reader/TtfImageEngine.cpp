@@ -360,6 +360,23 @@ bool attachScaler(DpidCtx& c, const int srcW, const int srcH, const int dstW, co
     if (!c.block) return false;
     p = p2;
   }
+  // On-device budget probe (PSRAM budget 2026-11-09 in
+  // docs/design/2026-11-08-ttf-image-text-in-image.md): every decode states
+  // its scratch need, the rung the ladder placed and the live PSRAM free, so
+  // flash tests read the degradation directly from serial instead of inferring
+  // it from the picture.
+  const char* rung;
+  if (p.detail && p.clahe) {
+    rung = "detail+clahe";
+  } else if (p.detail) {
+    rung = "detail";
+  } else if (p.clahe) {
+    rung = "clahe";
+  } else {
+    rung = "box";
+  }
+  LOG_INF("TIMGE", "DPID scratch %u KiB -> %s (psram free %u KiB)", static_cast<unsigned>(need / 1024), rung,
+          static_cast<unsigned>(HalMemory::getPsramHeap().freeBytes / 1024));
   return c.scaler.begin(p, c.block.get(), need, &dpidEmitFn, &c, &dpidPollFn, &c,
                         randomAccess ? &dpidBmpRowFn : nullptr, randomAccess ? &c : nullptr);
 }
@@ -953,7 +970,8 @@ bool decodeGatesOk() {
   // would under-run the loop task's working set is deferred, not forced.
   const HalMemory::HeapStats internal = HalMemory::getInternalHeap();
   if (internal.freeBytes < 24 * 1024 || internal.largestBlockBytes < 8 * 1024) return false;
-  if (HalMemory::getPsramHeap().freeBytes < 256 * 1024) return false;
+  const HalMemory::HeapStats psram = HalMemory::getPsramHeap();
+  if (!psramBudgetOk(psram.totalBytes, psram.freeBytes)) return false;
   return true;
 }
 

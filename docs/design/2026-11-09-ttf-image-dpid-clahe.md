@@ -255,9 +255,25 @@ govern (DRY > SOLID > KISS priority held throughout):
    SDK decode arena (192 KB) is untouched; DPID never allocates from it.
 7. **λ stays 1.0** as the plain constant (item 4 holds); the λ=0 path exists
    only as the ladder's bottom rung and the regression pin.
+8. **PSRAM budget raised to 5 MB (owner directive 2026-11-09).** The first
+   device run showed the ladder degrading to λ0 on full-page art: the decode
+   gate (`ttfimg::decodeGatesOk()` at the time, a 256 KiB PSRAM floor) passed
+   while rung 1 needs ~437 KB at 480x800 (384 KB image + ~5 KB ring + 49 KB
+   CLAHE tables + rows), so the rung-1 `poolMalloc` failed against a live
+   budget the gate never checked. Fix: the gate defers unless
+   `ttfimg::kPsramBudgetBytes` = 5 MB PSRAM is free (owner: the reader uses
+   barely 1 MB of 8 MB); boards whose total PSRAM is under the budget keep
+   the old 256 KiB floor (`ttfimg::psramBudgetOk`, host-pinned). The ladder
+   itself is unchanged — a rung that cannot fit still degrades to the next
+   rung. Decodes log scratch need + placed rung + live PSRAM free (`TIMGE`).
+   Amendment to the 2026-11-08-ttf-image-text-in-image.md PSRAM policy
+   section, recorded lockstep there.
 
 Host evidence (TtfImageFitTest): 42/42 including the new DpidScaler suite
 (stroke-energy pin, no-ringing, flat-field exactness, λ0 ≡ pass-1, streaming ≡
 random parity, tiny-image skip, border coverage, emit-abort) and the CLAHE
 suite (flat-tile identity, local-contrast expansion, determinism, degenerate
-grid equality, cache-letter separation `/iv`, `/iw`, `/il`).
+grid equality, cache-letter separation `/iv`, `/iw`, `/il`). Budget suite:
+served-item scratch at both portrait placements under the 5 MB budget,
+degraded rungs monotonically smaller, gate semantics (5 MB floor,
+small-board fallback, no-PSRAM defer).

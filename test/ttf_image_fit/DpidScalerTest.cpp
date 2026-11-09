@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "DpidScaler.h"
+#include "TtfImageEngine.h"
 
 namespace ttfimg {
 namespace {
@@ -69,6 +70,41 @@ std::vector<uint8_t> legacyBoxRow(const uint8_t* gray, const int srcW, const int
 bool pollFalse(void*) { return false; }
 
 }  // namespace
+
+// PSRAM budget (owner directive 2026-11-09 — 5 MB for TTF image processing,
+// see the dated addendum in docs/design/2026-11-08-ttf-image-text-in-image.md):
+// the gate must never force a full-page decode into a known-degradable rung,
+// so the full rung's scratch at both portrait placements has to fit the
+// budget.
+TEST(PsramBudget, PortraitFullPageDetailClaheScratchFitsTheBudget) {
+  // The soak book's full-page art: ~930x1400 source into the 480x800 portrait
+  // placement (one full-image accumulator + CLAHE tables + rows).
+  const DpidScaler::Plan p{930, 1400, 480, 800, true, true, false};
+  const size_t need = DpidScaler::scratchBytes(p);
+  EXPECT_GT(need, 384u * 1024u);  // carries the full-image buffer, not just it
+  EXPECT_LT(need, kPsramBudgetBytes);
+}
+
+TEST(PsramBudget, LandscapeFullPageDetailClaheScratchFitsTheBudget) {
+  const DpidScaler::Plan p{1400, 930, 800, 480, true, true, false};
+  const size_t need = DpidScaler::scratchBytes(p);
+  EXPECT_GT(need, 384u * 1024u);
+  EXPECT_LT(need, kPsramBudgetBytes);
+}
+
+TEST(PsramBudget, DegradedRungsStayInsideTheBudget) {
+  // Ladder invariant: every rung below the full one is smaller, so a decode
+  // that passed the budget gate can always place SOME rung — degradation is
+  // never a gate sidestep.
+  const DpidScaler::Plan full{930, 1400, 480, 800, true, true, false};
+  const DpidScaler::Plan box{930, 1400, 480, 800, true, false, false};
+  const DpidScaler::Plan bufferless{930, 1400, 480, 800, false, false, false};
+  const size_t boxNeed = DpidScaler::scratchBytes(box);
+  const size_t bufferlessNeed = DpidScaler::scratchBytes(bufferless);
+  EXPECT_LT(boxNeed, DpidScaler::scratchBytes(full));
+  EXPECT_LT(bufferlessNeed, boxNeed);
+  EXPECT_LT(boxNeed, kPsramBudgetBytes);
+}
 
 TEST(DpidScaler, StrokeEnergyBeatsBoxAverage) {
   const int SW = 960, SH = 640, DW = 480, DH = 320;

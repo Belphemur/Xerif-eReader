@@ -149,3 +149,18 @@ reader path is gated to PSRAM-class boards **only** (`platformio.ini` gates
 class boards only" says so). The reader's arena model is PSRAM-backed
 (`TtfBookRuntime.h:9-15`). A full-image PSRAM scratch buffer is legitimate for future
 work; the row-ringed design was the answer to a constraint that does not exist.
+
+### PSRAM budget raise (2026-11-09, owner directive)
+
+Owner ruling on top of the correction above: the reader uses barely 1 MB of the
+8 MB PSRAM, so TTF image processing gets an explicit **5 MB budget**
+(`ttfimg::kPsramBudgetBytes`). The worker's decode gate
+(`ttfimg::decodeGatesOk()`, previously a 256 KiB floor) now defers unless
+5 MB PSRAM is free, so a full-page decode cannot start and then silently
+degraded to the DPID ladder's bottom rung (the original bug: rung 1 needs
+~437 KiB at 480x800, which the old 256 KiB floor did not guarantee). Boards
+whose total PSRAM is under the budget keep the old 256 KiB floor
+(`ttfimg::kPsramSmallPsramFloorBytes`; decision: `ttfimg::psramBudgetOk`);
+PSRAM-less TTF/host runs defer like any gate-starved job. The ladder's own
+degradation is unchanged — a rung that cannot fit still drops to the next
+rung, never a silent corruption.

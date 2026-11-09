@@ -15,6 +15,7 @@
 // getScreenWidth()/getScreenHeight().
 
 #include <FreeInkBook.h>
+#include <HalMemory.h>
 #include <epub/ImageProbe.h>
 #include <gtest/gtest.h>
 #include <render/ImageRenderer.h>
@@ -874,4 +875,50 @@ TEST(ImageFitFallback, GrayReadOpenFailureStillPaintsTheImage) {
 TEST(ImageFitFallback, GrayMidReadFailureStillPaintsTheImage) {
   // The third gray-row read fails mid-stream.
   expectReadFailureStillPaints(3, 0);
+}
+
+TEST(ImageBudgetGate, RequiresTheFiveMebibyteBudgetOnBudgetClassBoards) {
+  // PSRAM budget 2026-11-09: on an 8 MB board the gate defers below 5 MB free
+  // so a full-page decode can no longer start, fail the ~437 KiB rung-1
+  // scratch allocation and silently degrade to the lambda-0 box.
+  struct Restore {
+    HalMemory::HeapStats saved = HalMemory::getPsramHeap();
+    ~Restore() { HalMemory::setPsramHeapStats(saved); }
+  } restore;
+
+  HalMemory::setPsramHeapStats({4u * 1024 * 1024, 8u * 1024 * 1024, 0, 6u * 1024 * 1024});
+  EXPECT_FALSE(ttfimg::decodeGatesOk());
+  HalMemory::setPsramHeapStats({ttfimg::kPsramBudgetBytes, 8u * 1024 * 1024, 0, 6u * 1024 * 1024});
+  EXPECT_TRUE(ttfimg::decodeGatesOk());
+  HalMemory::setPsramHeapStats({ttfimg::kPsramBudgetBytes + 512 * 1024, 8u * 1024 * 1024, 0, 6u * 1024 * 1024});
+  EXPECT_TRUE(ttfimg::decodeGatesOk());
+}
+
+TEST(ImageBudgetGate, SmallPsramBoardsKeepTheOldFloor) {
+  struct Restore {
+    HalMemory::HeapStats saved = HalMemory::getPsramHeap();
+    ~Restore() { HalMemory::setPsramHeapStats(saved); }
+  } restore;
+
+  // Total PSRAM under the budget (a hypothetical sub-5-MB TTF board): the
+  // small floor applies — the board still decodes instead of never decoding,
+  // and the ladder inside the decode degrades rungs that cannot fit.
+  HalMemory::setPsramHeapStats({300u * 1024, 2u * 1024 * 1024, 0, 300u * 1024});
+  EXPECT_TRUE(ttfimg::decodeGatesOk());
+  HalMemory::setPsramHeapStats({200u * 1024, 2u * 1024 * 1024, 0, 300u * 1024});
+  EXPECT_FALSE(ttfimg::decodeGatesOk());
+  // No PSRAM at all: defer like any gate-starved job.
+  HalMemory::setPsramHeapStats({0, 0, 0, 0});
+  EXPECT_FALSE(ttfimg::decodeGatesOk());
+}
+
+TEST(ImageBudgetGate, BudgetDecisionIsAConstantExpression) {
+  static_assert(ttfimg::psramBudgetOk(8u * 1024 * 1024, ttfimg::kPsramBudgetBytes),
+                "exactly the budget free is allowed");
+  static_assert(!ttfimg::psramBudgetOk(8u * 1024 * 1024, ttfimg::kPsramBudgetBytes - 1), "one byte short defers");
+  static_assert(ttfimg::psramBudgetOk(2u * 1024 * 1024, ttfimg::kPsramSmallPsramFloorBytes), "small-board floor");
+  static_assert(!ttfimg::psramBudgetOk(2u * 1024 * 1024, ttfimg::kPsramSmallPsramFloorBytes - 1),
+                "small-board floor short");
+  static_assert(!ttfimg::psramBudgetOk(0, 0), "no PSRAM defers");
+  SUCCEED();
 }
