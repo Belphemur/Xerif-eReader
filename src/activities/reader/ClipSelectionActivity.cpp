@@ -890,22 +890,6 @@ bool ClipSelectionActivity::renderIncremental() {
   return true;
 }
 
-void ClipSelectionActivity::paintPage(GfxRenderer& renderer, const int offsetX, const int offset) const {
-#if defined(CROSSPOINT_TTF_READER)
-  if (ttfMode) {
-    if (ttfRender.renderPage != nullptr) {
-      ttfRender.renderPage(ttfRender.ctx, renderer, currentPageOffset);
-    }
-    return;
-  }
-#endif
-  auto* fcm = renderer.getFontCacheManager();
-  auto scope = fcm->createPrewarmScope();
-  pageAt(currentPageOffset).render(renderer, fontId, marginLeft + offsetX, marginTop + offset);
-  scope.endScanAndPrewarm();
-  pageAt(currentPageOffset).render(renderer, fontId, marginLeft + offsetX, marginTop + offset);
-}
-
 void ClipSelectionActivity::drawSelection() const {
   const int offset = textOffset();
   const int offsetX = textXOffset();
@@ -963,4 +947,20 @@ void ClipSelectionActivity::render(RenderLock&&) {
   lastRenderedTextXOffset = offsetX;
   lastRenderedRangeStart = rangeStart;
   lastRenderedSelected = selected;
+}
+
+void ClipSelectionActivity::paintPage(GfxRenderer& renderer, const int offsetX, const int offset) const {
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttfMode) {
+    if (ttfRender.renderPage != nullptr) {
+      ttfRender.renderPage(ttfRender.ctx, renderer, currentPageOffset);
+    }
+    return;
+  }
+#endif
+  auto* fcm = renderer.getFontCacheManager();
+  auto scope = fcm->createPrewarmScope();
+  pageAt(currentPageOffset).render(renderer, fontId, marginLeft + offsetX, marginTop + offset);
+  scope.endScanAndPrewarm();
+  pageAt(currentPageOffset).render(renderer, fontId, marginLeft + offsetX, marginTop + offset);
 }
