@@ -627,6 +627,17 @@ class EpubReaderActivity final : public ReaderActivity {
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft);
   void drawClippingHighlights(const Page& page, int fontId, int orientedMarginTop, int orientedMarginLeft) const;
+#if defined(CROSSPOINT_TTF_READER)
+  // TTF variant (design doc ttf/2026-11-09 §F3): re-tokenizes the painted
+  // engine page through the same payload builder the selectors use, matches
+  // a clip via its char anchors (layout-independent) and flips each matched
+  // box with invertRegion. Runs inside paintTtfPage, after the page ink.
+  void ttfDrawClippingHighlights(const freeink::book::Page& page, void* font, int16_t characterSpacingPx,
+                                 int16_t wordSpacingPx) const;
+  // Clipping whose matched box contains the reader point, or -1.
+  int ttfClippingAtPoint(const freeink::book::Page& page, void* font, int16_t characterSpacingPx, int16_t wordSpacingPx,
+                         int x, int y) const;
+#endif
   void renderStatusBar() const;
   void applyOrientation(uint8_t orientation);
   // Long-press turn dispatch shared by the fresh-turn and pending-turn

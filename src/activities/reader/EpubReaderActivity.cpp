@@ -1450,6 +1450,30 @@ void EpubReaderActivity::startTtfClipSelection(const int initialX, const int ini
 
   RenderLock lock;  // the render task owns/uses the scratch arena
   const size_t scratchMark = ttf_->scratch().mark();
+
+  // Delete-on-tap (design doc §F2): long-pressing an existing highlight
+  // removes it and never opens the selector — the legacy entry keeps order
+  // from clippingAtPoint on the first page; the TTF variant hits-test token
+  // boxes from the same payload builder.
+  if (initialX >= 0 && CLIPPINGS.hasClippings()) {
+    freeink::book::Page pageRead{};
+    if (ttf_->readPage(spineIndex, static_cast<uint16_t>(pageNumber), &pageRead)) {
+      freeink::book::LayoutParams tapParams;
+      ttf_->makeLayoutParams(renderer, tapParams, false);
+      const int clippingIndex = ttfClippingAtPoint(pageRead, tapParams.font, tapParams.characterSpacingPx,
+                                                   tapParams.wordSpacingPx, initialX, initialY);
+      if (clippingIndex >= 0) {
+        ttf_->scratch().release(scratchMark);
+        const bool removed = CLIPPINGS.removeClippingAt(static_cast<size_t>(clippingIndex));
+        if (!removed) LOG_ERR("CLIP", "Failed to delete highlighted clipping %d", clippingIndex);
+        clippingMessage = removed ? StrId::STR_CLIPPING_REMOVED : StrId::STR_CLIPPING_DELETE_FAILED;
+        showClippingMessage = true;
+        clippingMessageTime = millis();
+        requestUpdate();
+        return;
+      }
+    }
+  }
   std::vector<freeink::book::TtfWordSelectData> perPage;
   perPage.reserve(CLIP_SELECTION_PAGE_WINDOW);
   for (int pageOffset = 0; pageOffset < CLIP_SELECTION_PAGE_WINDOW; ++pageOffset) {
@@ -1581,8 +1605,8 @@ void EpubReaderActivity::startClipSelection(const int initialX, const int initia
   if (ttf_) {
     // TTF branch (design doc ttf/2026-11-09 §F2): the legacy body below reads
     // legacy `Page`s from the Section; on the TTF path the same selector is
-    // fed per-page engine payloads instead. Delete-on-tap lands in the TTF
-    // flow in the saved-clip milestone.
+    // fed per-page engine payloads instead (including the delete-on-tap
+    // check that the legacy body performs on its first page).
     startTtfClipSelection(initialX, initialY, mode, restoreSelection);
     return;
   }
@@ -5299,6 +5323,11 @@ void EpubReaderActivity::paintTtfPage(const freeink::book::Page& page, void* fon
                                       const int16_t wordSpacingPx) {
   if (!ttf_) return;
   paintCapturedPage(page, font, renderer, *ttf_, characterSpacingPx, wordSpacingPx);
+  // Saved clips invert after the page ink so the black box lands on top of
+  // the freshly painted glyphs. Only the framebuffer flips here — that is
+  // where the base ink lives; today's gray plane walks only re-add AA mask
+  // bits for the glyphs themselves.
+  ttfDrawClippingHighlights(page, font, characterSpacingPx, wordSpacingPx);
   // Image sighting (§5.2): AFTER the paint so the first view never waits on
   // it. The first paint after a cache (re)open or a chapter switch sights the
   // full current + next spine once per (spine, generation); the worker's
@@ -5340,6 +5369,97 @@ void EpubReaderActivity::paintTtfSelectorPage(const uint16_t pageOffset) {
     paintTtfPage(page, params.font, params.characterSpacingPx, params.wordSpacingPx);
   }
   ttf_->scratch().release(scratchMark);
+}
+
+// Token geometry for saved-clip work (ttfDrawClippingHighlights /
+// ttfClippingAtPoint): re-run the selectors' payload builder over the page
+// — the host-tested funnel — and match clips by char anchors. The payload
+// is caller-temporary: the run text lives in the scratch arena, so callers
+// hold their mark; the pool allocations here are transient per call.
+namespace {
+freeink::book::TtfWordSelectData tokenizedClippingPage(const freeink::book::Page& page, void* font,
+                                                       const int16_t characterSpacingPx, const int16_t wordSpacingPx) {
+  freeink::book::LayoutParams params;
+  params.characterSpacingPx = characterSpacingPx;
+  params.wordSpacingPx = wordSpacingPx;
+  if (font == nullptr) return {};
+  freeink::book::TtfWordSelectData data;
+  if (!freeink::book::buildTtfWordSelectData(page, *static_cast<freeink::book::FontChain*>(font), data)) return {};
+  return data;
+}
+}  // namespace
+
+void EpubReaderActivity::ttfDrawClippingHighlights(const freeink::book::Page& page, void* font,
+                                                   const int16_t characterSpacingPx,
+                                                   const int16_t wordSpacingPx) const {
+  if (!ttf_ || !CLIPPINGS.hasClippings()) return;
+  // Same chapter early-out as the legacy pass: most pages skip the tokenizing
+  // work entirely.
+  size_t chapterClippings = 0;
+  for (size_t i = 0; i < CLIPPINGS.clippingCount(); ++i) {
+    if (CLIPPINGS.clippingAt(i)->spineIndex == static_cast<uint16_t>(currentSpineIndex)) ++chapterClippings;
+  }
+  if (chapterClippings == 0) return;
+  const auto data = tokenizedClippingPage(page, font, characterSpacingPx, wordSpacingPx);
+  if (data.boxes.empty()) {
+    LOG_DBG("CLIP", "TTF highlight pass: page tokenize failed");
+    return;
+  }
+  const uint32_t layoutSignature =
+      readerRenderSpecSignature(SETTINGS.readerRenderSpec(buildViewportWidth, buildViewportHeight));
+  const size_t started = millis();
+  size_t highlightedWords = 0;
+  const uint16_t currentPage = ttfPage;
+  for (const auto& tb : data.boxes) {
+    if (tb.charLen == 0 || tb.charStart == UINT32_MAX || tb.width <= 0) continue;
+    const uint32_t sourceStart = tb.charStart;
+    const uint32_t sourceEnd = tb.charStart + tb.charLen;
+    bool matched = false;
+    for (size_t index = 0; index < CLIPPINGS.clippingCount(); ++index) {
+      if (clippingContainsWord(*CLIPPINGS.clippingAt(index), static_cast<uint16_t>(currentSpineIndex), currentPage,
+                               static_cast<uint16_t>(cachedChapterTotalPageCount), layoutSignature, tb.selectionGroup,
+                               sourceStart, sourceEnd)) {
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) continue;
+    // Same +2 px padding as the selection highlight so a clip-covered word
+    // reads identically to a selected one.
+    renderer.invertRegion(std::max(0, static_cast<int>(tb.x) - 2), std::max(0, static_cast<int>(tb.y) - 2),
+                          tb.width + 4, tb.height + 4);
+    ++highlightedWords;
+  }
+  LOG_DBG("CLIP", "TTF highlight pass: boxes=%u highlighted=%u time=%lums", static_cast<unsigned>(data.boxes.size()),
+          static_cast<unsigned>(highlightedWords), millis() - started);
+}
+
+int EpubReaderActivity::ttfClippingAtPoint(const freeink::book::Page& page, void* font,
+                                           const int16_t characterSpacingPx, const int16_t wordSpacingPx, const int x,
+                                           const int y) const {
+  if (!ttf_ || !CLIPPINGS.hasClippings() || x < 0 || y < 0 || ttfPage < 0) return -1;
+  const auto data = tokenizedClippingPage(page, font, characterSpacingPx, wordSpacingPx);
+  if (data.boxes.empty()) {
+    LOG_DBG("CLIP", "TTF clip hit-test: page tokenize failed");
+    return -1;
+  }
+  const uint32_t layoutSignature =
+      readerRenderSpecSignature(SETTINGS.readerRenderSpec(buildViewportWidth, buildViewportHeight));
+  for (const auto& tb : data.boxes) {
+    if (tb.width <= 0 || x < tb.x - 2 || x >= static_cast<int>(tb.x) + tb.width + 2) continue;
+    const int limitY = static_cast<int>(tb.y) + tb.height;
+    if (y < tb.y || y >= limitY) continue;
+    if (tb.charLen == 0 || tb.charStart == UINT32_MAX) continue;
+    const uint32_t sourceStart = tb.charStart;
+    const uint32_t sourceEnd = tb.charStart + tb.charLen;
+    for (size_t index = 0; index < CLIPPINGS.clippingCount(); ++index) {
+      if (clippingContainsWord(*CLIPPINGS.clippingAt(index), static_cast<uint16_t>(currentSpineIndex),
+                               static_cast<uint16_t>(ttfPage), static_cast<uint16_t>(cachedChapterTotalPageCount),
+                               layoutSignature, tb.selectionGroup, sourceStart, sourceEnd))
+        return static_cast<int>(index);
+    }
+  }
+  return -1;
 }
 
 void EpubReaderActivity::stopImagePredecode() {
