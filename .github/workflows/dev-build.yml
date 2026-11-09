@@ -23,8 +23,9 @@
 # scripts/git_branch.py --print-dev-version (the single derivation site),
 # recomputing the image's appended SHA-256 digest, so the slot chooser can
 # tell dev builds apart and the stamped image still passes install/boot
-# verification (design §12). Release builds stay unstamped: release.yml has
-# no patch step and publishes the pio output as-is.
+# verification (design §12). Release builds are stamped with their plain
+# tag version (release.yml); PR firmware is stamped by pr-firmware-links.yml
+# with the --branch head-branch override.
 
 name: Dev build
 
@@ -92,6 +93,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEV_SHA: ${{ github.event.workflow_run.head_sha }}
+          DEV_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
           mkdir -p dist carry
@@ -108,7 +110,10 @@ jobs:
           # dev-version string (the same derivation the build middleware
           # compiles into CROSSPOINT_VERSION); patch_dev_version.py only
           # enforces the fit and recomputes the appended digest.
-          base_version="$(python3 scripts/git_branch.py --print-dev-version)"
+          # --branch is mandatory here: this checkout pins workflow_run
+          # head_sha, so the checkout itself has no branch and the derivation
+          # would refuse rather than stamp a detached/unknown identity.
+          base_version="$(python3 scripts/git_branch.py --print-dev-version --branch "${DEV_BRANCH}")"
           python3 scripts/patch_dev_version.py \
             --image "dist/${asset}" \
             --version "${base_version}"

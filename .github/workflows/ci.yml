@@ -214,6 +214,13 @@ jobs:
           ~/.platformio/penv/bin/pio --version
 
       - name: Build ${{ matrix.env }} firmware
+        env:
+          # The checkout is detached (actions/checkout pins GITHUB_SHA), so
+          # git_branch.py cannot name the branch from the checkout alone and
+          # must never stamp a "detached" label into the compiled
+          # CROSSPOINT_VERSION (About screen, crash reports, OTA compare).
+          # pull_request runs carry the head branch; push runs the branch.
+          CROSSPOINT_GIT_BRANCH: ${{ github.head_ref || github.ref_name }}
         run: |
           set -euo pipefail
           pio run -e ${{ matrix.env }} | tee pio.log

@@ -5,11 +5,14 @@ field. The version string's single source is scripts/git_branch.py
 
 import hashlib
 import importlib.util
+import os
 import struct
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
 PATCH = REPO / "scripts" / "patch_dev_version.py"
@@ -286,6 +289,80 @@ class GitBranchCliTest(unittest.TestCase):
             cwd=REPO, text=True).strip()
         self.assertEqual(before, after)
         self.assertIn("feat/pos", before)
+
+
+class GitBranchDetachedTest(unittest.TestCase):
+    """Detached checkouts must never stamp a "detached" label.
+
+    CI checkouts are detached; the branch comes from the environment override
+    or from references pointing at the commit. When neither resolves, the
+    derivation degrades to "unknown" exactly like the other git fields.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("git_branch_module", GIT_BRANCH)
+        cls.gb = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.gb)
+
+    def setUp(self):
+        self._dirs = []
+
+    def tearDown(self):
+        import shutil
+        for path in self._dirs:
+            shutil.rmtree(path, ignore_errors=True)
+
+    def _git(self, *args, cwd):
+        return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+
+    def scratch_repo(self):
+        path = tempfile.mkdtemp(prefix="gb-detach-")
+        self._dirs.append(path)
+        self._git("init", "-q", cwd=path)
+        for k, v in (("user.name", "DevOta"), ("user.email", "dev-ota@example.com")):
+            self._git("config", k, v, cwd=path)
+        with open(os.path.join(path, "f.txt"), "w") as f:
+            f.write("x\n")
+        self._git("add", "f.txt", cwd=path)
+        self._git("commit", "-q", "-m", "c1", cwd=path)
+        self._git("branch", "ci-branch", cwd=path)
+        return path
+
+    def without_env_branch(self):
+        return mock.patch.dict(os.environ, clear=False)
+
+    def test_detached_resolves_branch_pointing_at_commit(self):
+        path = self.scratch_repo()
+        self._git("checkout", "-q", "--detach", "HEAD", cwd=path)
+        with self.without_env_branch():
+            os.environ.pop("CROSSPOINT_GIT_BRANCH", None)
+            self.assertEqual(self.gb.get_git_branch(path), "ci-branch")
+
+    def test_detached_without_resolvable_branch_fails_closed(self):
+        path = self.scratch_repo()
+        # Delete the local branches; the bare scratch repo has no remote
+        # refs for the resolver to fall back to, so the resolution must
+        # fail closed to "unknown" — never "detached".
+        self._git("checkout", "-q", "--detach", "HEAD", cwd=path)
+        for branch in ("ci-branch", "master"):
+            self._git("branch", "-d", branch, cwd=path)
+        with self.without_env_branch():
+            os.environ.pop("CROSSPOINT_GIT_BRANCH", None)
+            self.assertEqual(self.gb.get_git_branch(path), "unknown")
+
+    def test_env_override_wins_over_git(self):
+        path = self.scratch_repo()
+        self._git("checkout", "-q", "--detach", "HEAD", cwd=path)
+        with mock.patch.dict(os.environ, {"CROSSPOINT_GIT_BRANCH": "feat/pr-head"}):
+            self.assertEqual(self.gb.get_git_branch(path), "feat/pr-head")
+
+    def test_env_override_never_injects_quote_metacharacters(self):
+        # The value lands inside a C string literal: quotes and backslashes
+        # are stripped like every other git-derived field.
+        with mock.patch.dict(os.environ, {"CROSSPOINT_GIT_BRANCH": 'a"b\\c'}):
+            self._dirs.append(tempfile.mkdtemp())
+            self.assertEqual(self.gb.get_git_branch(self._dirs[-1]), "abc")
 
 
 class ValidateModeTest(unittest.TestCase):
