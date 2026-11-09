@@ -64,6 +64,13 @@ first, soak-tested on a real device before it ships. The main differences:
   [Reading statistics](#-reading-statistics).
 - **Signed OTA.** Every release ships an Ed25519-signed manifest that the device
   verifies before flashing — see [Signed OTA updates](#-signed-ota-updates).
+- **Two firmware channels on one device.** Xerif keeps a **stable** slot and a
+  **dev** slot side by side, so you can follow the rolling dev builds without
+  giving up the last stable release — switching between them is one tap, and a
+  held button combo at power-on always boots the stable slot. Installs are routed
+  by source: release-channel firmware lands in the stable slot, dev-channel and
+  PR builds land in the dev slot, and neither update ever overwrites the other
+  one. See [Firmware channels](#-firmware-channels--the-dev-mode).
 - **Fixes land here first.** Reader and device fixes ship in fork releases as
   they are ready, then upstream merges what it wants on its own schedule.
 
@@ -252,6 +259,38 @@ matters most.
 Every release ships a `manifest.json` + Ed25519 signature. The device verifies against
 a key baked into the firmware before flashing; corrupted or tampered updates are
 rejected. Manual flashing still works. See [OTA signing](docs/OTA_SIGNING.md).
+
+### 🧩 Firmware channels & the dev mode
+
+Xerif ships two firmware channels side by side on the same device, stored in two
+OTA slots with fixed roles:
+
+- **Stable slot** — the last official release, marked `Latest` on GitHub. What a
+  device falls back to.
+- **Dev slot** — the rolling dev builds produced automatically from every commit
+  that passes the full CI matrix, stamped with the exact version it was built
+  from (`2.15.0-dev-develop-<sha>`), matching what the About screen shows.
+
+**Switching is one tap.** Settings → Firmware Slots shows both slots with their
+versions; pick the other one and the device reboots into it. No reflashing, no
+SD card needed.
+
+**Install routing is automatic.** Every update goes to the slot its source
+belongs to, and you are never asked: release-channel firmware (`Latest`) always
+lands in the stable slot; dev-channel and PR builds always land in the dev slot;
+a `.bin` copied to the SD card follows the same rule by its file name. The
+running firmware is never overwritten — if the target slot is the one you are
+running, the device restarts into the other slot, finishes the install from
+there, and reboots. If anything is unsafe (the helper slot is empty or too old
+to finish the job), the install is refused rather than guessing.
+
+**Recovery is built in.** If a dev build ever misbehaves, hold the recovery
+combo (Power + Next) while powering on and the device boots straight into the
+stable slot — no cables, no disassembly. SD-card recovery flashing stays
+available for the rare case where the stable slot itself needs re-flashing.
+
+The dev builds are published as a rolling prerelease on the repo; the stable
+channel stays the official `Latest` release that devices check over signed OTA.
 
 ### 🔜 Coming soon
 
