@@ -62,8 +62,30 @@ const char* pickGroupLabel(uint8_t group) {
 }
 }  // namespace
 
+void DevOtaActivity::showResumeRefusal() {
+  // The record is gone (the boot hook cleared the unusable one); this is
+  // pure feedback, no install can ever be dispatched from here. resumeRefused
+  // survives into onEnter, which must not start the WiFi dance over a dead
+  // record.
+  resumeRefused = true;
+  {
+    RenderLock lock(*this);
+    failedDetail = tr(STR_DEV_RESUME_REFUSED);
+    state = FAILED;
+  }
+  requestUpdate();
+}
+
 void DevOtaActivity::onEnter() {
   Activity::onEnter();
+
+  // The boot-hook refusal (showResumeRefusal before the manager activated
+  // this activity): keep the FAILED state — no WiFi dance, no record to
+  // re-read (the hook already disarmed the unusable one).
+  if (resumeRefused) {
+    requestUpdate();
+    return;
+  }
 
   if (autoResume) {
     // The dance's boot hook records the requested asset name in NVS but does
@@ -240,8 +262,12 @@ void DevOtaActivity::beginInstall(const int index) {
   if (ota_slots::sameSlot(ota_slots::runningSlot(), ota_slots::devSlot())) {
     // The completion pass runs in the stable slot: refuse the dance unless
     // that image can consume the pending-install flag (kResumeHookMarker).
+    // An auto-resumed record whose completion can never run is disarmed
+    // here too: keeping it armed would replay this FAILED screen on every
+    // boot until the flag is dead weight.
     if (!ota_slots::imageHasResumeMarker(ota_slots::stableSlot())) {
       LOG_ERR("DEVOTA", "stable slot lacks the resume-hook marker; refusing the dance");
+      dev_ota::pendingInstallClear();
       {
         RenderLock lock(*this);
         failedDetail = tr(STR_DEV_STABLE_TOO_OLD);
@@ -260,6 +286,25 @@ void DevOtaActivity::beginInstall(const int index) {
       // Either failure leaves the device on the dev slot with at most a
       // stale flag; clear it so no boot hook fires on a request nobody can
       // see, and never switch away — the dance never left the ground.
+      dev_ota::pendingInstallClear();
+      {
+        RenderLock lock(*this);
+        failedDetail = tr(STR_DEV_INSTALL_FAILED);
+        state = FAILED;
+      }
+      requestUpdate();
+      return;
+    }
+    // Turn otadata to the worker (stable) BEFORE the restart: the dance's
+    // whole contract is that the next boot runs the completion pass from the
+    // worker. A restart into the same (target) slot would leave a record the
+    // boot hook can only classify as stale — it would silently land on Home
+    // (owner report 2026-11-09: the update flow never resumed) and the
+    // record would be gone. Same ||-chain shape as the other dance arms.
+    // Anything that fails disarms: never switch away on a promise nobody can
+    // see — the dance never left the ground.
+    if (!ota_boot::switchTo(ota_slots::stableSlot())) {
+      LOG_ERR("DEVOTA", "dance arm: otadata switch to the stable worker failed; clearing");
       dev_ota::pendingInstallClear();
       {
         RenderLock lock(*this);

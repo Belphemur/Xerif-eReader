@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "DevOtaClient.h"  // PendingKind: the pending-install record's kind
 #include "OtaJson.h"
 
 // Dev-channel picker policies (brief 2026-11-09 dev-picker UX): pure
@@ -80,6 +81,30 @@ int pickerRows(const OtaDevVersionEntry* entries, int count, PickerRow* rows);
 // emits; digits-that-shape-but-not-a-date fall open to the verbatim UTC
 // slice (the pre-conversion display) instead of hiding the row date.
 bool compactDevDate(const char* iso, int offsetMinutes, char* out, size_t cap);
+
+// --- boot-hook resume routing (design §5/§16, brief 2026-11-09) --------------
+
+// Where the boot hook sends a pending-install record. The dance fixes which
+// slot CONSUMES the record: §5 DevChannel completes from the stable worker;
+// a record observed in the TARGET (dev) slot means the arm's otadata switch
+// never landed (crash before the restart, or an interrupted pass) — it is
+// consent-bound either way, so the resume re-enters the flow instead of
+// silently dropping the user on Home (owner report 2026-11-09: a record
+// written, then a "stale" clear with no visible state).
+enum class ResumeRoute : uint8_t {
+  CompleteFromWorker,  // running slot is the worker: the completion pass ran
+                       // where it must — dispatch the completion activity
+  ReEnterFromTarget,   // DevChannel record in the target (dev) slot: the arm
+                       // never switched away — dispatch the same auto-resume
+                       // re-entry (bind+battery+marker gates re-run, every
+                       // failing gate disarms the record visibly)
+  Stale,               // non-DevChannel record in the target slot: the dance
+                       // completed without clearing (pathological). The boot
+                       // hook clears it and moves the StableStaged staging
+                       // file out of the way — never a flash, never a
+                       // re-enter without a fresh consent
+};
+ResumeRoute resumeRoute(PendingKind kind, bool runningIsCompleteSlot);
 
 // --- §20 slot-row identity (brief 2026-11-09 slots screen) -------------------
 // One grammar knowledge for both consumers of the build identity: the PR

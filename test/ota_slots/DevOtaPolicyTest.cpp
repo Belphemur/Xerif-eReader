@@ -326,6 +326,25 @@ TEST(DevOtaPolicyPickerRows, SingleGroupKeepsJustItsOwnHeader) {
   EXPECT_EQ(noRows, 0);
 }
 
+// --- boot-hook resume routing (design §5/§16, owner report 2026-11-09) ------
+
+TEST(DevOtaPolicyResumeRoute, RecordPresentRoutesToTheCompletionOrReEntry) {
+  // A pending record routes every boot: DevChannel completing from the
+  // worker, or re-entering from the target when the arm's otadata switch
+  // never landed (an interrupted arm must not strand its consent).
+  EXPECT_EQ(dev_ota::resumeRoute(dev_ota::PendingKind::DevChannel, true), dev_ota::ResumeRoute::CompleteFromWorker);
+  EXPECT_EQ(dev_ota::resumeRoute(dev_ota::PendingKind::DevChannel, false), dev_ota::ResumeRoute::ReEnterFromTarget);
+  // §16 SD kinds can only re-run flash work from their fixed worker slot: a
+  // record seen in the target slot is the pathological completed-not-cleared
+  // case — cleared, never a silent re-flash beyond the consent digest.
+  const dev_ota::PendingKind sdKinds[] = {dev_ota::PendingKind::SdDev, dev_ota::PendingKind::StableStaged,
+                                          dev_ota::PendingKind::StablePicked};
+  for (const dev_ota::PendingKind kind : sdKinds) {
+    EXPECT_EQ(dev_ota::resumeRoute(kind, true), dev_ota::ResumeRoute::CompleteFromWorker) << static_cast<int>(kind);
+    EXPECT_EQ(dev_ota::resumeRoute(kind, false), dev_ota::ResumeRoute::Stale) << static_cast<int>(kind);
+  }
+}
+
 // --- §20 slot-row identity (brief 2026-11-09 slots screen) ------------------
 
 namespace {

@@ -1362,6 +1362,12 @@ constexpr bool devOtaKindsMarkerMatchesHeader() {
 }
 static_assert(devOtaKindsMarkerMatchesHeader(), "embedded swap kinds marker must match ota_slots::kSwapKindsMarker");
 
+// The resume cannot proceed (record incomplete — no usable binding): owner
+// steer 2026-11-09 — never drop the user on Home without saying why. The
+// FAILED screen on the Dev picker names the refusal; the record stays
+// disarmed (the hook cleared the unusable one before dispatching here).
+static void showResumeRefusal(GfxRenderer& renderer, MappedInputManager& mappedInputManager);
+
 // Runs once at the top of the first loop() pass (see bootFinalized there).
 // Silent boots have already painted their first frame synchronously in
 // setup(); splash boots paint during this first pass. Confirming here
@@ -1391,21 +1397,28 @@ static void bootFinalize() {
       // The kind fixes the target slot and the completion activity; a resume
       // without it cannot know either. Clearing disarms the unusable record
       // (a failed DevChannel dispatch would re-fetch the manifest and install
-      // without consent; a failed SD dispatch would guess the slot). An SD
-      // dance's fixed staging file is removed by the stale-cleanup below.
-      LOG_ERR("MAIN", "pending install kind unreadable; clearing");
+      // without consent; a failed SD dispatch would guess the slot).
+      // Owner steer 2026-11-09: never drop the user on Home without saying
+      // why — the FAILED screen on the Dev picker names the refusal.
+      LOG_ERR("MAIN", "pending install kind unreadable; clearing, showing the refusal");
       dev_ota::pendingInstallClear();
+      showResumeRefusal(renderer, mappedInputManager);
     } else {
+      // The record's completion slot is FIXED by the kind (the dance rebooted
+      // into the worker; the completion pass may only run there).
       const bool targetIsStable =
           kind == dev_ota::PendingKind::StableStaged || kind == dev_ota::PendingKind::StablePicked;
       const esp_partition_t* slot = ota_slots::runningSlot();
       const esp_partition_t* completionSlot = targetIsStable ? ota_slots::devSlot() : ota_slots::stableSlot();
-      if (!ota_slots::sameSlot(slot, completionSlot)) {
+      const dev_ota::ResumeRoute route = dev_ota::resumeRoute(kind, ota_slots::sameSlot(slot, completionSlot));
+      if (route == dev_ota::ResumeRoute::Stale) {
         LOG_INF("MAIN", "stale pending install; clearing");
         // A StableStaged dance whose otadata switch never landed leaves its
         // fixed staging file on the swap space. Remove it by the known path —
         // user-picked files (StablePicked/SdDev) keep their own path and are
-        // never touched here.
+        // never touched here. (DevChannel records in the target slot are NOT
+        // stale: they re-enter the flow below — an interrupted arm must not
+        // strand its consent.)
         if (kind == dev_ota::PendingKind::StableStaged) {
           Storage.remove(dev_ota::kStableStagingPath);
         }
@@ -1419,9 +1432,17 @@ static void bootFinalize() {
           LOG_INF("MAIN", "pending install deferred (recovery=%d panic=%d)", bootRecoveryFirmwareMode ? 1 : 0,
                   bootRebootedFromPanic ? 1 : 0);
         } else {
-          LOG_INF("MAIN", "resuming pending install (kind=%d, %s, hook %.27s, kinds %.26s)", static_cast<int>(kind),
-                  pendingPayload, kDevOtaResumeHookMarker, kDevOtaSwapKindsMarker);
+          LOG_INF("MAIN", "resuming pending install (kind=%d, route=%d, %s, hook %.27s, kinds %.26s)",
+                  static_cast<int>(kind), static_cast<int>(route), pendingPayload, kDevOtaResumeHookMarker,
+                  kDevOtaSwapKindsMarker);
           if (kind == dev_ota::PendingKind::DevChannel) {
+            // Both routes land here: CompleteFromWorker runs the §5 completion
+            // pass (write the dev slot from the manifest, digest-bound),
+            // ReEnterFromTarget re-runs the dance arm (its otadata switch now
+            // lands — owner report 2026-11-09: the arm skipped it, so the
+            // reboot came back on the dev slot and the boot hook discarded
+            // the record as stale, dropping the user on Home). The consent
+            // gates run either way; every gate that fails disarms the record.
             auto devOtaActivity = makeUniqueNoThrow<DevOtaActivity>(renderer, mappedInputManager, /*autoResume=*/true);
             if (devOtaActivity) {
               activityManager.replaceActivity(std::move(devOtaActivity));
@@ -1450,6 +1471,18 @@ static void bootFinalize() {
         }
       }
     }
+  }
+}
+
+// The resume cannot proceed (record incomplete — no usable binding): owner
+// steer 2026-11-09 — never drop the user on Home without saying why. The
+// FAILED screen on the Dev picker names the refusal; the record was
+// disarmed (the hook cleared the unusable one before dispatching here).
+static void showResumeRefusal(GfxRenderer& renderer, MappedInputManager& mappedInputManager) {
+  auto refused = makeUniqueNoThrow<DevOtaActivity>(renderer, mappedInputManager, /*autoResume=*/false);
+  if (refused) {
+    refused->showResumeRefusal();
+    activityManager.replaceActivity(std::move(refused));
   }
 }
 

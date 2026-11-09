@@ -53,6 +53,18 @@ bool devNameLabel(const char* name, char* out, size_t cap) {
 
 // Single PR-asset grammar (struct/comment in the header): also consumed by
 // the slot chooser's §20 cross-reference.
+ResumeRoute resumeRoute(const PendingKind kind, const bool runningIsCompleteSlot) {
+  switch (kind) {
+    case PendingKind::DevChannel:
+      return runningIsCompleteSlot ? ResumeRoute::CompleteFromWorker : ResumeRoute::ReEnterFromTarget;
+    case PendingKind::SdDev:
+    case PendingKind::StableStaged:
+    case PendingKind::StablePicked:
+      return runningIsCompleteSlot ? ResumeRoute::CompleteFromWorker : ResumeRoute::Stale;
+  }
+  return ResumeRoute::Stale;
+}
+
 bool parsePrName(const char* name, PrName* out) {
   constexpr char kPrefix[] = "xerif-pr-";
   constexpr char kSuffix[] = "-x4pro.bin";

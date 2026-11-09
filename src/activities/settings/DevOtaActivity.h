@@ -33,6 +33,12 @@ class DevOtaActivity : public Activity {
   explicit DevOtaActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool autoResume)
       : Activity("DevOta", renderer, mappedInput), autoResume(autoResume) {}
 
+  // FAILED screen for a resume the boot hook refused before dispatching
+  // (record incomplete — no usable binding): shows the refusal state; the
+  // record was already disarmed by the boot hook. Owner steer: a pending
+  // resume that cannot proceed must never silently land on Home.
+  void showResumeRefusal();
+
   void onEnter() override;
   void onExit() override;
   void loop() override;
@@ -72,6 +78,7 @@ class DevOtaActivity : public Activity {
   void onInstallProgress(int percent, bool writing);
 
   const bool autoResume;
+  bool resumeRefused = false;  // showResumeRefusal(): onEnter must not restart the flow
   State state = WIFI_SELECTION;
   // Fixed-size POD entries (design §9 lifetime rule); owned by value so the
   // install path holds no heap pointers across the blocking write.
