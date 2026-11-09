@@ -16,6 +16,7 @@
 #include <utility>
 
 #include "CrossPointSettings.h"
+#include "DictHistoryStore.h"
 #include "DictHtmlSniff.h"
 #include "HapticFeedback.h"
 #include "ReaderUtils.h"
@@ -247,8 +248,16 @@ bool DictionaryDefinitionActivity::closeButtonContains(const int x, const int y)
 }
 
 void DictionaryDefinitionActivity::openSearch() {
+  // Recent lookups ride into the search keyboard as touch chips (§F4); they
+  // are hidden entirely when the toggle is off or the store is empty — the
+  // shared keyboard serves other entries unchanged.
+  std::vector<std::string> recents;
+  if (SETTINGS.dictionaryHistoryEnabled) {
+    DictHistoryStore::getInstance().load(recents);
+  }
   startActivityForResult(
-      std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH), content.headword),
+      std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH), content.headword, 0,
+                                              InputType::Text, std::move(recents)),
       [this](const ActivityResult& result) {
         if (!result.isCancelled && std::holds_alternative<KeyboardResult>(result.data)) {
           const auto& keyboard = std::get<KeyboardResult>(result.data);
