@@ -523,7 +523,7 @@ void DictionaryWordSelectActivity::performLookup(const std::string& raw, const s
     // Re-lookup history (§F4): the effective query, newest first. Failures
     // are non-fatal by contract, exactly like the vocabulary export.
     if (SETTINGS.dictionaryHistoryEnabled) {
-      (void)DictHistoryStore::getInstance().record(lookupText.empty() ? trimmed : lookupText);
+      (void)DictHistoryStore::record(lookupText.empty() ? trimmed : lookupText);
     }
     auto activity = makeUniqueNoThrow<DictionaryDefinitionActivity>(renderer, mappedInput, std::move(headword),
                                                                     std::move(definition), SETTINGS.dictionaryName,

@@ -28,9 +28,7 @@ std::string sanitizeQuery(const std::string& query) {
 }
 }  // namespace
 
-DictHistoryStore DictHistoryStore::instance;
-
-void DictHistoryStore::load(std::vector<std::string>& out) const {
+void DictHistoryStore::load(std::vector<std::string>& out) {
   out.clear();
   HalFile file = Storage.open(FILE_PATH, O_RDONLY);
   if (!file) return;  // no history yet is not an error

@@ -433,6 +433,8 @@ int KeyboardEntryActivity::lineBreakEnd(std::string& s, const int start, const i
 // when a row fits, capped to two rows of four entries — tap completes the
 // entry with that query via the same submit path as the OK key. Touch-only
 // (button users type the word; the recents stay reachable next time).
+static constexpr const char* KB_RECENT_ELLIPSIS = "\xe2\x80\xa6";
+
 void KeyboardEntryActivity::drawRecentChips(const int fieldTopY) {
   recentChipCount = 0;
   recentChipRects = {};
@@ -462,15 +464,15 @@ void KeyboardEntryActivity::drawRecentChips(const int fieldTopY) {
       int width = renderer.getTextWidth(UI_12_FONT_ID, label.c_str());
       // Truncated chip labels: cut a byte short until the text fits the
       // column box, then widen the ellipsis.
-      static constexpr const char* ELLIPSIS = "\xe2\x80\xa6";
       int maxLabel = content.width / static_cast<int>(RECENT_CHIPS_PER_ROW) - metrics.menuSpacing;
       if (width + metrics.menuSpacing > maxLabel) {
-        while (!label.empty() && renderer.getTextWidth(UI_12_FONT_ID, (label + ELLIPSIS).c_str()) > maxLabel) {
+        while (!label.empty() &&
+               renderer.getTextWidth(UI_12_FONT_ID, (label + KB_RECENT_ELLIPSIS).c_str()) > maxLabel) {
           while (!label.empty() && (static_cast<uint8_t>(label.back()) & 0xC0) == 0x80) label.pop_back();
           if (label.empty()) break;  // one wide glyph filled the entire label
           label.pop_back();
         }
-        label += ELLIPSIS;
+        label += KB_RECENT_ELLIPSIS;
         width = renderer.getTextWidth(UI_12_FONT_ID, label.c_str());
       }
       const int boxWidth = width + metrics.menuSpacing * 2;

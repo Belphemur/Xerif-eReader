@@ -253,7 +253,7 @@ void DictionaryDefinitionActivity::openSearch() {
   // shared keyboard serves other entries unchanged.
   std::vector<std::string> recents;
   if (SETTINGS.dictionaryHistoryEnabled) {
-    DictHistoryStore::getInstance().load(recents);
+    DictHistoryStore::load(recents);
   }
   startActivityForResult(
       std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH), content.headword, 0,
