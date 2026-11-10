@@ -1456,6 +1456,14 @@ void EpubReaderActivity::startTtfClipSelection(const int initialX, const int ini
 
   RenderLock lock;  // the render task owns/uses the scratch arena
   const size_t scratchMark = ttf_->scratch().mark();
+  // Soak finding 1 (UX half): every failure gate below used to die with a
+  // serial log only — a silent no-op from the user's viewpoint. Same toast
+  // surface the save/delete paths already use.
+  const auto showTtfClipFailed = [this] {
+    clippingMessage = StrId::STR_CLIPPING_FAILED;
+    showClippingMessage = true;
+    clippingMessageTime = millis();
+  };
 
   // Delete-on-tap (design doc §F2): long-pressing an existing highlight
   // removes it and never opens the selector — the legacy entry keeps order
@@ -1491,6 +1499,7 @@ void EpubReaderActivity::startTtfClipSelection(const int initialX, const int ini
       if (perPage.empty()) {
         LOG_ERR("CLIP", "Failed to load TTF page %d (spine %d) for clipping selection", chapterPage, spineIndex);
         ttf_->scratch().release(scratchMark);
+        showTtfClipFailed();
         requestUpdate();
         return;
       }
@@ -1512,12 +1521,16 @@ void EpubReaderActivity::startTtfClipSelection(const int initialX, const int ini
   ttf_->scratch().release(scratchMark);
   if (perPage.empty()) {
     LOG_ERR("CLIP", "No selectable TTF pages for clipping selection");
+    showTtfClipFailed();
     requestUpdate();
     return;
   }
 
+  // Stays as a defensive gate (assignment now happens per render pass in
+  // renderBookTtf, so a user-visible trigger would mean no render ever ran).
   if (buildViewportWidth == 0 || buildViewportHeight == 0) {
     LOG_ERR("CLIP", "Cannot anchor clipping before the reader viewport is initialized");
+    showTtfClipFailed();
     requestUpdate();
     return;
   }
@@ -1536,6 +1549,7 @@ void EpubReaderActivity::startTtfClipSelection(const int initialX, const int ini
   if (activity && restoreSelection.valid) activity->setInitialSelection(restoreSelection);
   if (!activity) {
     LOG_ERR("CLIP", "Failed to allocate clipping selection activity");
+    showTtfClipFailed();
     requestUpdate();
     return;
   }
@@ -3226,6 +3240,32 @@ bool EpubReaderActivity::skipLoopDelay() {
   return overlay == Overlay::None && !buildHeapPaused && backgroundBuildWanted();
 }
 
+// Content viewport shared arithmetic (soak finding 1): getOrientedViewableTRBL
+// + screen margins + status-bar/auto-turn bottom rule. renderBook() (legacy)
+// and renderBookTtf() both assign buildViewport through this helper so the
+// members keep ONE meaning — the geometry the current layout pass actually
+// painted into — instead of per-path copies of the same expression.
+EpubReaderActivity::ContentMargins EpubReaderActivity::assignBuildViewport() {
+  ContentMargins margins{};
+  renderer.getOrientedViewableTRBL(&margins.top, &margins.right, &margins.bottom, &margins.left);
+  margins.top += SETTINGS.screenMargin;
+  margins.left += SETTINGS.screenMargin;
+  margins.right += SETTINGS.screenMargin;
+
+  const uint8_t statusBarHeight = UITheme::getInstance().getStatusBarHeight();
+
+  if (automaticPageTurnActive &&
+      (statusBarHeight == 0 || statusBarHeight == UITheme::getInstance().getProgressBarHeight())) {
+    margins.bottom += SETTINGS.screenMargin + statusBarHeight + UITheme::getInstance().getMetrics().statusBarVerticalMargin;
+  } else {
+    margins.bottom += SETTINGS.screenMargin + statusBarHeight;
+  }
+
+  buildViewportWidth = static_cast<uint16_t>(renderer.getScreenWidth() - margins.left - margins.right);
+  buildViewportHeight = static_cast<uint16_t>(renderer.getScreenHeight() - margins.top - margins.bottom);
+  return margins;
+}
+
 void EpubReaderActivity::renderBook() {
 #if defined(CROSSPOINT_TTF_READER)
   // Native-TTF page source (design §3.5): a fully separate render path so the
@@ -3273,29 +3313,9 @@ void EpubReaderActivity::renderBook() {
     return;
   }
 
-  int orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft;
-  renderer.getOrientedViewableTRBL(&orientedMarginTop, &orientedMarginRight, &orientedMarginBottom,
-                                   &orientedMarginLeft);
-  orientedMarginTop += SETTINGS.screenMargin;
-  orientedMarginLeft += SETTINGS.screenMargin;
-  orientedMarginRight += SETTINGS.screenMargin;
-
-  const uint8_t statusBarHeight = UITheme::getInstance().getStatusBarHeight();
-
-  if (automaticPageTurnActive &&
-      (statusBarHeight == 0 || statusBarHeight == UITheme::getInstance().getProgressBarHeight())) {
-    orientedMarginBottom +=
-        SETTINGS.screenMargin + statusBarHeight + UITheme::getInstance().getMetrics().statusBarVerticalMargin;
-  } else {
-    orientedMarginBottom += SETTINGS.screenMargin + statusBarHeight;
-  }
-
-  const uint16_t viewportWidth = renderer.getScreenWidth() - orientedMarginLeft - orientedMarginRight;
-  const uint16_t viewportHeight = renderer.getScreenHeight() - orientedMarginTop - orientedMarginBottom;
-  buildViewportWidth = viewportWidth;
-  buildViewportHeight = viewportHeight;
-
-  const ReaderRenderSpec renderSpec = SETTINGS.readerRenderSpec(viewportWidth, viewportHeight);
+  const ContentMargins margins = assignBuildViewport();
+  const ReaderRenderSpec renderSpec = SETTINGS.readerRenderSpec(buildViewportWidth, buildViewportHeight);
+(fix(reader): assign buildViewport on the TTF render pass + toast failed clip entries)
 
   if (!section) {
     // Chapter changed or first load — clear stale prefetch
@@ -3633,7 +3653,7 @@ void EpubReaderActivity::renderBook() {
     uint32_t render_start_ms = millis();
     uint32_t psram_free_before_r = ESP.getFreePsram();
     uint32_t heap_free_before_r = ESP.getFreeHeap();
-    renderContents(std::move(p), orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
+    renderContents(std::move(p), margins.top, margins.right, margins.bottom, margins.left);
     uint32_t psram_free_after_r = ESP.getFreePsram();
     uint32_t heap_free_after_r = ESP.getFreeHeap();
     uint32_t render_end_ms = millis();
@@ -3643,7 +3663,7 @@ void EpubReaderActivity::renderBook() {
     LOG_DBG("ERS", "Rendered page in %dms", render_end_ms - render_start_ms);
 #else
     const auto start = millis();
-    renderContents(std::move(p), orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
+    renderContents(std::move(p), margins.top, margins.right, margins.bottom, margins.left);
     LOG_DBG("ERS", "Rendered page in %dms", millis() - start);
 #endif
     lastRenderCompleteMs = millis();
@@ -4161,6 +4181,11 @@ void EpubReaderActivity::renderBookTtf() {
   }
 
   // 1) Layout params + generation for the current geometry/settings state.
+  // Soak finding 1: the TTF layout uses exactly the same oriented-margin
+  // arithmetic as makeLayoutParams/renderBook(), and buildViewport must be
+  // written by every render path that lays out a page (prerender and
+  // fast-display passes included) — startTtfClipSelection anchors against it.
+  assignBuildViewport();
   freeink::book::LayoutParams params;
   ttf_->makeLayoutParams(renderer, params, automaticPageTurnActive);
   if (params.font == nullptr) {
