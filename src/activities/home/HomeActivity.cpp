@@ -9,6 +9,7 @@
 #include <I18n.h>
 #include <LibraryBuilder.h>
 #include <LibraryIndexFile.h>
+#include <Logging.h>
 #include <Memory.h>
 #include <Utf8.h>
 #include <Xtc.h>
@@ -284,6 +285,10 @@ void HomeActivity::onEnter() {
 
   const auto base = static_cast<int>(recentBooks.size());
   selectorIndex = initialMenuItem == HomeMenuItem::NONE ? 0 : base + menuItemToIndex(initialMenuItem, hasLibrarySlot());
+
+  // [TLS-PROBE] stage sample for the owner's per-phase allocation table
+  // (docs/design/2026-11-10-tls-teardown.md §5): the pre-picker baseline.
+  logMemAt("home");
 
   // Trigger first update
   requestUpdate();
