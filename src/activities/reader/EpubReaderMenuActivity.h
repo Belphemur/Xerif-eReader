@@ -24,6 +24,7 @@ class EpubReaderMenuActivity final : public UiListActivity {
     BOOKMARKS,
     SAVE_CLIPPING,
     VIEW_CLIPPINGS,
+    VOCABULARY_NOTEBOOK,
     TOGGLE_BOOKMARK,
     SCREENSHOT,
     DISPLAY_QR,
@@ -66,8 +67,9 @@ class EpubReaderMenuActivity final : public UiListActivity {
   // are set once in the constructor (buildMenuRowItems()); buildScreen()
   // only refreshes rows whose values reflect live state.
   // Upstream's all-in count is 19; the fork's per-book stats rows (READING_STATS
-  // + DELETE_STATS) take it to 21 — a smaller bound overflows menuRowItems.
-  static constexpr size_t MAX_MENU_ITEMS = 21;
+  // + DELETE_STATS) take it to 21, and the Vocabulary Notebook row to 22 — a
+  // smaller bound silently drops menuRowItems rows.
+  static constexpr size_t MAX_MENU_ITEMS = 22;
   freeink::ui::ListItem menuRowItems[MAX_MENU_ITEMS]{};
   void buildMenuRowItems();
 

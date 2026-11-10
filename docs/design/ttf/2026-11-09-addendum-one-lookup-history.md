@@ -155,7 +155,7 @@ New `VocabularyListActivity` fed by `VocabularyStore::loadRecent`:
 | Stores on SD | `/Vocabulary.txt` + `/DictHistory.txt` | `/Vocabulary.txt` |
 | Keep word + definition + book context | via vocabulary toggle only | always (same feature) |
 | Recents source | `DictHistoryStore` ring | notebook tail reader |
-| Recents UI | keyboard chips, touch-only, 8 of 50 | chips + scrollable list, buttons and touch, all entries |
+| Recents UI | keyboard chips, touch-only, 8 of 50 | chips + scrollable list, buttons and touch; rows are the most recent 50 entries (bounded recency view — the file itself keeps every record) |
 | Delete / clear history | impossible | delete one / clear all |
 | `Long-press on Text` options | Dictionary / Ignore / Footnotes (Ignore silently routes to clip) | Dictionary / Ignore (true no-op) / Footnotes / **Clipping** |
 

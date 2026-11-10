@@ -12,6 +12,7 @@
 #include "components/UITheme.h"
 #include "util/PluginEvents.h"
 #include "util/SlideSwitch.h"
+#include "vocabulary/VocabularyStore.h"
 
 namespace fui = freeink::ui;
 
@@ -83,6 +84,12 @@ void EpubReaderMenuActivity::buildMenuItems(std::vector<MenuItem>& items, const 
   items.push_back({MenuAction::SAVE_CLIPPING, StrId::STR_SAVE_CLIPPING});
   if (hasClippings) {
     items.push_back({MenuAction::VIEW_CLIPPINGS, StrId::STR_VIEW_CLIPPINGS});
+  }
+  // Vocabulary Notebook beside View Clippings (addendum 2026-11-09): only
+  // with the toggle on and a non-empty notebook — an empty list is the
+  // toggle's own behavior, not a browsable store.
+  if (SETTINGS.vocabularyHistoryEnabled && VocabularyStore::count() > 0) {
+    items.push_back({MenuAction::VOCABULARY_NOTEBOOK, StrId::STR_VOCAB_NOTEBOOK});
   }
   if (!slideSwitchOwns(CrossPointSettings::SLIDE_SWITCH_NIGHT_MODE)) {
     items.push_back({MenuAction::NIGHT_MODE, StrId::STR_NIGHT_MODE});

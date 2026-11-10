@@ -25,6 +25,7 @@
 #include "fontIds.h"
 #include "util/DictHtmlPages.h"
 #include "util/HtmlToPlainText.h"
+#include "vocabulary/VocabularyStore.h"
 
 namespace {
 
@@ -248,10 +249,17 @@ bool DictionaryDefinitionActivity::closeButtonContains(const int x, const int y)
 
 void DictionaryDefinitionActivity::openSearch() {
   // Recent lookups ride into the search keyboard as touch chips; they are
-  // read from the Vocabulary Notebook tail (addendum 2026-11-09) and are
+  // a view over the Vocabulary Notebook tail (addendum 2026-11-09) and are
   // hidden entirely when the toggle is off or the notebook is empty — the
   // shared keyboard serves other entries unchanged.
   std::vector<std::string> recents;
+  if (SETTINGS.vocabularyHistoryEnabled) {
+    std::vector<NotebookEntry> rows;
+    if (VocabularyStore::loadRecent(rows, KeyboardEntryActivity::MAX_RECENT_CHIPS)) {
+      recents.reserve(rows.size());
+      for (auto& row : rows) recents.push_back(std::move(row.word));
+    }
+  }
   auto search = makeUniqueNoThrow<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH), content.headword, 0,
                                                          InputType::Text, std::move(recents));
   if (!search) {

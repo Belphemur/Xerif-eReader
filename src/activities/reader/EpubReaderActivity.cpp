@@ -83,6 +83,7 @@
 #include "SdCardFontSystem.h"
 #include "SilentRestart.h"
 #include "TtfUiFallback.h"
+#include "VocabularyListActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/settings/TextSettingsActivity.h"
 #include "clippings/ClippingText.h"
@@ -1824,6 +1825,29 @@ void EpubReaderActivity::openClippings() {
   });
 }
 
+// Vocabulary Notebook (addendum 2026-11-09): activated rows hand the word
+// back through DictionarySearchResult into the reader's own lookup funnel,
+// so the re-lookup records into the notebook like any other lookup.
+void EpubReaderActivity::openVocabulary() {
+  if (!SETTINGS.vocabularyHistoryEnabled || VocabularyStore::count() == 0) {
+    requestUpdate();
+    return;
+  }
+  auto list = makeUniqueNoThrow<VocabularyListActivity>(renderer, mappedInput);
+  if (!list) {
+    LOG_ERR("VOCAB", "OOM: vocabulary list");
+    return;
+  }
+  startActivityForResult(std::move(list), [this](const ActivityResult& result) {
+    if (!result.isCancelled && std::holds_alternative<DictionarySearchResult>(result.data)) {
+      openDictionaryWordSelect(-1, -1, TouchLongPressMode::Dictionary,
+                               std::get<DictionarySearchResult>(result.data).text);
+      return;
+    }
+    requestUpdate();
+  });
+}
+
 bool EpubReaderActivity::dispatchLongPressTurn(const ReaderUtils::PageTurnResult& turn,
                                                const ReaderUtils::TouchPageTurn& touch) {
   if (!turn.prev && !turn.next) return false;
@@ -2644,6 +2668,10 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
     }
     case EpubReaderMenuActivity::MenuAction::VIEW_CLIPPINGS: {
       openClippings();
+      break;
+    }
+    case EpubReaderMenuActivity::MenuAction::VOCABULARY_NOTEBOOK: {
+      openVocabulary();
       break;
     }
     case EpubReaderMenuActivity::MenuAction::TOGGLE_BOOKMARK: {
