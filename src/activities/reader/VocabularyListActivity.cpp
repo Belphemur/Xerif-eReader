@@ -48,11 +48,20 @@ void VocabularyListActivity::refreshRowWindow(const int start) {
   windowCount = std::min(ROW_WINDOW, total - clamped);
   for (int slot = 0; slot < windowCount; ++slot) {
     const NotebookEntry& entry = entries[static_cast<size_t>(clamped + slot)];
-    fui::ListItem item;
-    item.label = entry.word;
+    // ListItem borrows const char*, so the row strings live in the window's
+    // owned buffers. The store caps both fields below the buffer size, so
+    // the copy is always a plain terminated string, not a truncation.
+    snprintf(rowLabels[slot].data(), rowLabels[slot].size(), "%s", entry.word.c_str());
     // Headword disambiguates an inflected lookup ("ran" -> "run"); omitted
     // when identical.
-    item.subtitle = entry.headword != entry.word ? entry.headword : "";
+    if (entry.headword != entry.word) {
+      snprintf(rowSubtitles[slot].data(), rowSubtitles[slot].size(), "%s", entry.headword.c_str());
+    } else {
+      rowSubtitles[slot][0] = '\0';
+    }
+    fui::ListItem item;
+    item.label = rowLabels[slot].data();
+    item.subtitle = rowSubtitles[slot].data();
     item.icon = listIconFor(UIIcon::Book, 32);  // subtitle rows carry the larger icon
     item.actionValue = static_cast<int16_t>(clamped + slot);
     rowItems[slot] = item;
@@ -118,7 +127,7 @@ void VocabularyListActivity::showRowMenu() {
   if (listCount() == 0 || confirmPopup.isActive()) return;
   menuOpen = true;
   static constexpr StrId OPTIONS[] = {StrId::STR_CANCEL, StrId::STR_DELETE, StrId::STR_CLEAR_ALL};
-  confirmPopup.show(tr(STR_VOCAB_NOTEBOOK), OPTIONS, 3, 1, [this](const int index) {
+  confirmPopup.show(StrId::STR_VOCAB_NOTEBOOK, OPTIONS, 3, 1, [this](const int index) {
     menuOpen = false;
     if (index == 1) {
       deleteSelected();

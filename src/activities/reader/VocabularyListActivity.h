@@ -43,6 +43,10 @@ class VocabularyListActivity final : public UiListActivity {
 
   std::vector<NotebookEntry> entries;
   std::array<freeink::ui::ListItem, ROW_WINDOW> rowItems;
+  // ListItem borrows const char*, so the window's rows own text buffers
+  // (the store caps both fields below 160 bytes; buffer has the NUL room).
+  std::array<std::array<char, 192>, ROW_WINDOW> rowLabels;
+  std::array<std::array<char, 192>, ROW_WINDOW> rowSubtitles;
   int windowStart = -1;
   int windowCount = 0;
   OptionPopup<> confirmPopup;
