@@ -38,6 +38,10 @@ class KeyboardEntryActivity : public Activity {
   void render(RenderLock&&) override;
   bool preventAutoSleep() override { return true; }
 
+  // Chip-feed cap shared with the notebooks that load recency rows for
+  // this keyboard (one constant, one meaning).
+  static constexpr size_t MAX_RECENT_CHIPS = 8;
+
  private:
   std::string title;
   std::string text;
@@ -50,7 +54,6 @@ class KeyboardEntryActivity : public Activity {
   // chips render between the tips and the keyboard when vertical space;
   // capped at 8 entries, two rows of four (the X4 Pro portrait does not
   // offer 7 scrollable rows above a keyboard).
-  static constexpr size_t MAX_RECENT_CHIPS = 8;
   static constexpr size_t RECENT_CHIPS_PER_ROW = 4;
   std::vector<std::string> recentQueries;
   std::array<Rect, MAX_RECENT_CHIPS> recentChipRects{};
