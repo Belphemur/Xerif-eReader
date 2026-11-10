@@ -2063,7 +2063,7 @@ void EpubReaderActivity::loop() {
   // v2.6.0 because it ran first and returned after consuming the event.
   const auto longPressRoute = resolveTouchLongPressRoute(SETTINGS.touchLongPressAction);
   static_assert(CrossPointSettings::TOUCH_LP_DICTIONARY == 0 && CrossPointSettings::TOUCH_LP_IGNORE == 1 &&
-                    CrossPointSettings::TOUCH_LP_FOOTNOTE == 2,
+                    CrossPointSettings::TOUCH_LP_FOOTNOTE == 2 && CrossPointSettings::TOUCH_LP_CLIP == 3,
                 "TouchLongPressRoute.h maps these persisted menu indexes");
   int selectionX = 0;
   int selectionY = 0;

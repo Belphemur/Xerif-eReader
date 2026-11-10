@@ -15,9 +15,13 @@
 // and gates BOTH consumers on its single result, so exactly one consumer can
 // fire per long press.
 //
-// Numeric mapping mirrors CrossPointSettings::TOUCH_LONG_PRESS_ACTION
-// (persisted by menu-position index, APPEND ONLY): 0 = TOUCH_LP_DICTIONARY,
-// 1 = TOUCH_LP_IGNORE, 2 = TOUCH_LP_FOOTNOTE. EpubReaderActivity.cpp
+// Since the 2026-11-09 addendum the map has four values (persisted by
+// menu-position index, APPEND ONLY): 0 = TOUCH_LP_DICTIONARY,
+// 1 = TOUCH_LP_IGNORE, 2 = TOUCH_LP_FOOTNOTE, 3 = TOUCH_LP_CLIP. Ignore (1)
+// maps to None: today's build only *looks* inert because startClipSelection
+// early-returns on TTF books — the PR's TTF branch would otherwise hijack
+// that value instead of leaving "Ignore" a true no-op (no consumer gate
+// matches, wasScreenLongPress() is never read). EpubReaderActivity.cpp
 // static_asserts the correspondence.
 
 TEST(TouchLongPressRoute, DictionarySettingRoutesToDictionary) {
@@ -30,20 +34,32 @@ TEST(TouchLongPressRoute, FootnoteSettingRoutesToFootnote) {
   EXPECT_EQ(resolveTouchLongPressRoute(2), TouchLongPressRoute::Footnote);
 }
 
-TEST(TouchLongPressRoute, IgnoreSettingRoutesToClipSelection) {
-  // TOUCH_LP_IGNORE keeps its meaning: upstream's clip (highlight) selection.
-  EXPECT_EQ(resolveTouchLongPressRoute(1), TouchLongPressRoute::ClipSelection);
+TEST(TouchLongPressRoute, ClipSettingRoutesToClipSelection) {
+  // TOUCH_LP_CLIP (appended value, never renumbered) => the clip selector.
+  EXPECT_EQ(resolveTouchLongPressRoute(3), TouchLongPressRoute::ClipSelection);
+}
+
+TEST(TouchLongPressRoute, IgnoreSettingIsATrueNoOp) {
+  // TOUCH_LP_IGNORE => None: neither the word-select gate nor the clip gate
+  // matches, so nothing consumes the long press. The upstream-v1 meaning of
+  // this value (clip selection) is gone; Clipping got its own appended value
+  // so no user's stored index silently changes meaning.
+  EXPECT_EQ(resolveTouchLongPressRoute(1), TouchLongPressRoute::None);
 }
 
 TEST(TouchLongPressRoute, EveryActionValueRoutesToExactlyOneConsumer) {
   // Structural exclusivity: for every persisted action value exactly one of
-  // the two consumer groups matches, so only one gate in the reader loop can
-  // call wasScreenLongPress() per tick.
-  for (uint8_t action = 0; action <= 2; ++action) {
+  // the consumer groups matches, so only one gate in the reader loop can
+  // call wasScreenLongPress() per tick — or none at all (Ignore), which is
+  // the point of None.
+  for (uint8_t action = 0; action <= 3; ++action) {
     const TouchLongPressRoute route = resolveTouchLongPressRoute(action);
     const bool isClip = route == TouchLongPressRoute::ClipSelection;
     const bool isWordSelect = route == TouchLongPressRoute::Dictionary || route == TouchLongPressRoute::Footnote;
-    EXPECT_NE(isClip, isWordSelect) << "action " << static_cast<int>(action) << " must route to exactly one consumer";
+    const bool isInert = route == TouchLongPressRoute::None;
+    // Exactly one of {clip, word-select, inert} holds.
+    const int matched = static_cast<int>(isClip) + static_cast<int>(isWordSelect) + static_cast<int>(isInert);
+    EXPECT_EQ(matched, 1) << "action " << static_cast<int>(action) << " must route to exactly one consumer group";
   }
 }
 
@@ -52,7 +68,7 @@ TEST(TouchLongPressRoute, FootnoteRouteDrivesFootnoteMode) {
   // Footnote route must map to TouchLongPressMode::Footnote (and nothing else
   // may): the word-select activity never reads the mutable SETTINGS global
   // (docs/design/touch-long-press-dictionary.md).
-  for (uint8_t action = 0; action <= 2; ++action) {
+  for (uint8_t action = 0; action <= 3; ++action) {
     const TouchLongPressRoute route = resolveTouchLongPressRoute(action);
     const TouchLongPressMode mode =
         route == TouchLongPressRoute::Footnote ? TouchLongPressMode::Footnote : TouchLongPressMode::Dictionary;
