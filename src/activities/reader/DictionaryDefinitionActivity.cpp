@@ -13,6 +13,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <iterator>
 #include <utility>
 
 #include "CrossPointSettings.h"
@@ -257,7 +258,8 @@ void DictionaryDefinitionActivity::openSearch() {
     std::vector<NotebookEntry> rows;
     if (VocabularyStore::loadRecent(rows, KeyboardEntryActivity::MAX_RECENT_CHIPS)) {
       recents.reserve(rows.size());
-      for (auto& row : rows) recents.push_back(std::move(row.word));
+      std::transform(std::make_move_iterator(rows.begin()), std::make_move_iterator(rows.end()),
+                     std::back_inserter(recents), [](NotebookEntry&& row) { return std::move(row.word); });
     }
   }
   auto search = makeUniqueNoThrow<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH), content.headword, 0,
