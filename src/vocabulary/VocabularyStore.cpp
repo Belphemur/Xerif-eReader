@@ -238,11 +238,40 @@ bool recoverIncompleteRecord(HalFile& file) {
   }
   return recoverTail(file, 0, size);
 }
+
+// Publication paths shared with the reader block below (rewrites publish a
+// staged temp through the repo's remove+rename replaceFile primitive).
+constexpr const char* STAGE_LIVE_PATH = "/Vocabulary.txt";  // VocabularyStore::FILE_PATH
+constexpr const char* STAGE_TEMP_PATH = "/Vocabulary.txt.tmp";
+
+// Two stale-free states must settle before any store ACCESS — including the
+// append side: an append that creates a fresh live file while an interrupted
+// publication holds the only surviving copy in the stage would orphan it (the
+// next settle would then remove the stale temp with the whole notebook in
+// it). Callers that would otherwise orphan the stage must not proceed while
+// adoption fails.
+bool settlePendingRewrite() {
+  const bool live = Storage.exists(STAGE_LIVE_PATH);
+  const bool staged = Storage.exists(STAGE_TEMP_PATH);
+  if (live) {
+    if (staged) (void)Storage.remove(STAGE_TEMP_PATH);
+    return true;
+  }
+  if (!staged) return true;
+  if (!Storage.replaceFile(STAGE_TEMP_PATH, STAGE_LIVE_PATH)) {
+    LOG_ERR("VOCAB", "Could not recover an interrupted vocabulary rewrite");
+    return false;
+  }
+  return true;
+}
 }  // namespace
 
 bool VocabularyStore::append(const VocabularyContext& context, const std::string& word, const std::string& headword,
                              const std::string& definition, const bool htmlDefinition) {
   if (word.empty() || definition.empty()) return false;
+  // A pending staged rewrite must be adopted (or publish refused) BEFORE the
+  // fresh store is opened — the node above explains the orphaning sequence.
+  if (!settlePendingRewrite()) return false;
 
   std::string plain;
   const std::string* exportedDefinition = &definition;
@@ -373,54 +402,29 @@ constexpr size_t TAIL_WINDOW_BYTES = 16 * 1024;
 // materialized safely, so it is refused instead of truncated silently.
 constexpr size_t RECORD_SCAN_BYTES = 16 * 1024;
 constexpr size_t STREAM_CHUNK_BYTES = 512;
-constexpr const char* LIVE_PATH = "/Vocabulary.txt";  // VocabularyStore::FILE_PATH
-constexpr const char* TEMP_PATH = "/Vocabulary.txt.tmp";
 
 struct RecordSpan {
   size_t start;  // first byte of the record line
   size_t end;    // one past the terminating '\n'
 };
 
-// Rewrites (removeRecord/clear) publish a staged temp through the repo's
-// remove+rename replaceFile primitive. Two stale-free states must settle
-// before any store access:
-// - temp beside the live file is an abandoned stage: its bytes were never
-//   published (publication is only attempted after the stage closed), so
-//   the live file is authoritative and the temp is removed;
-// - temp without a live file means the publication was interrupted between
-//   the FAT remove and the rename — the stage holds the only surviving copy
-//   (a complete rewrite), so it is adopted in place of nothing.
-// A failed adoption keeps the temp for the next attempt; callers that would
-// otherwise orphan it (append creating a fresh store) must not proceed.
-bool settlePendingRewrite() {
-  const bool live = Storage.exists(LIVE_PATH);
-  const bool staged = Storage.exists(TEMP_PATH);
-  if (live) {
-    if (staged) (void)Storage.remove(TEMP_PATH);
-    return true;
-  }
-  if (!staged) return true;
-  if (!Storage.replaceFile(TEMP_PATH, LIVE_PATH)) {
-    LOG_ERR("VOCAB", "Could not recover an interrupted vocabulary rewrite");
-    return false;
-  }
-  return true;
-}
-
 // Counts '\n' in [0, limit) by streaming: gives the file-order index of the
-// first complete record inside a tail window that starts at `limit`.
-uint32_t countNewlinesBefore(HalFile& file, const size_t limit) {
+// first complete record inside a tail window that starts at `limit`. Read
+// errors are REPORTED — a silently short count would misaddress every
+// recordIndex the list hands to loadRecord/removeRecord.
+bool countNewlinesBefore(HalFile& file, const size_t limit, uint32_t& newlinesOut) {
   uint8_t chunk[STREAM_CHUNK_BYTES];
   uint32_t newlines = 0;
   size_t pos = 0;
-  if (!file.seek(0)) return 0;
+  if (!file.seek(0)) return false;
   while (pos < limit) {
     const size_t bytes = std::min(sizeof(chunk), limit - pos);
-    if (file.read(chunk, bytes) != static_cast<int>(bytes)) break;
+    if (file.read(chunk, bytes) != static_cast<int>(bytes)) return false;
     for (size_t i = 0; i < bytes; ++i) newlines += chunk[i] == '\n';
     pos += bytes;
   }
-  return newlines;
+  newlinesOut = newlines;
+  return true;
 }
 
 // Streams the file counting newline-terminated records and, when `span` is
@@ -562,7 +566,7 @@ bool VocabularyStore::loadRecent(std::vector<NotebookEntry>& out, const size_t l
     out.clear();
     return false;
   }
-  HalFile file = Storage.open(LIVE_PATH, O_RDONLY);
+  HalFile file = Storage.open(STAGE_LIVE_PATH, O_RDONLY);
   if (!file) return true;  // absent file = an empty fresh notebook, not a failure
   const size_t size = file.fileSize();
   if (size == 0) return true;
@@ -584,7 +588,11 @@ bool VocabularyStore::loadRecent(std::vector<NotebookEntry>& out, const size_t l
   // record — its terminating newline (the first one inside the window) also
   // finishes a record in front of it. A window that starts exactly on a
   // record boundary (byte before the window is '\n') is NOT a straddle.
-  uint32_t firstRecordIndex = countNewlinesBefore(file, windowStart);
+  uint32_t firstRecordIndex = 0;
+  if (!countNewlinesBefore(file, windowStart, firstRecordIndex)) {
+    LOG_ERR("VOCAB", "Failed to read notebook record base");
+    return false;
+  }
 
   // The segment before the first '\n' in the window is the tail of the
   // straddled record (never fully visible) — skipped. With window == size
@@ -642,7 +650,7 @@ bool VocabularyStore::loadRecent(std::vector<NotebookEntry>& out, const size_t l
 
 bool VocabularyStore::loadRecord(const uint32_t index, NotebookRecord& out) {
   if (!settlePendingRewrite()) return false;
-  HalFile file = Storage.open(LIVE_PATH, O_RDONLY);
+  HalFile file = Storage.open(STAGE_LIVE_PATH, O_RDONLY);
   if (!file) return false;
   RecordSpan span{};
   uint32_t total = 0;
@@ -680,7 +688,7 @@ bool VocabularyStore::loadRecord(const uint32_t index, NotebookRecord& out) {
 
 uint32_t VocabularyStore::count() {
   if (!settlePendingRewrite()) return 0;
-  HalFile file = Storage.open(LIVE_PATH, O_RDONLY);
+  HalFile file = Storage.open(STAGE_LIVE_PATH, O_RDONLY);
   if (!file) return 0;
   uint32_t total = 0;
   if (!locateRecord(file, UINT32_MAX, nullptr, &total)) return 0;
@@ -691,8 +699,8 @@ bool VocabularyStore::removeRecord(const uint32_t index) {
   if (!settlePendingRewrite()) return false;
   // A pending adoption that cannot publish must not strand its records under
   // a fresh append-created store.
-  if (!Storage.exists(LIVE_PATH)) return false;
-  HalFile file = Storage.open(LIVE_PATH, O_RDONLY);
+  if (!Storage.exists(STAGE_LIVE_PATH)) return false;
+  HalFile file = Storage.open(STAGE_LIVE_PATH, O_RDONLY);
   if (!file) {
     LOG_ERR("VOCAB", "Cannot open vocabulary file to delete a record");
     return false;
@@ -704,7 +712,7 @@ bool VocabularyStore::removeRecord(const uint32_t index) {
   // Rewrite without the record through the same publication path the store
   // uses elsewhere: stage a temp file, then replaceFile (SOLID over the
   // in-place splice, which could corrupt the only copy of the user's data).
-  HalFile staged = Storage.open(TEMP_PATH, O_RDWR | O_CREAT | O_TRUNC);
+  HalFile staged = Storage.open(STAGE_TEMP_PATH, O_RDWR | O_CREAT | O_TRUNC);
   if (!staged) {
     LOG_ERR("VOCAB", "Cannot stage vocabulary rewrite");
     return false;
@@ -714,11 +722,11 @@ bool VocabularyStore::removeRecord(const uint32_t index) {
   const bool stagedOk = copied && staged.close();
   if (!stagedOk) {
     staged.close();
-    (void)Storage.remove(TEMP_PATH);  // incomplete stage: the live copy is intact
+    (void)Storage.remove(STAGE_TEMP_PATH);  // incomplete stage: the live copy is intact
     LOG_ERR("VOCAB", "Failed to stage vocabulary rewrite");
     return false;
   }
-  if (!Storage.replaceFile(TEMP_PATH, LIVE_PATH)) {
+  if (!Storage.replaceFile(STAGE_TEMP_PATH, STAGE_LIVE_PATH)) {
     // The stage is complete and is the only surviving copy after the FAT
     // remove — leave it for settlePendingRewrite() to adopt; never delete it.
     LOG_ERR("VOCAB", "Failed to publish vocabulary rewrite");
@@ -729,19 +737,19 @@ bool VocabularyStore::removeRecord(const uint32_t index) {
 
 bool VocabularyStore::clear() {
   if (!settlePendingRewrite()) return false;
-  if (!Storage.exists(LIVE_PATH)) return true;
-  HalFile staged = Storage.open(TEMP_PATH, O_RDWR | O_CREAT | O_TRUNC);
+  if (!Storage.exists(STAGE_LIVE_PATH)) return true;
+  HalFile staged = Storage.open(STAGE_TEMP_PATH, O_RDWR | O_CREAT | O_TRUNC);
   if (!staged) {
     LOG_ERR("VOCAB", "Cannot stage vocabulary clear");
     return false;
   }
   if (!staged.close()) {
     staged.close();
-    (void)Storage.remove(TEMP_PATH);
+    (void)Storage.remove(STAGE_TEMP_PATH);
     LOG_ERR("VOCAB", "Failed to flush vocabulary clear");
     return false;
   }
-  if (!Storage.replaceFile(TEMP_PATH, LIVE_PATH)) {
+  if (!Storage.replaceFile(STAGE_TEMP_PATH, STAGE_LIVE_PATH)) {
     // An empty stage is the only surviving copy after the FAT remove — leave
     // it: adopting it completes the requested clear.
     LOG_ERR("VOCAB", "Failed to publish vocabulary clear");

@@ -31,6 +31,13 @@ void VocabularyListActivity::loadEntries() {
     LOG_ERR("VOCAB", "Could not read the notebook store");
     entries.clear();
   }
+  // The row window mirrors entries: a reload (delete, re-lookup, re-enter)
+  // must rebuild it. Without the invalidation, refreshRowWindow's same-start
+  // early return would keep the previous rows on screen — rows showing a
+  // deleted word while rowItems address the new records (CodeRabbit, PR
+  // #306).
+  windowStart = -1;
+  windowCount = 0;
 }
 
 int VocabularyListActivity::listCount() const { return static_cast<int>(entries.size()); }

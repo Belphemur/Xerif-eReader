@@ -129,8 +129,9 @@ struct DictionaryDefinitionActivity::PlainSelectionLine {
 };
 
 // cppcheck-suppress constParameterReference // the lookup state holds the dictionary by non-const reference
-bool DictionaryDefinitionActivity::enableLookup(Dictionary& dictionary, std::string&& query) {
-  lookup = makeUniqueNoThrow<LookupState>(dictionary);
+bool DictionaryDefinitionActivity::enableLookup(Dictionary& dictionary, std::string&& query,
+                                                const VocabularyContext& vocabulary) {
+  lookup = makeUniqueNoThrow<LookupState>(dictionary, vocabulary);
   if (!lookup) LOG_ERR("DICT", "OOM: lookup history (%u bytes)", static_cast<unsigned>(sizeof(LookupState)));
   if (lookup) lookup->query = std::move(query);
   return lookup != nullptr;
@@ -569,6 +570,17 @@ void DictionaryDefinitionActivity::navigateDefinition(const bool back) {
         break;
     }
     return;
+  }
+  // Record the notebook entry for an in-popup FORWARD lookup the moment the
+  // dictionary has it — the same contract the selector's performLookup uses
+  // (record when found; render failures don't retract). navigateDefinition
+  // bypasses the selector entirely, so without this the notebook never sees
+  // in-popup searches (CodeRabbit, PR #306). A BACK navigation re-shows an
+  // already-recorded word: no new record.
+  if (!back && SETTINGS.vocabularyHistoryEnabled &&
+      !VocabularyStore::append(lookup->vocabulary, lookup->pendingWord, next.headword, next.text,
+                               lookup->dictionary.definitionsAreHtml())) {
+    LOG_ERR("VOCAB", "Could not save successful dictionary lookup");
   }
   const bool forcePlain = back && !lookup->history[lookup->depth - 1].styled;
   if (!prepareDefinition(next, forcePlain)) {

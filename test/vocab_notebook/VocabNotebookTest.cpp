@@ -211,6 +211,39 @@ TEST(VocabNotebook, RemoveRecordPublishFailureRecoversTheStage) {
   EXPECT_EQ(after[1].word, "b");
 }
 
+TEST(VocabNotebook, AppendAdoptsTheStageWithoutAnInterimRead) {
+  fake::reset();
+  const std::string original = record("a", "h", "d", 1) + record("b", "h", "d", 2);
+  fake::add(VocabularyStore::FILE_PATH, original);
+  fake::failRename = 0;
+  EXPECT_FALSE(VocabularyStore::removeRecord(0));
+  // The stage is the only surviving copy. The UI path does not guarantee a
+  // read between the failed publish and the next lookup — append itself must
+  // settle the stage or it would orphan it behind a fresh store (CodeRabbit,
+  // PR #306).
+  EXPECT_EQ(fake::files.count(VocabularyStore::FILE_PATH), 0u);
+  VocabularyContext context;
+  ASSERT_TRUE(VocabularyStore::append(context, "c", "he", "de", false));
+  const auto after = loadRecent(50);
+  ASSERT_EQ(after.size(), 2u);
+  EXPECT_EQ(after[0].word, "c");
+  EXPECT_EQ(after[1].word, "b");
+  EXPECT_EQ(after[0].recordIndex, 1u);
+}
+
+TEST(VocabNotebook, LoadRecentRefusesOnADroppedTailBaseRead) {
+  fake::reset();
+  std::vector<std::string> words;
+  for (int i = 0; i < 500; ++i) words.push_back("w" + std::to_string(i));
+  fake::add(VocabularyStore::FILE_PATH, newestContent(words));
+  // failRead=1 lets the window read succeed and kills the FIRST read of the
+  // record-base newline count. A dropped base must be REFUSED, not silently
+  // shortened: every row's recordIndex would address the wrong record.
+  fake::failRead = 1;
+  std::vector<NotebookEntry> out;
+  EXPECT_FALSE(VocabularyStore::loadRecent(out, 10));
+}
+
 TEST(VocabNotebook, RemoveRecordStageWriteFailsLeavesTheStoreUntouched) {
   fake::reset();
   const std::string original = record("a", "h", "d", 1) + record("b", "h", "d", 2);

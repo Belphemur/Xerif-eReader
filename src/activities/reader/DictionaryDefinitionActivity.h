@@ -13,6 +13,7 @@
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
 #include "util/Dictionary.h"
+#include "vocabulary/VocabularyStore.h"
 
 // Paged viewer for one dictionary definition. HTML definitions are laid out
 // through the EPUB chapter parser into styled Pages; anything else (plain
@@ -29,7 +30,7 @@ class DictionaryDefinitionActivity final : public Activity {
         dictionaryName(std::move(dictionaryName)),
         openSearchOnEnter(openSearchOnEnter) {}
 
-  bool enableLookup(Dictionary& dictionary, std::string&& query);
+  bool enableLookup(Dictionary& dictionary, std::string&& query, const VocabularyContext& vocabulary);
 
   void onEnter() override;
   void onExit() override;
@@ -85,8 +86,13 @@ class DictionaryDefinitionActivity final : public Activity {
   };
 
   struct LookupState {
-    explicit LookupState(Dictionary& dictionary) : dictionary(dictionary) {}
+    explicit LookupState(Dictionary& dictionary, const VocabularyContext& vocabulary)
+        : dictionary(dictionary), vocabulary(vocabulary) {}
     Dictionary& dictionary;  // Owned by the retained DictionaryWordSelectActivity parent.
+    // The reader's lookup context (book/chapter/page the first lookup came
+    // from); every in-popup search through this chain records into the
+    // notebook with it — the selector records only its own lookups.
+    VocabularyContext vocabulary;
     std::array<HistoryEntry, 16> history;
     size_t depth = 0;
     std::string query;

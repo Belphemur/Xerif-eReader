@@ -40,6 +40,19 @@ methods = "\n".join(block(viewer, signature) for signature in (
 structs = "\n".join(block(header, f"struct {name} {{", True) for name in (
     "Line", "BodyArea", "Definition", "HistoryEntry", "LookupState"
 ))
+vocab_stub = (ROOT / "src/vocabulary/VocabularyStore.h").read_text().split('struct VocabularyContext {', 1)[1].split('};', 1)[0]
+vocab_stub = 'struct VocabularyContext {' + vocab_stub + '};\n'
+# The store mirror counts the words it receives so the routing assertions can
+# pin the notebook contract: forward navigations record, back does not.
+vocab_store_stub = (
+    "struct VocabularyStore {\n"
+    "  static inline std::vector<std::string> recorded;\n"
+    "  static void reset() { recorded.clear(); }\n"
+    "  static bool append(const VocabularyContext&, const std::string& word, const std::string&, const std::string&, bool) {\n"
+    "    recorded.push_back(word);\n"
+    "    return true;\n"
+    "  }\n"
+    "};\n")
 location = block((ROOT / "src/util/Dictionary.h").read_text(), "struct DictLocation {", True)
 entry = block((ROOT / "src/util/Dictionary.h").read_text(), "struct DictEntry {", True)
 entry_list = block((ROOT / "src/util/Dictionary.h").read_text(), "class DictEntryList {", True)
@@ -68,6 +81,7 @@ harness = r'''
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <optional>
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -150,8 +164,12 @@ struct Renderer {
 };
 struct Settings {
   bool touchReaderControls = true;
+  bool vocabularyHistoryEnabled = false;
   int getReaderFontId() const { return 0; }
 } SETTINGS;
+// The extracted navigateDefinition records its notebook entry through the
+// store; the mirror returns success — the store round-trips are pinned by
+// the VocabNotebook suite.
 struct MappedInputManager {
   enum class Button { Back };
   bool touch = false;
@@ -172,9 +190,10 @@ struct MappedInputManager {
     return true;
   }
 };
-''' + location + r'''
+''' + location + '\n' + vocab_stub + vocab_store_stub + r'''
 struct Dictionary {
   enum class LookupResult { Found, NotFound, LowMemory, ReadError, Decompress };
+  bool definitionsAreHtml() const { return false; }
   std::map<uint32_t, std::string> entries;
   bool failRead = false;
   unsigned failuresRemaining = 0;
@@ -287,7 +306,7 @@ int main() {
   Dictionary dictionary;
   dictionary.entries = {{10, "first entry one two three four five six"}, {20, "other definition"}};
   DictionaryDefinitionActivity view;
-  view.lookup = std::make_unique<DictionaryDefinitionActivity::LookupState>(dictionary);
+  view.lookup = std::make_unique<DictionaryDefinitionActivity::LookupState>(dictionary, VocabularyContext{});
   view.lookup->query = "same";
   view.content.headword = "same";
   view.content.text = dictionary.entries.at(10);
@@ -303,6 +322,7 @@ int main() {
   };
   view.lookup->pendingWord = "alias";
   view.navigateDefinition(false);
+  assert(VocabularyStore::recorded.empty());  // toggle off: no notebook write
   assert(view.lookup->depth == 1 && view.content.text == dictionary.entries.at(20));
   assert(view.content.text == "other definition");
   dictionary.failRead = true;
@@ -386,10 +406,13 @@ int main() {
   view.content.headword = "same";
   view.content.text = dictionary.entries.at(10);
   assert(view.prepareDefinition(view.content, true));
+  SETTINGS.vocabularyHistoryEnabled = true;
+  VocabularyStore::reset();
   view.lookup->pendingWord = "alias";
   view.navigateDefinition(false);
+  assert(VocabularyStore::recorded.size() == 1 && VocabularyStore::recorded[0] == "alias");
   view.navigateDefinition(true);
-  assert(view.content.pages.empty());
+  assert(VocabularyStore::recorded.size() == 1);  // back never re-records
   // The plain adapter keeps byte ranges, CJK character boundaries, line positions, and page boundaries.
   view.htmlDefinition = false;
   view.content = {};
@@ -427,7 +450,7 @@ int main() {
   // Short Back restores one entry; long Back waits for release and cancels the entire flow.
   for (const unsigned long heldMs : {999ul, 1000ul, 2000ul}) {
     DictionaryDefinitionActivity backView;
-    backView.lookup = std::make_unique<DictionaryDefinitionActivity::LookupState>(dictionary);
+    backView.lookup = std::make_unique<DictionaryDefinitionActivity::LookupState>(dictionary, VocabularyContext{});
     backView.lookup->depth = 1;
     backView.lookup->history[0].query = "same";
     backView.content.text = dictionary.entries.at(20);
@@ -496,7 +519,7 @@ int main() {
          restored.lastWord == 5);
   // Long Back also exits at the first definition, where there are no ancestors.
   DictionaryDefinitionActivity root;
-  root.lookup = std::make_unique<DictionaryDefinitionActivity::LookupState>(dictionary);
+  root.lookup = std::make_unique<DictionaryDefinitionActivity::LookupState>(dictionary, VocabularyContext{});
   root.mappedInput.released = true;
   root.mappedInput.heldMs = 1000;
   root.handleBack();
@@ -515,7 +538,7 @@ int main() {
     SETTINGS.touchReaderControls = controlsEnabled;
     for (const auto& target : longPressTargets) {
       DictionaryDefinitionActivity touchView;
-      touchView.lookup = std::make_unique<DictionaryDefinitionActivity::LookupState>(dictionary);
+      touchView.lookup = std::make_unique<DictionaryDefinitionActivity::LookupState>(dictionary, VocabularyContext{});
       touchView.content.text = dictionary.entries.at(10);
       assert(touchView.prepareDefinition(touchView.content));
       touchView.mappedInput.longPress = true;
