@@ -68,23 +68,15 @@ inline int bandLast(const int64_t y1q, const int srcH, const int dstH) {
   return b;
 }
 
-// Source ring rows one streaming detail interval needs: pass-2 row m reads
-// its own patch [edge(m), edge(m+1)) while the read cursor has reached
-// edge(m+2) (the band that just completed) — a 2-band span plus boundary
-// slack rows.
-inline int ringDepth(const int srcH, const int dstH) {
-  const int f = (srcH + dstH - 1) / dstH;  // rows per band, rounded up
-  return 2 * f + 2;
-}
-
-// Plan with the memory-driven downgrades applied: a streaming detail pass
-// whose full-depth ring would exceed kRingBytesCap degrades to λ0 (a
-// partial ring would read WRONG patch rows — never a silent corruption).
-inline DpidScaler::Plan effectivePlan(DpidScaler::Plan p, const size_t ringCap) {
-  if (p.detail && !p.random && p.srcW > 0) {
-    const int depth = ringDepth(p.srcH, p.dstH);
-    if (static_cast<size_t>(depth) * static_cast<size_t>(p.srcW) > ringCap) p.detail = false;
-  }
+// Streaming plan policy (reset4): pass 2 never runs on a streamed source —
+// the per-destination-pixel full-band walk measured 895.9M inner iterations
+// at 934x1400 -> 440x782 on host (~60 s on the 240 MHz S3; owner soak
+// 2026-11-10 showed exactly that window at rung detail). Random plans keep
+// pass 2 (BMP row decoder; the source pattern is already resident, so the
+// detail pass buys stroke energy without a decode in the loop). Applied ONCE
+// at the scratch/begin seam so no streamed band boundary re-questions it.
+static DpidScaler::Plan effectivePlan(DpidScaler::Plan p) {
+  if (p.detail && !p.random) p.detail = false;
   return p;
 }
 
@@ -119,8 +111,6 @@ inline void claheBlendParams(const int n, const int size, int& tA, int& tB, int&
 
 // ── plan / memory ───────────────────────────────────────────────────────────
 
-DpidScaler::Plan DpidScaler::cappedPlan(const Plan& request) { return effectivePlan(plan(request), kRingBytesCap); }
-
 DpidScaler::Plan DpidScaler::plan(const Plan& dimsIn) {
   Plan p = dimsIn;
   if (p.srcW <= 0 || p.srcH <= 0 || p.dstW <= 0 || p.dstH <= 0) {
@@ -137,7 +127,7 @@ DpidScaler::Plan DpidScaler::plan(const Plan& dimsIn) {
 }
 
 size_t DpidScaler::scratchBytes(const Plan& planIn) {
-  const Plan p = effectivePlan(plan(planIn), kRingBytesCap);
+  const Plan p = effectivePlan(plan(planIn));
   const size_t dstW = static_cast<size_t>(p.dstW);
   const bool tooSmallForClahe = p.clahe && (p.dstW / kClaheTiles < 2 || p.dstH / kClaheTiles < 2);
   const bool needsImage = p.detail || (p.clahe && !tooSmallForClahe);
@@ -154,7 +144,6 @@ size_t DpidScaler::scratchBytes(const Plan& planIn) {
     const size_t bandBytes = rows * (static_cast<size_t>(p.srcW) + sizeof(uint32_t));
     if (bandBytes + bandBytes / 4 <= kPass2BandBytesCap) bytes += bandBytes;
   }
-  if (p.detail && !p.random) bytes += static_cast<size_t>(ringDepth(p.srcH, p.dstH)) * p.srcW;
   if (p.clahe && !tooSmallForClahe) {
     bytes += static_cast<size_t>(kClaheTiles * kClaheTiles) * kClaheBins * 2;  // hist u16
     bytes += static_cast<size_t>(kClaheTiles * kClaheTiles) * kClaheBins;      // LUT maps
@@ -165,7 +154,7 @@ size_t DpidScaler::scratchBytes(const Plan& planIn) {
 bool DpidScaler::begin(const Plan& planIn, uint8_t* block, const size_t bytes, EmitFn emit, void* emitUser, PollFn poll,
                        void* pollUser, RowFn provider, void* providerUser) {
   ok_ = false;
-  p_ = effectivePlan(plan(planIn), kRingBytesCap);
+  p_ = effectivePlan(plan(planIn));
   aborted_ = false;
   emit_ = emit;
   emitUser_ = emitUser;
@@ -186,7 +175,6 @@ bool DpidScaler::begin(const Plan& planIn, uint8_t* block, const size_t bytes, E
 
   curBand_ = -1;
   nearBest_ = 0;
-  nextPass2_ = 0;
   lastRand_ = -1;
   holdFull_ = false;
   finished_ = false;
@@ -203,8 +191,6 @@ bool DpidScaler::begin(const Plan& planIn, uint8_t* block, const size_t bytes, E
   hold_ = static_cast<uint8_t*>(carve(dstW));
   dst_ = nullptr;
   tent_ = nullptr;
-  ring_ = nullptr;
-  ringRows_ = 0;
   rowBuf_ = nullptr;
   near_ = nullptr;
   p2band_ = nullptr;
@@ -231,11 +217,6 @@ bool DpidScaler::begin(const Plan& planIn, uint8_t* block, const size_t bytes, E
         p2bandRows_ = 0;
       }
     }
-  }
-  if (p_.detail && !p_.random) {
-    const int rows = ringDepth(p_.srcH, p_.dstH);
-    ringRows_ = static_cast<size_t>(rows);
-    ring_ = static_cast<uint8_t*>(carve(ringRows_ * p_.srcW));
   }
   tilesX_ = tilesY_ = 0;
   tileW_ = tileH_ = 0;
@@ -307,21 +288,7 @@ void DpidScaler::accumulateRow(const int y, const uint8_t* gray) {
     const int64_t wv = bandOverlap(band, y0q, y1q, p_.srcH, p_.dstH);
     if (wv <= 0) continue;
     if (band != curBand_) {
-      const int ended = curBand_;
-      if (ended >= 0) {
-        flushBand();
-        // Destination row `ended` just completed. Interleaved pass 2:
-        // destination row m needs D(m+1), so every m <= ended-1 can emit
-        // right now — the streaming ring's cursor (the band being
-        // accumulated next) is at most edge(ended+2), and their patches
-        // start at edge(ended-1) — ringDepth() covers exactly that span.
-        if (p_.detail && ring_ != nullptr) {
-          while (nextPass2_ <= ended - 1) {
-            pass2Row(nextPass2_);
-            ++nextPass2_;
-          }
-        }
-      }
+      if (curBand_ >= 0) flushBand();
       curBand_ = band;
       memset(acc_, 0, sizeof(uint64_t) * static_cast<size_t>(p_.dstW));
       memset(wtot_, 0, sizeof(uint64_t) * static_cast<size_t>(p_.dstW));
@@ -411,13 +378,14 @@ void DpidScaler::pass2Row(const int m) {
   // 2. flush the previous hold (out m-1) into slot m-1.
   if (holdFull_) memcpy(dst_ + dstW * (m - 1), hold_, dstW);
   // 3. re-accumulate band m's patch with the detail weight; result -> hold.
-  // Random mode: the patch rows are fetched ONCE into the band copy (a
-  // per-column readRow walk refetches every patch row for each dst column —
-  // BMP provider rows are full row decodes); identical integer terms in a
-  // different visit order stay bit-identical (fixed-point, no rounding).
+  // Random mode only (the streaming plan drops pass 2; reset4 policy). The
+  // patch rows are fetched ONCE into the band copy (a per-column readRow
+  // walk refetches every patch row for each dst column — BMP provider rows
+  // are full row decodes); identical integer terms in a different visit
+  // order stay bit-identical (fixed-point, no rounding).
   const int64_t y0q = edgeQ16(m, p_.srcH, p_.dstH);
   const int64_t y1q = edgeQ16(m + 1, p_.srcH, p_.dstH);
-  const int bandRows = p_.random ? copyPass2Band(y0q, y1q) : -1;
+  const int bandRows = copyPass2Band(y0q, y1q);
   for (int x = 0; x < p_.dstW; ++x) {
     uint64_t a = 0, fSum = 0;
     const int64_t e0q = edgeQ16(x, p_.srcW, p_.dstW);
@@ -453,7 +421,7 @@ void DpidScaler::pass2Row(const int m) {
         const int64_t yhi = ply1 < y1q ? ply1 : y1q;
         const uint64_t wy = static_cast<uint64_t>(yhi > ylo ? yhi - ylo : 0);
         if (wy == 0) continue;
-        const uint8_t* srow = p_.random ? readRow(sy) : ring_ + static_cast<size_t>(sy % ringRows_) * p_.srcW;
+        const uint8_t* srow = readRow(sy);
         for (int px = 0; px < p_.srcW; ++px) {
           const int64_t px0 = static_cast<int64_t>(px) * kQ16;
           const int64_t px1 = px0 + kQ16;
@@ -619,14 +587,9 @@ bool DpidScaler::clahePass() {
 
 // ── driver ─────────────────────────────────────────────────────────────────
 
-// Streaming mode: one completed source row in raster order. The ring keeps
-// the pass-2 patch window alive (push FIRST, then accumulate — the row must
-// be visible to pass 2 by the time its band completes).
+// Streaming mode: one completed source row in raster order. Pass 1 only.
 void DpidScaler::feedSourceRow(const int y, const uint8_t* gray) {
   if (!ok_ || aborted_) return;
-  if (ring_ != nullptr) {
-    memcpy(ring_ + static_cast<size_t>(y % ringRows_) * p_.srcW, gray, static_cast<size_t>(p_.srcW));
-  }
   accumulateRow(y, gray);
 }
 
@@ -654,25 +617,13 @@ bool DpidScaler::finish() {
   if (finished_) return true;
   finished_ = true;
   if (readFailed_) return false;  // provider row decode failed mid-run
-  if (aborted_) return true;      // mid-stream abort already propagated
+  if (aborted_) return false;     // emit refusal / takeover: report via finish() too
 
-  // Last pass-1 band + the pass-2 rows it unblocks.
-  const int ended = curBand_;
+  // Last pass-1 band + the random pass-2 rows it unblocks.
   if (curBand_ >= 0) flushBand();
   if (dst_ == nullptr) return true;  // bufferless: rows already streamed out
-  // Pass-2 row m's tent reads D(m+1), which exists once band m+1 flushed —
-  // rows 0..ended are complete; row dstH-1 has no row below it, so it always
-  // emits. The random cursor is srcH (all bands flushed) and the streaming
-  // cursor is edge(ended+2), so every patch is resident.
-  const int pass2Last = p_.detail ? p_.dstH - 1 : -1;
-  if (p_.detail && !p_.random) {
-    while (nextPass2_ <= pass2Last) {
-      const bool ready = nextPass2_ + 1 <= ended || nextPass2_ == p_.dstH - 1;
-      if (!ready) break;
-      pass2Row(nextPass2_);
-      ++nextPass2_;
-    }
-  }
+  // Random detail: every band flushed, so every pass-2 patch is resident;
+  // row dstH-1 has no row below it, so it always emits.
   if (p_.detail && p_.random) {
     for (int m = 0; m < p_.dstH; ++m) {
       pass2Row(m);

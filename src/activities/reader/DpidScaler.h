@@ -1,22 +1,23 @@
 #pragma once
 
-// DpidScaler — the TTF image pipeline's detail-preserving downscale + optional
-// CLAHE local contrast (design docs/design/2026-11-09-ttf-image-dpid-clahe.md,
-// §Contract 2-3, §Decision log). One implementation; three callers (SDK
+// DpidScaler — the TTF image pipeline's downscale + optional CLAHE local
+// contrast (design docs/design/2026-11-09-ttf-image-dpid-clahe.md, §Contract
+// 2-3; the reset4 rework). One implementation; three callers (SDK
 // JPEG/PNG/progressive source rows, the app BMP row decoder, the GIF
 // converter's first-frame rows).
 //
-// DPID (Nehab/Weber/Amend 2016; reference mergian/dpid `dpid.m`):
-//   pass 1 — fractional-coverage area average of every output patch into a
-//     full-destination image (fixes the per-row `sum/(x1-x0)` truncation the
-//     old inline box filters had: no per-row division, so nothing loses
-//     brightness);
-//   pass 2 — re-accumulates each output pixel from its own source patch with
-//     weight f = |tent3x3(p) − p| (λ=1; no pow) times the patch coverage, so
-//     high-frequency content that box averaging smears away dominates the
-//     output. Host-pinned: +41% stroke energy on hairline fields, λ=0 output
-//     byte-identical to pass 1, no output pixel outside its source patch
-//     [min,max] (weighted-average property), flat fields exact.
+// Fractional-coverage area average (always): every output patch accumulates
+// its exact source coverage into the destination pixel (no per-row
+// `sum/(x1-x0)` division, so nothing loses brightness).
+//
+// DPID (Nehab/Weber/Amend 2016; reference mergian/dpid `dpid.m`) pass 2 —
+// re-accumulates each output pixel from its own source patch with weight
+// f = |tent3x3(p) − p| (λ=1) times the patch coverage — is RANDOM-ACCESS
+// ONLY (BMP row decoder). Streamed sources (JPEG/PNG/GIF) never run it: the
+// pass walks the whole source band per destination pixel — measured on host
+// at 934x1400 -> 440x782: 895.9M inner iterations, 3.0M (0.33%) contributing
+// (~60 s on the X4 Pro's 240 MHz S3 owner soak 2026-11-10) — while pass 1
+// carries the resolution.
 //
 // CLAHE (XteinkImageRefiner regime: cv2.createCLAHE clip≈2.0, tileGrid 8×8;
 // Zuiderveld Graphics Gems IV algorithm): per-tile histograms, integer clip
@@ -28,9 +29,9 @@
 //
 // Integer fixed point only (Q16.16 edge math), fully deterministic. The full
 // destination image lives in one call-scoped PSRAM block the caller hands in
-// (see scratchBytes()); PSRAM-starved callers skip the whole block and get
-// the streaming λ=0 fractional box (still truncation-free) with no buffer at
-// all — the mode is fixed before the first row, never mid-decode.
+// (see scratchBytes()) whenever pass 2 (random) or CLAHE needs it; streamed
+// plans without CLAHE run bufferless and stream rows straight to the sink —
+// the mode is fixed before the first row, never mid-decode.
 //
 // Host-testable: no Arduino/HAL includes; sources arrive through feedSourceRow
 // or the random-access row provider, results leave through the emit callback.
@@ -61,8 +62,8 @@ class DpidScaler {
     int dstW = 0;
     int dstH = 0;
     bool clahe = false;   // pictureDetail == Enhanced
-    bool detail = true;   // DPID λ=1; false => fractional λ=0 box
-    bool random = false;  // source rows re-readable (no ring needed)
+    bool detail = true;   // DPID λ=1 pass-2 request; streaming plans drop it
+    bool random = false;  // source rows re-readable (pass 2 runs only here)
     // Small class (dst >= src on both axes) picks each destination pixel
     // from the nearest source pixel by center mapping instead of
     // box-averaging (blockiness design 2026-11-09): the divider-ornament
@@ -93,8 +94,8 @@ class DpidScaler {
              RowFn provider = nullptr, void* providerUser = nullptr);
 
   // Streaming source mode: one completed source row, strictly in raster
-  // order. Runs pass 1 and (bufferful streaming detail) the interleaved
-  // pass 2; returns false once the emit hook aborted.
+  // order. Pass 1 only (reset4: the O(band x srcW) detail walk never runs
+  // on streamed rows); the emit hook aborts via its own false return.
   void feedSourceRow(int srcY, const uint8_t* gray);
 
   // Random-access source mode: pass 1 over `provider` (fills plan.srcW
@@ -115,15 +116,6 @@ class DpidScaler {
   int srcWidth() const { return p_.srcW; }
   int dstWidth() const { return p_.dstW; }
   const Plan& placedPlan() const { return p_; }
-
-  // The plan a decode CAN run under when memory allows it: requested dims
-  // with the streaming-ring cap applied (a deterministic dimension rule —
-  // the degrade verdict compares placing against rungs the ATTACH ladder
-  // dropped, NOT against this cap; a ring-capped huge source has a stable
-  // bake identity and must cache). Exposed for the engine's gate.
-  static Plan cappedPlan(const Plan& request);
-  // Streaming-ring byte cap (effectivePlan/scratchBytes + cappedPlan).
-  static constexpr size_t kRingBytesCap = 128 * 1024;
 
  private:
   // Pass-1 area average + band bookkeeping (probe-validated fixed point).
@@ -156,14 +148,12 @@ class DpidScaler {
   uint64_t* wtot_ = nullptr;   // [dstW]
   uint8_t* hold_ = nullptr;    // dstW row, pass-2 flush scheme side buffer
   uint8_t* tent_ = nullptr;    // dstW row, tent values of the active row
-  uint8_t* ring_ = nullptr;    // ringRows * srcW source rows (streaming)
   uint8_t* rowBuf_ = nullptr;  // srcW, random-access provider scratch
   uint8_t* near_ = nullptr;    // srcW, nearest-sample store (small class)
   // Pass-2 band copy (random mode): the vertical patch read ONCE per output
   // row instead of once per column — readRow's single-row cache refetches
   // every patch row for each dst column (BMP rows are seeks; minutes-long
-  // stalls). Best-effort carve; null falls back to the per-column readRow
-  // path (ring_ streaming mode never uses it).
+  // stalls). Best-effort carve; null falls back to the per-column readRow path.
   uint8_t* p2band_ = nullptr;  // p2bandRows_ * srcW rows of the band
   uint32_t* p2wy_ = nullptr;   // [p2bandRows_] vertical coverage weights
   int p2bandRows_ = 0;
@@ -177,14 +167,11 @@ class DpidScaler {
   int tilesX_ = 0, tilesY_ = 0, tileW_ = 0, tileH_ = 0;
 
   int curBand_ = -1;                                       // dst band under pass-1 accumulation
-  int nextPass2_ = 0;                                      // first dst row not yet pass-2 emitted
   int lastRand_ = -1;                                      // random-access last requested row
   static constexpr size_t kPass2BandBytesCap = 64 * 1024;  // band copy bound
-  bool holdFull_ = false;                                  // hold row carries out(nextPass2_-1)
+  bool holdFull_ = false;                                  // hold row carries out(dstH-1)
   bool finished_ = false;
   bool ok_ = false;
-
-  size_t ringRows_ = 0;  // source rows the ring holds (streaming detail)
 };
 
 }  // namespace ttfimg

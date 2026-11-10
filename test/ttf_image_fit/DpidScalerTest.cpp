@@ -93,11 +93,14 @@ TEST(PsramBudget, LandscapeFullPageDetailClaheScratchFitsTheBudget) {
 }
 
 TEST(PsramBudget, DegradedRungsStayInsideTheBudget) {
-  // Ladder invariant: every rung below the full one is smaller, so a decode
-  // that passed the budget gate can always place SOME rung — degradation is
-  // never a gate sidestep.
-  const DpidScaler::Plan full{930, 1400, 480, 800, true, true, false};
-  const DpidScaler::Plan box{930, 1400, 480, 800, true, false, false};
+  // Ladder invariant (reset4): every rung below the full one is smaller, so a
+  // decode that passed the budget gate can always place SOME rung —
+  // degradation is never a gate sidestep. The random-access plan is the only
+  // one that carries pass 2 (streaming plans drop it by policy, which is why
+  // the ladder is ranked on random plans: a streaming "full" request and the
+  // box rung now ask the same scratch).
+  const DpidScaler::Plan full{930, 1400, 480, 800, true, true, true};
+  const DpidScaler::Plan box{930, 1400, 480, 800, true, false, true};
   const DpidScaler::Plan bufferless{930, 1400, 480, 800, false, false, false};
   const size_t boxNeed = DpidScaler::scratchBytes(box);
   const size_t bufferlessNeed = DpidScaler::scratchBytes(bufferless);
@@ -111,13 +114,28 @@ TEST(DpidScaler, StrokeEnergyBeatsBoxAverage) {
   const auto src = makeStrokeField(SW, SH);
   Sink sink;
   sink.w = DW;
-  DpidScaler::Plan p{SW, SH, DW, DH, false, true, false};
+  // reset4: pass 2 runs only on a random-access source (the BMP row
+  // decoder), so this pin of the DPID detail pass uses the random plan.
+  // Streaming plans run pass 1 only and match the box average exactly
+  // (LambdaZeroEqualsFractionalPass1 pins that).
+  DpidScaler::Plan p{SW, SH, DW, DH, false, true, true};
   const size_t bytes = DpidScaler::scratchBytes(p);
   ASSERT_GT(bytes, 0u);
   std::vector<uint8_t> block(bytes);
   DpidScaler s;
-  ASSERT_TRUE(s.begin(p, block.data(), bytes, &Sink::emit, &sink, &pollFalse, nullptr));
-  for (int y = 0; y < SH; ++y) s.feedSourceRow(y, src.data() + static_cast<size_t>(y) * SW);
+  // A random plan drives pass 2 through the row provider (the BMP path's
+  // shape: begin() registers it, runRandom() replays, finish() emits).
+  struct ProviderCtx {
+    const std::vector<uint8_t>* src;
+    int w;
+  } provCtx{&src, SW};
+  DpidScaler::RowFn provider = [](void* user, int y, uint8_t* out) {
+    auto* c = static_cast<ProviderCtx*>(user);
+    memcpy(out, c->src->data() + static_cast<size_t>(y) * c->w, static_cast<size_t>(c->w));
+    return true;
+  };
+  ASSERT_TRUE(s.begin(p, block.data(), bytes, &Sink::emit, &sink, &pollFalse, nullptr, provider, &provCtx));
+  ASSERT_TRUE(s.runRandom(provider, &provCtx));
   ASSERT_TRUE(s.finish());
   ASSERT_EQ(sink.rows.size(), static_cast<size_t>(DH));
 
@@ -188,19 +206,27 @@ TEST(DpidScaler, FlatFieldBakesExactly) {
 TEST(DpidScaler, LambdaZeroEqualsFractionalPass1AndRandomMode) {
   const int SW = 321, SH = 197, DW = 160, DH = 98;  // odd sizes stress edges
   const auto src = makeStrokeField(SW, SH);
-  Sink streaming, random;
-  streaming.w = DW;
-  random.w = DW;
+  Sink streaming, random, lambda0;
+  streaming.w = random.w = lambda0.w = DW;
 
-  // λ=0 (fractional box) streaming vs a full DPID run must differ somewhere
-  // (the detail pass actually does something), and the SAME plan must give
-  // byte-identical output across modes (determinism + parity).
+  // reset4 contract: pass 2 never runs on a streamed source, so a
+  // detail-requesting streaming plan is byte-identical to an explicit λ0
+  // plan (determinism + the no-pass-2 parity pin); a random plan still
+  // carries the detail pass and must differ somewhere (the detail pass
+  // actually does something).
   DpidScaler::Plan pd{SW, SH, DW, DH, false, true, false};
   std::vector<uint8_t> bd(DpidScaler::scratchBytes(pd));
   DpidScaler sd;
   ASSERT_TRUE(sd.begin(pd, bd.data(), bd.size(), &Sink::emit, &streaming, &pollFalse, nullptr));
   for (int y = 0; y < SH; ++y) sd.feedSourceRow(y, src.data() + static_cast<size_t>(y) * SW);
   ASSERT_TRUE(sd.finish());
+
+  DpidScaler::Plan p0{SW, SH, DW, DH, false, false, false};
+  std::vector<uint8_t> b0(DpidScaler::scratchBytes(p0));
+  DpidScaler s0;
+  ASSERT_TRUE(s0.begin(p0, b0.data(), b0.size(), &Sink::emit, &lambda0, &pollFalse, nullptr));
+  for (int y = 0; y < SH; ++y) s0.feedSourceRow(y, src.data() + static_cast<size_t>(y) * SW);
+  ASSERT_TRUE(s0.finish());
 
   DpidScaler::Plan pr{SW, SH, DW, DH, false, true, true};
   std::vector<uint8_t> br(DpidScaler::scratchBytes(pr));
@@ -222,9 +248,19 @@ TEST(DpidScaler, LambdaZeroEqualsFractionalPass1AndRandomMode) {
   ASSERT_EQ(streaming.rows.size(), static_cast<size_t>(DH));
   for (int r = 0; r < DH; ++r) {
     for (int x = 0; x < DW; ++x) {
-      ASSERT_EQ(streaming.rows[r][x], random.rows[r][x]) << "mode parity at " << r << "," << x;
+      ASSERT_EQ(streaming.rows[r][x], lambda0.rows[r][x]) << "no-pass-2 parity at " << r << "," << x;
     }
   }
+  bool differs = false;
+  for (int r = 0; r < DH && !differs; ++r) {
+    for (int x = 0; x < DW; ++x) {
+      if (random.rows[r][x] != lambda0.rows[r][x]) {
+        differs = true;
+        break;
+      }
+    }
+  }
+  EXPECT_TRUE(differs) << "the random detail pass did nothing";
 }
 
 TEST(DpidScaler, TinyImageSkipsDetail) {
@@ -396,12 +432,16 @@ TEST(DpidScaler, BorderRowsAndColumnsStayCovered) {
   for (int y = 0; y < SH; ++y) s.feedSourceRow(y, src.data() + static_cast<size_t>(y) * SW);
   ASSERT_TRUE(s.finish());
   ASSERT_EQ(sink.rows.size(), static_cast<size_t>(DH));
-  // The 1px border survives at least partially: border rows/cols are darker
-  // than the interior (no complete loss of the edge).
-  EXPECT_LT(sink.rows[0][0], 200);
-  EXPECT_LT(sink.rows[DH - 1][DW - 1], 200);
-  EXPECT_LT(sink.rows[DH / 2][0], 200);
-  EXPECT_LT(sink.rows[DH / 2][DW - 1], 200);
+  // The 1px border survives pass 1's fractional coverage (the 8x shrink
+  // smears a dark border pixel across srcW/dstW = 8 source rows, so a
+  // mid-row border cell lands ~224) — but the edge is still a shade darker
+  // than the untouched interior (no complete loss of the edge). The old
+  // <200 bound pinned the detail pass's edge retention, which reset4
+  // dropped for streamed sources (pass 2 is random-access only).
+  EXPECT_LT(sink.rows[0][0], 240);
+  EXPECT_LT(sink.rows[DH - 1][DW - 1], 240);
+  EXPECT_LT(sink.rows[DH / 2][0], 240);
+  EXPECT_LT(sink.rows[DH / 2][DW - 1], 240);
   EXPECT_EQ(sink.rows[DH / 2][DW / 2], 255);  // interior untouched
 }
 
