@@ -192,7 +192,7 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
         if (FsHelpers::hasReflowableBookExtension(book.path)) {
           Epub epub(book.path, "/.crosspoint");
           // Skip loading css since we only need metadata here
-          epub.load(false, true);
+          const bool cacheLoaded = epub.load(false, true);
 
           // Try to generate thumbnail image for Continue Reading card
           if (!showingLoading) {
@@ -202,8 +202,12 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
           GUI.fillPopupProgress(renderer, popupRect, 10 + progress * (90 / recentBooks.size()));
           // TXT/MD may have no metadata cache yet; FromSource resolves the
           // companion cover without one (generateThumbBmp needs a loaded cache).
+          // Same for a reflowable book without a cache (e.g. after "Delete Book
+          // Cache"): read the cover location straight from the source.
           const bool isTxtOrMd = FsHelpers::hasTxtExtension(book.path) || FsHelpers::hasMarkdownExtension(book.path);
-          bool success = isTxtOrMd ? epub.generateThumbBmpFromSource(thumbHeight) : epub.generateThumbBmp(thumbHeight);
+          bool success =
+              (isTxtOrMd || !cacheLoaded) ? epub.generateThumbBmpFromSource(thumbHeight)
+                                          : epub.generateThumbBmp(thumbHeight);
           if (!success) {
             RECENT_BOOKS.updateBook(book.path, book.title, book.author, "");
             book.coverBmpPath = "";

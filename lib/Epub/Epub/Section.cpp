@@ -145,6 +145,13 @@ namespace {
 //      changes (the fork: ruby Chromium-style layout; upstream: this .notdef
 //      change), so the merged layout is max(73, 73) + 1 = v74 per the
 //      version-collision rule and both parents' v73 caches are invalidated.
+
+// Upstream's v74 (deferred TTF advance rounding, #4431) fixes double
+// rounding in TtfEpdFont::faultGlyph — a unit the fork removed in favor of the
+// native FontChain path, where SDK RasterFont::advance()/kerning() return whole
+// pixels rounded exactly once. The change is not observable on the fork, so the
+// merged tree keeps v74 and both parents' v74 caches stay valid.
+
 constexpr uint8_t SECTION_FILE_VERSION = 74;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /

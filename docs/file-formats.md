@@ -107,10 +107,13 @@ metadata and saved progress are kept.
 Version 74 keeps the binary layout and rebuilds completed and partial sections.
 TrueType vector fonts now render and advance the .notdef glyph for missing
 characters instead of omitting them. Cached line breaks and word positions change
-for text containing glyph fallbacks. Book metadata and saved progress are kept. (Both sides' version 73 caches are invalidated too: the fork's
-version 73 is the ruby change above and upstream's version 73 was this .notdef
-change, so the merged layout takes 74.)
-
+for text containing glyph fallbacks. Book metadata and saved progress are kept.
+(Both sides' version 73 caches are invalidated too: the fork's version 73 is the
+ruby change above and upstream's version 73 was this .notdef change, so the
+merged layout takes 74. Note: upstream's own version 74 — deferred TTF advance
+rounding (#4431) — is not observable on the fork, whose native TTF path rounds
+advances exactly once at the SDK `RasterFont` boundary, so the merged tree stays
+at version 74 without further invalidation.)
 
 ### Version 72
 
