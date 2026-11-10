@@ -55,7 +55,6 @@ int FirmwareSlotsActivity::listBandWidth() const {
 
 int FirmwareSlotsActivity::valueSlotWidth(const int index) const {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const auto& theme = UITheme::getInstance();
   // Same resolved row geometry the list draws with: side padding inside the
   // band, then the row's own label (small text, single line) and the value
   // text gap (ListProps::textGap left at its 10 default). Value inset stays
