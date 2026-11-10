@@ -116,7 +116,7 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
         const uint32_t probePreMax = ESP.getMaxAllocHeap();
         const uint32_t connectStart = millis();
         http.connect(probeAbort);
-        LOG_INF("HTTP", "[TLS-PROBE] hop %d connect %ums free %u->%u maxBlock %u->%u url %s", ++probeHop,
+        LOG_DBG("HTTP", "[TLS-PROBE] hop %d connect %ums free %u->%u maxBlock %u->%u url %s", ++probeHop,
                 static_cast<unsigned>(millis() - connectStart), probePreFree, ESP.getFreeHeap(), probePreMax,
                 ESP.getMaxAllocHeap(), url.c_str());
         // Credentials and caller headers stay with the starting origin; a

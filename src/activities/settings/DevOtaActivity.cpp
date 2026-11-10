@@ -130,7 +130,7 @@ void DevOtaActivity::onWifiSelectionComplete(const bool success) {
     return;
   }
 
-  LOG_INF("DEVOTA", "[TLS-PROBE] wifi-up free=%u maxBlock=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+  LOG_DBG("DEVOTA", "[TLS-PROBE] wifi-up free=%u maxBlock=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
   {
     RenderLock lock(*this);
     state = CHECKING;
@@ -219,7 +219,7 @@ void DevOtaActivity::fetchManifest() {
   }
   probeListEnterMs_ = millis();
   probeSettleLogged_ = false;
-  LOG_INF("DEVOTA", "[TLS-PROBE] list-enter free=%u maxBlock=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+  LOG_DBG("DEVOTA", "[TLS-PROBE] list-enter free=%u maxBlock=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
   logMemAt("devota_list");
   requestUpdate();
 }
@@ -461,7 +461,7 @@ void DevOtaActivity::loop() {
   if (state == LIST && probeListEnterMs_ != 0 && !probeSettleLogged_ &&
       static_cast<long>(millis() - (probeListEnterMs_ + 3000)) >= 0) {
     probeSettleLogged_ = true;
-    LOG_INF("DEVOTA", "[TLS-PROBE] list-settle+3s free=%u maxBlock=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    LOG_DBG("DEVOTA", "[TLS-PROBE] list-settle+3s free=%u maxBlock=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
     logMemAt("devota_settle");
   }
 

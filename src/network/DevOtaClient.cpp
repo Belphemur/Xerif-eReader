@@ -120,7 +120,7 @@ Error fetchDevManifest(OtaDevVersionEntry* entries, int maxEntries, int* outCoun
     const uint32_t preMax = ESP.getMaxAllocHeap();
     const uint32_t fetchStart = millis();
     const bool ok = HttpDownloader::fetchUrl(devReleaseUrl, releaseBody, "", "", MAX_RELEASE_BYTES);
-    LOG_INF("DEVOTA", "[TLS-PROBE] release-json %ums free %u->%u maxBlock %u->%u amt=%zu ok=%d",
+    LOG_DBG("DEVOTA", "[TLS-PROBE] release-json %ums free %u->%u maxBlock %u->%u amt=%zu ok=%d",
             static_cast<unsigned>(millis() - fetchStart), preFree, ESP.getFreeHeap(), preMax, ESP.getMaxAllocHeap(),
             releaseBody.size(), ok ? 1 : 0);
     if (!ok) {
@@ -144,7 +144,7 @@ Error fetchDevManifest(OtaDevVersionEntry* entries, int maxEntries, int* outCoun
     const uint32_t preMax = ESP.getMaxAllocHeap();
     const uint32_t fetchStart = millis();
     const bool ok = HttpDownloader::fetchUrl(info.manifestUrl, manifestBody, "", "", MAX_MANIFEST_BYTES);
-    LOG_INF("DEVOTA", "[TLS-PROBE] manifest %ums free %u->%u maxBlock %u->%u amt=%zu ok=%d",
+    LOG_DBG("DEVOTA", "[TLS-PROBE] manifest %ums free %u->%u maxBlock %u->%u amt=%zu ok=%d",
             static_cast<unsigned>(millis() - fetchStart), preFree, ESP.getFreeHeap(), preMax, ESP.getMaxAllocHeap(),
             manifestBody.size(), ok ? 1 : 0);
     if (!ok) {
@@ -199,7 +199,7 @@ Error installFromManifestEntry(const OtaDevVersionEntry& entry, ProgressCallback
   const uint32_t preMax = ESP.getMaxAllocHeap();
   const uint32_t dlStart = millis();
   const auto err = HttpDownloader::downloadToFile(entry.url, STAGING_PATH, dlProgress);
-  LOG_INF("DEVOTA", "[TLS-PROBE] asset-download %ums free %u->%u maxBlock %u->%u",
+  LOG_DBG("DEVOTA", "[TLS-PROBE] asset-download %ums free %u->%u maxBlock %u->%u",
           static_cast<unsigned>(millis() - dlStart), preFree, ESP.getFreeHeap(), preMax, ESP.getMaxAllocHeap());
   if (err != HttpDownloader::OK) {
     LOG_ERR("DEVOTA", "Download failed (%d)", static_cast<int>(err));
