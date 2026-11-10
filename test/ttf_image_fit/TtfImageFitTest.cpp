@@ -16,6 +16,7 @@
 
 #include <FreeInkBook.h>
 #include <HalMemory.h>
+#include <ProgressiveJpeg.h>
 #include <epub/ImageProbe.h>
 #include <gtest/gtest.h>
 #include <render/ImageRenderer.h>
@@ -28,6 +29,7 @@
 #include <string>
 #include <vector>
 
+#include "DpidScaler.h"
 #include "Epub.h"
 #include "Epub/converters/GifToFramebufferConverter.h"
 #include "GfxRenderer.h"
@@ -39,10 +41,10 @@
 namespace ttfimg {
 DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, size_t size, ToneBake4* bake,
                            GfxRenderer* legacyPaint, bool (*abortPoll)(void*), void* abortCtx, bool clahe,
-                           bool* degradedOut, bool* preblurOut);
+                           bool* degradedOut);
 DecodeResult remapGrayToCache(const ImageSpec& spec, ToneBake4& bake, const char* writePath, bool caching,
                               GfxRenderer* paint, bool paintToTarget, bool (*abortPoll)(void*), void* abortCtx,
-                              bool preblurRows, bool* cacheStreamOk);
+                              bool* cacheStreamOk);
 }  // namespace ttfimg
 
 uint32_t g_fakeMillis = 0;
@@ -167,21 +169,6 @@ std::vector<uint8_t> readFixtureFile(const char* path) {
   return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 
-TEST(ImageRemapPreblur, TentBlurChangesADownscaleBakeButNotTheFlaggedPass) {
-  const int w = 64, h = 64;
-  std::vector<uint8_t> gray(static_cast<size_t>(w) * h);
-  for (int y = 0; y < h; ++y) {
-    for (int x = 0; x < w; ++x) {
-      gray[static_cast<size_t>(y) * w + x] = static_cast<uint8_t>((x / 3 + y / 3) % 2 ? 150 : 140);
-    }
-  }
-  // Static asserts pin the pure gate that schedules the blur.
-  static_assert(!ttfimg::tentPreblurOk(32, 31, 32, 31), "1:1 ornament never blurs");
-  static_assert(ttfimg::tentPreblurOk(965, 1400, 440, 638), "full-page art blurs");
-  static_assert(!ttfimg::tentPreblurOk(965, 1400, 440, 1400), "one-axis 1:1 does not blur");
-  SUCCEED();
-}
-
 // Runs the production two-phase BMP flow for a paint-only decode: phase 1
 // collects into a gray temp (in-memory storage), phase 2 remaps and paints
 // (caching=false — no cache side effects).
@@ -190,11 +177,11 @@ void bmpDecodeRemapPaint(FakeRenderer& r, const ttfimg::ImageSpec& spec, const s
   ASSERT_TRUE(bake.ok());
   ASSERT_TRUE(bake.beginCollect("/t/paint_case.g"));
   const auto res = ttfimg::decodeBmpRows(spec, bmp.data(), bmp.size(), &bake, /*legacyPaint=*/nullptr, nullptr, nullptr,
-                                         false, nullptr, nullptr);
+                                         false, nullptr);
   ASSERT_EQ(res, ttfimg::DecodeResult::Ok);
   ASSERT_TRUE(bake.grayDone());
   ASSERT_EQ(ttfimg::remapGrayToCache(spec, bake, "/t/paint_case.pxc", /*caching=*/false, &r,
-                                     /*paintToTarget=*/true, nullptr, nullptr, false, nullptr),
+                                     /*paintToTarget=*/true, nullptr, nullptr, nullptr),
             ttfimg::DecodeResult::Ok);
 }
 
@@ -365,6 +352,122 @@ void expectSdkPlacements(freeink::book::BookSource& source, freeink::book::Book&
 }
 
 }  // namespace
+
+// Full-fidelity progressive pass-through (reset4): renderSourceRows decodes
+// ALL scans through the SDK's ProgressiveJpeg and streams 800x1200 luma rows
+// (was the DC-only 1/8-scale preview, 100-wide rows). Tonal pins reuse the
+// fixture's known pattern: the gradient start (dark), the mid-left ramp, the
+// dark top of the right half and the light bottom of the right half — but at
+// FULL resolution (block averages exactly, quantizer 8).
+TEST(ImageFitSdkProgressiveFull, RendersFullResLumaRowsThroughRenderSourceRows) {
+  static uint8_t bookBuf[1 << 20];
+  static uint8_t scratchBuf[4 << 20];
+  HostFileSource source;
+  ASSERT_TRUE(source.open(FIT_FIXTURES "/fit_fixtures.epub"));
+  freeink::book::Arena bookArena(bookBuf, sizeof(bookBuf));
+  freeink::book::Arena scratch(scratchBuf, sizeof(scratchBuf));
+  freeink::book::Book book;
+  ASSERT_EQ(book.open(source, bookArena, scratch), freeink::book::BookStatus::Ok);
+  const freeink::book::ZipEntry* entry = book.zip().find("OEBPS/images/prog.jpg");
+  ASSERT_NE(entry, nullptr);
+
+  struct FullResCapture {
+    int dimW = 0, dimH = 0;
+    uint8_t pixels[800 * 1200] = {};
+    bool seen[1200] = {};
+    int rowW = 0;
+    int pollCalls = 0;
+    static bool onDims(void* user, uint16_t w, uint16_t h) {
+      auto* self = static_cast<FullResCapture*>(user);
+      self->dimW = w;
+      self->dimH = h;
+      return true;
+    }
+    static bool onRow(void* user, uint16_t y, const uint8_t* gray, uint16_t width) {
+      auto* self = static_cast<FullResCapture*>(user);
+      self->rowW = width;
+      if (y < 1200) self->seen[y] = true;
+      if (static_cast<size_t>(y) * width + width <= sizeof(self->pixels)) {
+        std::memcpy(self->pixels + static_cast<size_t>(y) * width, gray, width);
+      }
+      return true;
+    }
+    static bool onPoll(void* user) {
+      auto* self = static_cast<FullResCapture*>(user);
+      ++self->pollCalls;
+      return false;
+    }
+  } cap;
+  const freeink::book::BookStatus st = freeink::book::ImageRenderer::renderSourceRows(
+      source, book.zip(), "OEBPS/images/prog.jpg", 454, 681, scratch, FullResCapture::onDims, &cap,
+      FullResCapture::onRow, &cap, FullResCapture::onPoll, &cap);
+  ASSERT_EQ(st, freeink::book::BookStatus::Ok);
+  EXPECT_EQ(cap.dimW, 800);
+  EXPECT_EQ(cap.dimH, 1200);
+  EXPECT_EQ(cap.rowW, 800);
+  for (int y = 0; y < 1200; ++y) ASSERT_TRUE(cap.seen[y]) << "full-res row " << y << " never streamed";
+  EXPECT_GT(cap.pollCalls, 0) << "the poll hook never reached the decode";
+  // Tonal pins at full resolution (the fixture's DC blocks carry exact block
+  // averages; AC coefficients are absent so each 8x8 cell is constant).
+  const auto at = [&cap](int x, int y) { return cap.pixels[static_cast<size_t>(y) * 800 + x]; };
+  // Left-half gradient: x=2 sits in block col 0 (cols 0..7), ramp values 0..4.
+  EXPECT_LT(at(2, 340), 40);
+  // Mid-left: block col 25 (cols 200..207) averages ~127-135.
+  EXPECT_GT(at(200, 340), 100);
+  EXPECT_LT(at(200, 340), 180);
+  // Right half: dark top block (y=96) and light bottom block (y=600).
+  EXPECT_LT(at(400, 100), 60);
+  EXPECT_GT(at(400, 600), 180);
+}
+
+// The abort poll must fire between scans: an immediately-true poll yields
+// Ok with ZERO rows streamed (Stopped mapped by the renderer) but the dims
+// hook already reported — the worker is out of the way, no rows.
+TEST(ImageFitSdkProgressiveFull, PollHookAbortsBeforeAnyRow) {
+  static uint8_t bookBuf[1 << 20];
+  static uint8_t scratchBuf[4 << 20];
+  HostFileSource source;
+  ASSERT_TRUE(source.open(FIT_FIXTURES "/fit_fixtures.epub"));
+  freeink::book::Arena bookArena(bookBuf, sizeof(bookBuf));
+  freeink::book::Arena scratch(scratchBuf, sizeof(scratchBuf));
+  freeink::book::Book book;
+  ASSERT_EQ(book.open(source, bookArena, scratch), freeink::book::BookStatus::Ok);
+
+  struct AbortCapture {
+    int dimW = 0, dimH = 0;
+    int rows = 0;
+    static bool onDims(void* user, uint16_t w, uint16_t h) {
+      auto* self = static_cast<AbortCapture*>(user);
+      self->dimW = w;
+      self->dimH = h;
+      return true;
+    }
+    static bool onRow(void* user, uint16_t y, const uint8_t* gray, uint16_t width) {
+      static_cast<AbortCapture*>(user)->rows++;
+      return true;
+    }
+    static bool onPoll(void* user) { return true; }
+  } cap;
+  const freeink::book::BookStatus st = freeink::book::ImageRenderer::renderSourceRows(
+      source, book.zip(), "OEBPS/images/prog.jpg", 454, 681, scratch, AbortCapture::onDims, &cap, AbortCapture::onRow,
+      &cap, AbortCapture::onPoll, &cap);
+  ASSERT_EQ(st, freeink::book::BookStatus::Ok);  // Stopped maps to a clean stop
+  EXPECT_EQ(cap.dimW, 800);
+  EXPECT_EQ(cap.dimH, 1200);
+  EXPECT_EQ(cap.rows, 0) << "the abort poll fired AFTER rows streamed";
+}
+
+// Memory budget (owner directive 2026-11-09, binding): the full-fidelity
+// store (~2 B/pixel) plus the app's decode scratch must stay inside the
+// 5 MiB engine budget at the worst-case measured source.
+TEST(ProgressiveBudget, StorePlusAppScratchFitsTheBudget) {
+  const size_t store = freeink::ProgressiveJpeg::storeBytes(1500, 1000);
+  EXPECT_GT(store, 0u);
+  const ttfimg::DpidScaler::Plan appScratch{1500, 1000, 480, 800, true, true, false};
+  const size_t scratch = ttfimg::DpidScaler::scratchBytes(appScratch);
+  EXPECT_LT(store + scratch, ttfimg::kPsramBudgetBytes)
+      << "full-fidelity store + decode scratch must fit the 5 MiB budget at 1500x1000";
+}
 
 TEST(ImageFitSdk, BaselineJpegCoversEveryPlacement) {
   static uint8_t bookBuf[1 << 20];
@@ -583,7 +686,7 @@ TEST(AdaptiveBake, GrayTempStreamsEveryRowByteExact) {
   // The temp is consumed by the remap pass: no leftover .g after remap.
   const ttfimg::ImageSpec spec = makeSpec(0, 0, 6, 5);
   ttfimg::remapGrayToCache(spec, bake, "/t/bake_stream.pxc", /*caching=*/false, nullptr, /*paintToTarget=*/false,
-                           nullptr, nullptr, false, nullptr);
+                           nullptr, nullptr, nullptr);
   EXPECT_FALSE(storage.exists("/t/bake_stream.g"));
 }
 
@@ -605,11 +708,11 @@ TEST(AdaptiveBake, TwoPhaseCacheIsDeterministicAcrossRuns) {
     ASSERT_TRUE(bake.ok());
     ASSERT_TRUE(bake.beginCollect(gray));
     ASSERT_EQ(ttfimg::decodeBmpRows(spec, bmp.data(), bmp.size(), &bake, /*legacyPaint=*/nullptr, nullptr, nullptr,
-                                    false, nullptr, nullptr),
+                                    false, nullptr),
               ttfimg::DecodeResult::Ok);
     ASSERT_TRUE(bake.grayDone());
     ASSERT_EQ(ttfimg::remapGrayToCache(spec, bake, cache, /*caching=*/true, nullptr, /*paintToTarget=*/false, nullptr,
-                                       nullptr, false, nullptr),
+                                       nullptr, nullptr),
               ttfimg::DecodeResult::Ok);
   }
   EXPECT_EQ(storage.files["/t/parity0.pxc"], storage.files["/t/parity1.pxc"]);

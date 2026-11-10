@@ -126,6 +126,13 @@ void ToneBake4::beginRemap() {
       if (c > 255) c = 255;
       mapLut[i] = static_cast<uint8_t>(c);
     }
+  } else if (lo == 0 && hi == 255) {
+    // No-op rung (reset4): the clips pinned both ends of the scale the image
+    // already spans, so the stretch would map identity — 7/29 host-fixture
+    // sweep 2026-11-10. Skip the arithmetic (and its flip-floppery) entirely;
+    // the identity map is the exact result of (i - 0)·255/255.
+    LOG_INF("TIMGE", "STRETCH skip: no-op rung (lo=0 hi=255)");
+    for (int i = 0; i < 256; ++i) mapLut[i] = static_cast<uint8_t>(i);
   } else {
     const int range = hi - lo;
     for (int i = 0; i < 256; ++i) {
@@ -141,8 +148,8 @@ void ToneBake4::beginRemap() {
   adaptive = true;
   // Phase 1 did not diffuse: reset the FS error state and the serpentine.
   if (err != nullptr && errNext != nullptr) {
-    memset(err.get(), 0, (width + 2) * sizeof(int16_t));
-    memset(errNext.get(), 0, (width + 2) * sizeof(int16_t));
+    memset(err.get(), 0, (width + 2) * sizeof(int32_t));
+    memset(errNext.get(), 0, (width + 2) * sizeof(int32_t));
   }
   reverse = false;
   row = 0;
@@ -245,7 +252,13 @@ bool cacheNameFor(const ImageSpec& spec, const char* dir, const bool qualityTone
   // 'v' died with it: the pre-blockiness DPID-texture bake reused it) and
   // 'z' (Enhanced; 'x' only ever shipped to test builds) invalidate every
   // cache written before the small-range guard + nearest/CLAHE emission fix
-  // — review round 2026-11-10.
+  // — review round 2026-11-10; 'm' (Sharp; 'v' died with it: the
+  // pre-blockiness DPID-texture bake reused it) and 'n' (Enhanced) are the
+  // pipeline rework — streaming pass-2 removed, tent pre-blur removed,
+  // exact-residue FS diffusion at weight 1.0, no-op-stretch skip, full-
+  // fidelity progressive decode (reset4, 2026-11-10): every stage that
+  // feeds the bake changed, so nothing older can be reused.
+
   // Identity: generation + href + placement (+ the tone policy, so the
   // quality revert switch never mixes bakes in one file). hrefExt (an
   // overlong Page href, paint-side only) IS the href for the identity.
@@ -264,7 +277,7 @@ bool cacheNameFor(const ImageSpec& spec, const char* dir, const bool qualityTone
   // Full 64-bit hash in the name: a truncated identity would let two records
   // of the same dimensions and generation share one file, and the header
   // check (dims only) would paint one image's pixels under the other's key.
-  const int n = snprintf(out, cap, "%s/i%c%08x-%016llx.pxc", dir, qualityTone ? (clahe ? 'z' : 'y') : 'l',
+  const int n = snprintf(out, cap, "%s/i%c%08x-%016llx.pxc", dir, qualityTone ? (clahe ? 'n' : 'm') : 'l',
                          static_cast<unsigned>(spec.generation), static_cast<unsigned long long>(hash));
   return n > 0 && static_cast<size_t>(n) < cap;
 }

@@ -37,7 +37,7 @@ constexpr bool absoluteGrayImageRoute(const bool pageHasImages, const bool quali
 // foreground decodes, and across placements, follows from this).
 // ToneBake4 (design 2026-11-08 §5.2 + §2 adaptive bake): the quality path's
 // 4-level tone bake — per-image adaptive stretch, optional gamma stage,
-// tuned Floyd–Steinberg diffusion (2048/2560 ≈ 0.8) and serpentine scanning.
+// exact Floyd–Steinberg diffusion and serpentine scanning.
 // Two phases (design §2.1, amendment 2):
 //   1. beginCollect(path) + collectRow(gray) per destination row, in raster
 //      order — a 256-bin u32 histogram accumulates while the raw
@@ -62,15 +62,14 @@ struct ToneBake4 : ToneBaker {
   static constexpr bool kGammaEnabled = false;  // §2.2: stretch owns the range; device tune flips this
   static constexpr int kContrastNum = 13;       // 1.3 (eink-image default), pivot 128
   static constexpr int kContrastDen = 10;
-  // Diffusion weight 0.8 (blockiness design 2026-11-09): the 2026-11-08
-  // texture campaign's 1.0 was validated on synthetic gradients only; on
-  // real print art at the ~0.5x panel downscale each quantizer-shelf
-  // transition band is 1-2 px wide, so full-strength diffusion breaks the
-  // transitions into large opposing clusters — the stepped tone bands of
-  // the 2026-11-09 soak. 0.8 keeps flat fields uniform (small errors still
-  // cannot cross a threshold) while transitions stay coherent.
-  static constexpr int kDiffusionNum = 2048;  // 0.8 in 8.8 fixed point
-  static constexpr int kDiffusionDen = 2560;
+  // Exact-plane scale = 16/W: the plane holds error in 1/scale-of-a-level
+  // units, so any rational weight spreads and consumes EXACTLY (for W=4/5
+  // the unit is 1/20 level and every term errVal·k stays an integer; the
+  // 2026-08 texture campaign's 0.8 was chosen on real-art texture feel and
+  // is retained — see the reset4 corpus metrics in the design doc). Change
+  // kErrPlaneScale together with the weight only through pairs 16/W with
+  // (16·W) an integer, or the consume rounding stops being exact.
+  static constexpr int kErrPlaneScale = 20;  // weight 16/20 = 0.8
   // Percentile clip (blockiness design 2026-11-09): 0.5% / 99.5%. The old
   // 1%/99% clip sat at gray ~62 on soft-shadow art, crushing every shadow
   // below it to level 0 (the "blacks too deep" soak defect) while
@@ -92,9 +91,9 @@ struct ToneBake4 : ToneBaker {
   char grayPathBuf[280] = {};
   size_t grayPathLen = 0;
   bool grayOpen = false;
-  bool grayFailed = false;             // sticky write failure (grayDone refuses)
-  std::unique_ptr<int16_t[]> err;      // error carried into this pixel
-  std::unique_ptr<int16_t[]> errNext;  // error passed to the next row
+  bool grayFailed = false;         // sticky write failure (grayDone refuses)
+  std::unique_ptr<int32_t[]> err;  // error plane, 1/16-level units (reset4)
+  std::unique_ptr<int32_t[]> errNext;
   const int width;
   bool reverse = false;  // serpentine: the current row scans right-to-left
   int row = 0;           // baked row index (threshold-noise key)
@@ -118,11 +117,11 @@ struct ToneBake4 : ToneBaker {
       contrastLut[i] = static_cast<uint8_t>(c);
     }
     if (w > 0) {
-      err.reset(new (std::nothrow) int16_t[w + 2]);
-      errNext.reset(new (std::nothrow) int16_t[w + 2]);
+      err.reset(new (std::nothrow) int32_t[w + 2]);
+      errNext.reset(new (std::nothrow) int32_t[w + 2]);
       if (err && errNext) {
-        memset(err.get(), 0, (w + 2) * sizeof(int16_t));
-        memset(errNext.get(), 0, (w + 2) * sizeof(int16_t));
+        memset(err.get(), 0, (w + 2) * sizeof(int32_t));
+        memset(errNext.get(), 0, (w + 2) * sizeof(int32_t));
       }
     }
     memset(hist, 0, sizeof(hist));
@@ -151,11 +150,14 @@ struct ToneBake4 : ToneBaker {
   // deterministic fixed-contrast map for a paint-only legacy pass.
   void beginLegacyFallback();
 
-  // Every Floyd–Steinberg term scales by kDiffusionNum/kDiffusionDen:
-  // (errVal·k·2048)/(16·2560) = errVal·k/20 for k = 7|3|5|1 (§7).
-  int16_t diffuse(const int errVal, const int k) const {
-    return static_cast<int16_t>(errVal * k * kDiffusionNum / (16 * kDiffusionDen));
-  }
+  // Exact diffusion plane (reset4): slots hold error in 1/kErrPlaneScale-
+  // level units, so every term adds errVal·k with ZERO rounding — the
+  // previous plane stored levels and truncated each term separately
+  // (errVal·k·0.8/16, C trunc), so errVal ≤ 15 lost all but the k=7 head and
+  // soft gradients died before the next shelf (measured: errVal 1 → 100%
+  // lost, 5 → 40%, 16 → 0%). The weight is folded into the plane scale
+  // (mass still conserved bit-exactly).
+  int32_t diffuse(const int errVal, const int k) const { return errVal * k; }
 
   // Zero-mean pseudo-random threshold offset (texture §2.3, kept): breaks
   // the row-as-mega-pixel mode-locking behind period-2 banding. At the
@@ -166,9 +168,12 @@ struct ToneBake4 : ToneBaker {
   // foreground parity holds; never enters errVal, so tone stays true.
   static constexpr int kMaskAmp = 8;  // offset range −8..+7 (4-bit hash)
   // Per-instance active amplitude (defaults to kMaskAmp): the serpentine
-  // kernel-mirroring suite bakes with noise 0 — the noise offset is keyed on
-  // absolute x, which is not mirror-symmetric, so an exact-mirror pin must
-  // exclude it to measure the kernel itself.
+  // kernel-mirroring suite bakes with noise 0. IMPORTANT: amp 0 must give a
+  // TRUE zero offset — the bare hash term is keyed on absolute x (0..15),
+  // which is not mirror-symmetric and not zero-mean, so falling through to
+  // it would (a) bias the quantizer and (b) break exact mirror pins (caught
+  // by the reset4 exact plane: fwd x=k vs rev x=w−1−k loaded different
+  // offsets and diverged at threshold-crossing columns).
   int noiseAmp = kMaskAmp;
 
   // x is image-local (0-based). `reverseScan` selects the mirrored kernel:
@@ -185,10 +190,21 @@ struct ToneBake4 : ToneBaker {
     // fields into solids (the 2026-11-09 soak regression). The quantizer
     // decision keeps the ±8 threshold noise (see kMaskAmp).
     const int mv = mapv(static_cast<uint8_t>(gray));
-    const int v = mv + err[x + 1];
-    uint32_t h = (static_cast<uint32_t>(x) + 1) * 374761393u + (static_cast<uint32_t>(row) + 1) * 668265263u;
-    h = (h ^ (h >> 13)) * 1274126177u;
-    const int veff = v + (static_cast<int>((h >> 17) & 15) - noiseAmp);
+    // Consume the accumulated plane exactly: round-to-nearest for the
+    // quantizer input, leave the untouched residue in the slot (mass is
+    // conserved bit-exactly — later emissions keep re-diffusing it).
+    const int e16 = err[x + 1];
+    const int e =
+        e16 >= 0 ? (e16 + kErrPlaneScale / 2) / kErrPlaneScale : -(((-e16) + kErrPlaneScale / 2) / kErrPlaneScale);
+    err[x + 1] = e16 - kErrPlaneScale * e;
+    const int v = mv + e;
+    const int noise = [&] {
+      if (noiseAmp == 0) return 0;
+      uint32_t h = (static_cast<uint32_t>(x) + 1) * 374761393u + (static_cast<uint32_t>(row) + 1) * 668265263u;
+      h = (h ^ (h >> 13)) * 1274126177u;
+      return static_cast<int>((h >> 17) & 15) - noiseAmp;
+    }();
+    const int veff = v + noise;
     int t = (veff + 42) / 85;  // nearest of {0, 85, 170, 255} in the mapped space
     if (t < 0) t = 0;
     if (t > 3) t = 3;
@@ -235,8 +251,8 @@ struct ToneBake4 : ToneBaker {
   }
   void nextRow() override {
     if (err == nullptr || errNext == nullptr) return;
-    memcpy(err.get(), errNext.get(), (width + 2) * sizeof(int16_t));
-    memset(errNext.get(), 0, (width + 2) * sizeof(int16_t));
+    memcpy(err.get(), errNext.get(), (width + 2) * sizeof(int32_t));
+    memset(errNext.get(), 0, (width + 2) * sizeof(int32_t));
     reverse = !reverse;
     ++row;
   }

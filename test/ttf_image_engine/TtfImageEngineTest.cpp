@@ -74,13 +74,13 @@ TEST(CacheIdentity, PolicyLetterSeparatesBakes) {
   ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 10, 20, 100, 80), kDir, true, true, c, sizeof(c)));
   EXPECT_STRNE(a, b);
   EXPECT_STRNE(a, c);
-  // 'y' = the pre-blur bake era (Sharp; 'v' died with it — the pre-blockiness
-  // DPID-texture bake reused that letter, so devices that ran earlier test
-  // builds re-decode); 'z' = DPID + CLAHE (Enhanced; 'w'/'x' only reached
-  // test builds); 'l' = legacy. Blockiness round 2026-11-10.
-  EXPECT_NE(strstr(a, "/iy"), nullptr);
+  // 'm' = Sharp, 'n' = DPID + CLAHE (Enhanced), 'l' = legacy: reset4
+  // (2026-11-10) invalidated every pre-rework bake — streaming pass-2 and
+  // the tent pre-blur removed, exact-residue FS diffusion at weight 1.0,
+  // no-op-stretch skip, full-fidelity progressive decode.
+  EXPECT_NE(strstr(a, "/im"), nullptr);
   EXPECT_NE(strstr(b, "/il"), nullptr);
-  EXPECT_NE(strstr(c, "/iz"), nullptr);
+  EXPECT_NE(strstr(c, "/in"), nullptr);
 }
 
 TEST(CacheIdentity, RefusesOverlongDir) {
@@ -299,17 +299,62 @@ TEST(ToneBake4, IsPlacementIndependent) {
 }
 
 TEST(ToneBake4, DiffusionWeightScalesEveryKernelTerm) {
-  // W = 2048/2560 = 0.8 (blockiness design 2026-11-09): every kernel term
-  // scales by it — term = (errVal·k·2048)/(16·2560) = errVal·k/20, C
-  // truncation toward zero.
+  // Exact plane (reset4): slots hold 1/16-level units, every term is the
+  // WHOLE errVal·k with the 1/16 divide deferred to the single consume —
+  // no per-term truncation, weight exactly 1.0 (the 2026-11-09 blockiness
+  // 0.8 counterweight existed only to mask the truncation loss).
   ttfimg::ToneBake4 bake(8);
   ASSERT_TRUE(bake.ok());
-  EXPECT_EQ(bake.diffuse(20, 7), 7);     // 140/20
-  EXPECT_EQ(bake.diffuse(20, 3), 3);     // 60/20
-  EXPECT_EQ(bake.diffuse(20, 5), 5);     // 100/20
-  EXPECT_EQ(bake.diffuse(20, 1), 1);     // 20/20
-  EXPECT_EQ(bake.diffuse(-40, 7), -14);  // -280/20 exact
-  EXPECT_EQ(bake.diffuse(3, 7), 1);      // 21/20 truncated
+  EXPECT_EQ(bake.diffuse(20, 7), 140);  // exact: 20·7
+  EXPECT_EQ(bake.diffuse(20, 3), 60);
+  EXPECT_EQ(bake.diffuse(20, 5), 100);
+  EXPECT_EQ(bake.diffuse(20, 1), 20);
+  EXPECT_EQ(bake.diffuse(-40, 7), -280);
+  // Mass conservation: the kernel sums k = 7+3+5+1 = 16 = one full errVal
+  // spread over four slots in plane units.
+  EXPECT_EQ(bake.diffuse(5, 7) + bake.diffuse(5, 3) + bake.diffuse(5, 5) + bake.diffuse(5, 1), 16 * 5);
+}
+
+static int64_t planeMass(const ttfimg::ToneBake4& bake) {
+  const int n = bake.width + 2;
+  int64_t m = 0;
+  for (int i = 0; i < n; ++i) m += bake.err[i] + bake.errNext[i];
+  return m;
+}
+
+TEST(ToneBake4, ExactPlaneSpreadsTheWholeError) {
+  // reset4: zero per-term truncation. One tone() call emits errVal and
+  // spreads EXACTLY kErrPlaneScale·errVal of plane mass (previously
+  // errVal=1 levels put 0 mass — 100% of the energy lost to per-term C
+  // truncation); the weight folds into the plane scale (16/W). The
+  // consumed residue stays behind, so the plane still accounts for it.
+  ttfimg::ToneBake4 bake(8);
+  ASSERT_TRUE(bake.ok());
+  bake.noiseAmp = 0;
+  const int64_t m0 = planeMass(bake);
+  const int mv = bake.mapv(127);
+  const int t = (mv + 42) / 85;  // the zero-error quantizer pick
+  bake.tone(0, 127);
+  // Kernel sums to 16 regardless of the plane scale: the weight lives in
+  // the consume rounding err/kErrPlaneScale levels per plane unit.
+  EXPECT_EQ(planeMass(bake) - m0, 16 * (mv - t * 85));
+}
+
+TEST(ToneBake4, ExactPlaneConsumesWithResidue) {
+  // A slot carrying 17 (17/20 of a level at the 0.8 plane scale) is
+  // consumed as 1 with the −3-unit residue left in the slot: the quantizer
+  // sees mv + 1, mass total changes only by the consumption itself.
+  ttfimg::ToneBake4 bake(8);
+  ASSERT_TRUE(bake.ok());
+  bake.noiseAmp = 0;
+  bake.err[1] = 17;
+  const int64_t m0 = planeMass(bake);
+  const int mv = bake.mapv(127);
+  bake.tone(0, 127);
+  const int t = (mv + 1 + 42) / 85;
+  const int errVal = mv + 1 - t * 85;
+  EXPECT_EQ(bake.err[1], -3);  // residue kept (17 − 20·1)
+  EXPECT_EQ(planeMass(bake) - m0, 16 * errVal - ttfimg::ToneBake4::kErrPlaneScale);
 }
 
 TEST(ToneBake4, SerpentineMirrorsTheKernel) {

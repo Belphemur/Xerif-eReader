@@ -18,6 +18,7 @@ add_executable(TtfImageFitTest
   ${REPO_ROOT}/lib/FsHelpers/FsHelpers.cpp
   ${REPO_ROOT}/lib/Utf8/Utf8.cpp
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/src/render/ImageRenderer.cpp
+  ${REPO_ROOT}/freeink-sdk/libs/assets/ProgressiveJpeg/src/ProgressiveJpeg.cpp
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/src/FreeInkBook.cpp
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/src/BookCatalog.cpp
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/src/epub/ZipCatalog.cpp
@@ -50,6 +51,7 @@ target_include_directories(TtfImageFitTest PRIVATE
   ${REPO_ROOT}/lib/Utf8
   ${REPO_ROOT}/lib/Memory
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/include
+  ${REPO_ROOT}/freeink-sdk/libs/assets/ProgressiveJpeg/include
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/expat
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/libunibreak
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/miniz/include
