@@ -908,18 +908,18 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
       }
       if (bake.grayDone()) {
         bool cacheStreamOk = false;
-        // A rung degradation (attach ladder or streaming ring) bakes a
-        // lower-quality result — rows still paint, but the publish under the
-        // requested rung's cache name would permanently cache them: skip the
-        // publish and let the next pass re-decode (review 2026-11-10).
+        // A rung stepdown (the attach ladder) bakes a lower-quality result —
+        // the rows still PAINT (remap runs with caching forced off, so the
+        // temp is consumed and nothing is left on the card), but the publish
+        // under the requested rung's cache name would permanently cache
+        // them: the skip-publish below stands (round-2 codeRabbit). The
+        // streaming ring cap is NOT a degradation: cappedPlan() is the
+        // intent's dimension rule, so a huge streaming source keeps
+        // caching under its deterministic bake identity.
         const bool preblur = tentPreblurOk(info.width, info.height, spec.w, spec.h);
-        if (dpid.degraded && publishing) {
-          LOG_INF("TIMGE", "DPID degraded rung - painting uncached: %s", spec.href);
-          Storage.remove(writePath);
-          return DecodeResult::Ok;
-        }
-        const DecodeResult remap = remapGrayToCache(spec, bake, writePath, caching, paint, paintToTarget, abortPoll,
-                                                    abortCtx, preblur, &cacheStreamOk);
+        if (dpid.degraded && publishing) LOG_INF("TIMGE", "DPID degraded rung - painting uncached: %s", spec.href);
+        const DecodeResult remap = remapGrayToCache(spec, bake, writePath, caching && !dpid.degraded, paint,
+                                                    paintToTarget, abortPoll, abortCtx, preblur, &cacheStreamOk);
         if (remap == DecodeResult::Busy) return remap;  // foreground takeover: stay out of the way
         if (remap != DecodeResult::Ok) {
           // Phase-2 storage failure (gray re-open/read): still paint — the
@@ -1055,13 +1055,13 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
     }
     if (collecting && bake.grayDone()) {
       bool cacheStreamOk = false;
-      if (planDegraded && publishing) {
-        LOG_INF("TIMGE", "DPID degraded rung - painting uncached: %s", spec.href);
-        Storage.remove(writePath);
-        return DecodeResult::Ok;
-      }
-      const DecodeResult remap = remapGrayToCache(spec, bake, writePath, caching, paint, paintToTarget, abortPoll,
-                                                  abortCtx, planPreblur, &cacheStreamOk);
+      // Same degraded-rung contract as the JPEG/PNG branch: the remap runs
+      // with caching forced off when the attach ladder stepped down, so the
+      // rows always paint and the temp is consumed; the skip-publish below
+      // stands. The streaming ring cap is NOT a degradation (cappedPlan()).
+      if (planDegraded && publishing) LOG_INF("TIMGE", "DPID degraded rung - painting uncached: %s", spec.href);
+      const DecodeResult remap = remapGrayToCache(spec, bake, writePath, publishing && !planDegraded, paint,
+                                                  paintToTarget, abortPoll, abortCtx, planPreblur, &cacheStreamOk);
       if (remap == DecodeResult::Busy) return remap;  // foreground takeover: stay out of the way
       if (remap != DecodeResult::Ok) {
         // Phase-2 storage failure (gray re-open/read): still paint.

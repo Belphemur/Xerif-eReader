@@ -119,6 +119,8 @@ inline void claheBlendParams(const int n, const int size, int& tA, int& tB, int&
 
 // ── plan / memory ───────────────────────────────────────────────────────────
 
+DpidScaler::Plan DpidScaler::cappedPlan(const Plan& request) { return effectivePlan(plan(request), kRingBytesCap); }
+
 DpidScaler::Plan DpidScaler::plan(const Plan& dimsIn) {
   Plan p = dimsIn;
   if (p.srcW <= 0 || p.srcH <= 0 || p.dstW <= 0 || p.dstH <= 0) {

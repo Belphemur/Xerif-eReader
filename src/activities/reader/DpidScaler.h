@@ -116,6 +116,15 @@ class DpidScaler {
   int dstWidth() const { return p_.dstW; }
   const Plan& placedPlan() const { return p_; }
 
+  // The plan a decode CAN run under when memory allows it: requested dims
+  // with the streaming-ring cap applied (a deterministic dimension rule —
+  // the degrade verdict compares placing against rungs the ATTACH ladder
+  // dropped, NOT against this cap; a ring-capped huge source has a stable
+  // bake identity and must cache). Exposed for the engine's gate.
+  static Plan cappedPlan(const Plan& request);
+  // Streaming-ring byte cap (effectivePlan/scratchBytes + cappedPlan).
+  static constexpr size_t kRingBytesCap = 128 * 1024;
+
  private:
   // Pass-1 area average + band bookkeeping (probe-validated fixed point).
   void accumulateRow(const int y, const uint8_t* gray);
@@ -176,7 +185,6 @@ class DpidScaler {
   bool ok_ = false;
 
   size_t ringRows_ = 0;  // source rows the ring holds (streaming detail)
-  static constexpr size_t kRingBytesCap = 128 * 1024;
 };
 
 }  // namespace ttfimg
