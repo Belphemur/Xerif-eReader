@@ -38,8 +38,11 @@ reference implementation `mergian/dpid`, MATLAB reference `dpid.m`):
 - **Pass 2 — detail-weighted reconstruction:** a separable 3×3 tent average of the
   area-average image (1:2:1 weights, ~6 ops/pixel) gives each output pixel its local
   average context; then each output pixel is re-accumulated from its source patch
-  with weight `|avg3x3 − pixel| / 255` (grayscale scalar; the RGB norm reduces to
-  this for grayscale). Pixels that deviate from the local average — detail — get
+  with each SOURCE pixel weighted `|avg3x3(out) − s| / 255` (`s` is the patch's
+  source pixel; per-pixel, not one weight per output pixel — a constant weight
+  would cancel out of the normalized average and collapse pass 2 to the plain
+  area average, review 2026-11-10; the grayscale scalar is the RGB norm's
+  reduction). Source pixels that deviate from the local average — detail — get
   more weight, so high-frequency content dominates instead of being averaged away.
   λ (the exponent on the weight) defaults to 1.0, where `f^λ = f` — **no pow needed**.
 - λ=0 degenerates to exactly the current box-average (the fallback); λ=1 is the

@@ -9,6 +9,7 @@ class HalStorage;
 
 class HalFile {
  public:
+  HalFile() = default;
   // Wired by HalStorage::openFileFor{Read,Write} to the fake map entry.
   std::string* data = nullptr;
   std::string openPath;  // set at open; remove-refusal bookkeeping key
@@ -78,6 +79,24 @@ class HalFile {
   static int failReadAtCall;  // 0 = off; else the 1-based read call to fail
   static int readCallCount;
 
+  // Production parity: the real Impl destructor closes the SdFat file under
+  // the StorageLock (lib/hal/HalStorage.cpp:212), so leaving a positive
+  // open-count behind on destruction would diverge from the device —
+  // destroyed readers must not block a later remove/replace in the fake map.
+  ~HalFile();
+
  private:
   bool open_ = false;
+  HalFile(const HalFile&) = delete;
+  HalFile& operator=(const HalFile&) = delete;
 };
+
+void halFileClosed(HalFile& file);  // in Stubs.cpp (release the fake open-count)
+
+// Out-of-line so the namespace-scope declaration above is visible to the body.
+inline HalFile::~HalFile() {
+  if (open_) {
+    open_ = false;
+    halFileClosed(*this);
+  }
+}

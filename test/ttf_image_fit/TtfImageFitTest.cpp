@@ -38,10 +38,11 @@
 // BMP branch); the suite drives them directly so BMP coverage needs no Epub.
 namespace ttfimg {
 DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, size_t size, ToneBake4* bake,
-                           GfxRenderer* legacyPaint, bool (*abortPoll)(void*), void* abortCtx, bool clahe = false);
+                           GfxRenderer* legacyPaint, bool (*abortPoll)(void*), void* abortCtx, bool clahe,
+                           bool* degradedOut, bool* preblurOut);
 DecodeResult remapGrayToCache(const ImageSpec& spec, ToneBake4& bake, const char* writePath, bool caching,
                               GfxRenderer* paint, bool paintToTarget, bool (*abortPoll)(void*), void* abortCtx,
-                              bool* cacheStreamOk);
+                              bool preblurRows, bool* cacheStreamOk);
 }  // namespace ttfimg
 
 uint32_t g_fakeMillis = 0;
@@ -166,6 +167,21 @@ std::vector<uint8_t> readFixtureFile(const char* path) {
   return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 
+TEST(ImageRemapPreblur, TentBlurChangesADownscaleBakeButNotTheFlaggedPass) {
+  const int w = 64, h = 64;
+  std::vector<uint8_t> gray(static_cast<size_t>(w) * h);
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      gray[static_cast<size_t>(y) * w + x] = static_cast<uint8_t>((x / 3 + y / 3) % 2 ? 150 : 140);
+    }
+  }
+  // Static asserts pin the pure gate that schedules the blur.
+  static_assert(!ttfimg::tentPreblurOk(32, 31, 32, 31), "1:1 ornament never blurs");
+  static_assert(ttfimg::tentPreblurOk(965, 1400, 440, 638), "full-page art blurs");
+  static_assert(!ttfimg::tentPreblurOk(965, 1400, 440, 1400), "one-axis 1:1 does not blur");
+  SUCCEED();
+}
+
 // Runs the production two-phase BMP flow for a paint-only decode: phase 1
 // collects into a gray temp (in-memory storage), phase 2 remaps and paints
 // (caching=false — no cache side effects).
@@ -173,12 +189,12 @@ void bmpDecodeRemapPaint(FakeRenderer& r, const ttfimg::ImageSpec& spec, const s
   ttfimg::ToneBake4 bake(spec.w);
   ASSERT_TRUE(bake.ok());
   ASSERT_TRUE(bake.beginCollect("/t/paint_case.g"));
-  const auto res =
-      ttfimg::decodeBmpRows(spec, bmp.data(), bmp.size(), &bake, /*legacyPaint=*/nullptr, nullptr, nullptr);
+  const auto res = ttfimg::decodeBmpRows(spec, bmp.data(), bmp.size(), &bake, /*legacyPaint=*/nullptr, nullptr, nullptr,
+                                         false, nullptr, nullptr);
   ASSERT_EQ(res, ttfimg::DecodeResult::Ok);
   ASSERT_TRUE(bake.grayDone());
   ASSERT_EQ(ttfimg::remapGrayToCache(spec, bake, "/t/paint_case.pxc", /*caching=*/false, &r,
-                                     /*paintToTarget=*/true, nullptr, nullptr, nullptr),
+                                     /*paintToTarget=*/true, nullptr, nullptr, false, nullptr),
             ttfimg::DecodeResult::Ok);
 }
 
@@ -396,9 +412,13 @@ TEST(ImageFitSdk, ProgressiveJpegDcPathCoversEveryPlacement) {
     uint8_t at(int x, int y) { return pixels[static_cast<size_t>(y) * 454 + x]; }
     uint8_t pixels[454 * 800] = {};
     int rowW = 0;
+    // Row-coverage ledger: a renderer that returns Ok while dropping rows
+    // must fail here (review 2026-11-10) — count and width per row.
+    bool seen[800] = {};
     static bool onRow(void* user, uint16_t y, const uint8_t* gray, uint16_t width) {
       auto* self = static_cast<ValueCapture*>(user);
       self->rowW = width;
+      if (y < 800) self->seen[y] = true;
       if (static_cast<size_t>(y) * width + width <= sizeof(self->pixels)) {
         std::memcpy(self->pixels + static_cast<size_t>(y) * width, gray, width);
       }
@@ -414,6 +434,12 @@ TEST(ImageFitSdk, ProgressiveJpegDcPathCoversEveryPlacement) {
             freeink::book::BookStatus::Ok);
   scratch.release(marked);
   EXPECT_EQ(cap.rowW, 454);
+  // Every row of the placement arrived, in order, at full width: the DC
+  // renderer returning Ok with a dropped row band (601-680 or any other)
+  // cannot pass (review 2026-11-10).
+  for (int y = 0; y < 681; ++y) {
+    ASSERT_TRUE(cap.seen[y]) << "progressive DC row " << y << " never rendered";
+  }
   // Gradient: left edge dark, mid-left midtone (integer DC rounding ±8).
   EXPECT_LT(cap.at(2, 340), 60);
   EXPECT_GT(cap.at(200, 340), 40);
@@ -557,7 +583,7 @@ TEST(AdaptiveBake, GrayTempStreamsEveryRowByteExact) {
   // The temp is consumed by the remap pass: no leftover .g after remap.
   const ttfimg::ImageSpec spec = makeSpec(0, 0, 6, 5);
   ttfimg::remapGrayToCache(spec, bake, "/t/bake_stream.pxc", /*caching=*/false, nullptr, /*paintToTarget=*/false,
-                           nullptr, nullptr, nullptr);
+                           nullptr, nullptr, false, nullptr);
   EXPECT_FALSE(storage.exists("/t/bake_stream.g"));
 }
 
@@ -578,11 +604,12 @@ TEST(AdaptiveBake, TwoPhaseCacheIsDeterministicAcrossRuns) {
     ttfimg::ToneBake4 bake(spec.w);
     ASSERT_TRUE(bake.ok());
     ASSERT_TRUE(bake.beginCollect(gray));
-    ASSERT_EQ(ttfimg::decodeBmpRows(spec, bmp.data(), bmp.size(), &bake, /*legacyPaint=*/nullptr, nullptr, nullptr),
+    ASSERT_EQ(ttfimg::decodeBmpRows(spec, bmp.data(), bmp.size(), &bake, /*legacyPaint=*/nullptr, nullptr, nullptr,
+                                    false, nullptr, nullptr),
               ttfimg::DecodeResult::Ok);
     ASSERT_TRUE(bake.grayDone());
     ASSERT_EQ(ttfimg::remapGrayToCache(spec, bake, cache, /*caching=*/true, nullptr, /*paintToTarget=*/false, nullptr,
-                                       nullptr, nullptr),
+                                       nullptr, false, nullptr),
               ttfimg::DecodeResult::Ok);
   }
   EXPECT_EQ(storage.files["/t/parity0.pxc"], storage.files["/t/parity1.pxc"]);
@@ -917,6 +944,12 @@ TEST(ImageBudgetGate, SmallPsramBoardsKeepTheOldFloor) {
 TEST(ImageBudgetGate, BudgetDecisionIsAConstantExpression) {
   static_assert(ttfimg::psramBudgetOk(8u * 1024 * 1024, ttfimg::kPsramBudgetBytes),
                 "exactly the budget free is allowed");
+  // Strict total comparison: a board whose TOTAL equals the budget can never
+  // keep all of it free — it must fall to the small floor, not defer forever.
+  static_assert(ttfimg::psramBudgetOk(ttfimg::kPsramBudgetBytes, ttfimg::kPsramSmallPsramFloorBytes),
+                "total == budget decodes on the small floor");
+  static_assert(!ttfimg::psramBudgetOk(ttfimg::kPsramBudgetBytes, ttfimg::kPsramSmallPsramFloorBytes - 1),
+                "small floor still owns the short side at equality");
   static_assert(!ttfimg::psramBudgetOk(8u * 1024 * 1024, ttfimg::kPsramBudgetBytes - 1), "one byte short defers");
   static_assert(ttfimg::psramBudgetOk(2u * 1024 * 1024, ttfimg::kPsramSmallPsramFloorBytes), "small-board floor");
   static_assert(!ttfimg::psramBudgetOk(2u * 1024 * 1024, ttfimg::kPsramSmallPsramFloorBytes - 1),

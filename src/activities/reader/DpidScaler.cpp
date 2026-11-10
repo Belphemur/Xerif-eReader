@@ -144,6 +144,14 @@ size_t DpidScaler::scratchBytes(const Plan& planIn) {
   if (needsImage) bytes += dstW * static_cast<size_t>(p.dstH);
   if (needsImage && p.detail) bytes += dstW;           // tent row
   if (p.random) bytes += static_cast<size_t>(p.srcW);  // provider row scratch
+  if (p.detail && p.random) {
+    // Pass-2 band copy: every source row of one output row's patch, read
+    // exactly once — only requested when it fits the bound (the carve is
+    // then guaranteed; a taller patch falls back to the per-column path).
+    const size_t rows = static_cast<size_t>((p.srcH + p.dstH - 1) / p.dstH) + 1;
+    const size_t bandBytes = rows * (static_cast<size_t>(p.srcW) + sizeof(uint32_t));
+    if (bandBytes + bandBytes / 4 <= kPass2BandBytesCap) bytes += bandBytes;
+  }
   if (p.detail && !p.random) bytes += static_cast<size_t>(ringDepth(p.srcH, p.dstH)) * p.srcW;
   if (p.clahe && !tooSmallForClahe) {
     bytes += static_cast<size_t>(kClaheTiles * kClaheTiles) * kClaheBins * 2;  // hist u16
@@ -197,11 +205,31 @@ bool DpidScaler::begin(const Plan& planIn, uint8_t* block, const size_t bytes, E
   ringRows_ = 0;
   rowBuf_ = nullptr;
   near_ = nullptr;
+  p2band_ = nullptr;
+  p2wy_ = nullptr;
+  p2bandRows_ = 0;
+  readFailed_ = false;
   if (needsImage) {
     dst_ = static_cast<uint8_t*>(carve(dstW * static_cast<size_t>(p_.dstH)));
     if (p_.detail) tent_ = static_cast<uint8_t*>(carve(dstW));
   }
   if (p_.random) rowBuf_ = static_cast<uint8_t*>(carve(static_cast<size_t>(p_.srcW)));
+  if (p_.detail && p_.random) {
+    const size_t rows = static_cast<size_t>((p_.srcH + p_.dstH - 1) / p_.dstH) + 1;
+    const size_t bandBytes = rows * (static_cast<size_t>(p_.srcW) + sizeof(uint32_t));
+    if (bandBytes + bandBytes / 4 <= kPass2BandBytesCap) {
+      p2bandRows_ = static_cast<int>(rows);
+      p2band_ = static_cast<uint8_t*>(carve(rows * static_cast<size_t>(p_.srcW)));
+      p2wy_ = static_cast<uint32_t*>(carve(rows * sizeof(uint32_t)));
+      if (p2band_ == nullptr || p2wy_ == nullptr) {
+        // The provider row scratch above already carved; losing the band
+        // copy only costs throughput (same carve-failure shape as near_).
+        p2band_ = nullptr;
+        p2wy_ = nullptr;
+        p2bandRows_ = 0;
+      }
+    }
+  }
   if (p_.detail && !p_.random) {
     const int rows = ringDepth(p_.srcH, p_.dstH);
     ringRows_ = static_cast<size_t>(rows);
@@ -310,15 +338,18 @@ void DpidScaler::accumulateRow(const int y, const uint8_t* gray) {
 void DpidScaler::flushBand() {
   // Nearest sampling (small class): each source row covering a band spanned
   // at most one band, so the remembered row is THE nearest source row; the
-  // picked column is the nearest-center mapping. Emits straight to the sink
-  // (bufferless by construction — nearest never sets needsImage).
+  // picked column is the nearest-center mapping. When the image buffer is
+  // carved (Enhanced: pass 2 is skipped for nearest but CLAHE runs before
+  // finish()'s emit walk) the row lands in dst_ so the cache stream sees it
+  // exactly once; bufferless plans stream straight to the sink.
   if (p_.nearest && near_ != nullptr) {
+    uint8_t* out = dst_ != nullptr ? dst_ + static_cast<size_t>(p_.dstW) * curBand_ : hold_;
     for (int x = 0; x < p_.dstW; ++x) {
       int sx = (2 * x + 1) * p_.srcW / (2 * p_.dstW);
       if (sx >= p_.srcW) sx = p_.srcW - 1;
-      hold_[x] = near_[sx];
+      out[x] = near_[sx];
     }
-    if (!emit_(emitUser_, curBand_, hold_)) aborted_ = true;
+    if (dst_ == nullptr && !emit_(emitUser_, curBand_, hold_)) aborted_ = true;
     curBand_ = -1;
     return;
   }
@@ -378,22 +409,63 @@ void DpidScaler::pass2Row(const int m) {
   // 2. flush the previous hold (out m-1) into slot m-1.
   if (holdFull_) memcpy(dst_ + dstW * (m - 1), hold_, dstW);
   // 3. re-accumulate band m's patch with the detail weight; result -> hold.
+  // Random mode: the patch rows are fetched ONCE into the band copy (a
+  // per-column readRow walk refetches every patch row for each dst column —
+  // BMP provider rows are full row decodes); identical integer terms in a
+  // different visit order stay bit-identical (fixed-point, no rounding).
   const int64_t y0q = edgeQ16(m, p_.srcH, p_.dstH);
   const int64_t y1q = edgeQ16(m + 1, p_.srcH, p_.dstH);
+  const int bandRows = p_.random ? copyPass2Band(y0q, y1q) : -1;
   for (int x = 0; x < p_.dstW; ++x) {
     uint64_t a = 0, fSum = 0;
-    cover(y0q, y1q, p_.srcH, [&](const int sy, const uint32_t wy) {
-      const uint8_t* srow = p_.random ? readRow(sy) : ring_ + static_cast<size_t>(sy % ringRows_) * p_.srcW;
-      cover(edgeQ16(x, p_.srcW, p_.dstW), edgeQ16(x + 1, p_.srcW, p_.dstW), p_.srcW,
-            [&](const int px, const uint32_t wx) {
-              const uint64_t cov = static_cast<uint64_t>(wy) * wx;
-              if (cov == 0) return;
-              const uint8_t s = srow[px];
-              const uint64_t f = static_cast<uint64_t>(tent_[x] > s ? tent_[x] - s : s - tent_[x]) * cov;
-              a += f * s;
-              fSum += f;
-            });
-    });
+    const int64_t e0q = edgeQ16(x, p_.srcW, p_.dstW);
+    const int64_t e1q = edgeQ16(x + 1, p_.srcW, p_.dstW);
+    if (bandRows >= 0) {
+      // Pre-fetched band: identical terms to the cover()/cover() walk, so
+      // the uint64 sums stay bit-identical (visit order doesn't round).
+      for (int b = 0; b < bandRows; ++b) {
+        const uint8_t* srow = p2band_ + static_cast<size_t>(b) * p_.srcW;
+        const uint64_t wy = p2wy_[b];
+        for (int px = 0; px < p_.srcW; ++px) {
+          const int64_t px0 = static_cast<int64_t>(px) * kQ16;
+          const int64_t px1 = px0 + kQ16;
+          const int64_t plo = px0 > e0q ? px0 : e0q;
+          const int64_t phi = px1 < e1q ? px1 : e1q;
+          const uint64_t cov = wy * static_cast<uint64_t>(phi > plo ? phi - plo : 0);
+          if (cov == 0) continue;
+          const uint8_t s = srow[px];
+          const uint64_t f = static_cast<uint64_t>(tent_[x] > s ? tent_[x] - s : s - tent_[x]) * cov;
+          a += f * s;
+          fSum += f;
+        }
+      }
+    } else {
+      int sFirst = static_cast<int>(y0q >> 16);
+      int sLast = static_cast<int>((y1q - 1) >> 16);
+      if (sFirst < 0) sFirst = 0;
+      if (sLast >= p_.srcH) sLast = p_.srcH - 1;
+      for (int sy = sFirst; sy <= sLast; ++sy) {
+        const int64_t ply0 = static_cast<int64_t>(sy) * kQ16;
+        const int64_t ply1 = ply0 + kQ16;
+        const int64_t ylo = ply0 > y0q ? ply0 : y0q;
+        const int64_t yhi = ply1 < y1q ? ply1 : y1q;
+        const uint64_t wy = static_cast<uint64_t>(yhi > ylo ? yhi - ylo : 0);
+        if (wy == 0) continue;
+        const uint8_t* srow = p_.random ? readRow(sy) : ring_ + static_cast<size_t>(sy % ringRows_) * p_.srcW;
+        for (int px = 0; px < p_.srcW; ++px) {
+          const int64_t px0 = static_cast<int64_t>(px) * kQ16;
+          const int64_t px1 = px0 + kQ16;
+          const int64_t plo = px0 > e0q ? px0 : e0q;
+          const int64_t phi = px1 < e1q ? px1 : e1q;
+          const uint64_t cov = wy * static_cast<uint64_t>(phi > plo ? phi - plo : 0);
+          if (cov == 0) continue;
+          const uint8_t s = srow[px];
+          const uint64_t f = static_cast<uint64_t>(tent_[x] > s ? tent_[x] - s : s - tent_[x]) * cov;
+          a += f * s;
+          fSum += f;
+        }
+      }
+    }
     uint64_t o = fSum ? (a + (fSum >> 1)) / fSum : static_cast<uint64_t>((dst_ + dstW * m)[x]);
     if (o > 255) o = 255;
     hold_[x] = static_cast<uint8_t>(o);
@@ -403,10 +475,26 @@ void DpidScaler::pass2Row(const int m) {
 
 uint8_t* DpidScaler::readRow(const int sy) {
   if (lastRand_ != sy) {
-    provider_(providerUser_, sy, rowBuf_);
+    if (!provider_(providerUser_, sy, rowBuf_)) readFailed_ = true;
     lastRand_ = sy;
   }
   return rowBuf_;
+}
+
+// Copies the pass-2 vertical patch rows of one output row into p2band_/
+// p2wy_ so pass 2 reads each source row exactly once (see DpidScaler.h).
+// Returns -1 when the buffer is unavailable (per-column readRow fallback).
+int DpidScaler::copyPass2Band(const int64_t y0q, const int64_t y1q) {
+  if (p2band_ == nullptr || p2wy_ == nullptr) return -1;
+  int rows = 0;
+  cover(y0q, y1q, p_.srcH, [&](const int sy, const uint32_t wy) {
+    const uint8_t* srow = readRow(sy);
+    memcpy(p2band_ + static_cast<size_t>(rows) * p_.srcW, srow, static_cast<size_t>(p_.srcW));
+    p2wy_[rows] = wy;
+    ++rows;
+  });
+  if (readFailed_) return -1;
+  return rows;
 }
 
 // ── CLAHE (in place, 8x8 tile grid, clip 2.0 regime) ────────────────────────
@@ -548,18 +636,23 @@ bool DpidScaler::runRandom(RowFn provider, void* providerUser) {
     providerUser_ = providerUser;
   }
   for (int y = 0; y < p_.srcH; ++y) {
-    provider_(providerUser_, y, rowBuf_);
+    if (!provider_(providerUser_, y, rowBuf_)) {
+      readFailed_ = true;
+      return false;  // sticky: a failed row decodes garbage into the cache
+    }
     lastRand_ = y;
     accumulateRow(y, rowBuf_);
+    if (aborted_) return false;
   }
-  return !aborted_;
+  return !aborted_ && !readFailed_;
 }
 
 bool DpidScaler::finish() {
   if (!ok_) return false;
   if (finished_) return true;
   finished_ = true;
-  if (aborted_) return true;  // mid-stream abort already propagated
+  if (readFailed_) return false;  // provider row decode failed mid-run
+  if (aborted_) return true;      // mid-stream abort already propagated
 
   // Last pass-1 band + the pass-2 rows it unblocks.
   const int ended = curBand_;
@@ -579,7 +672,10 @@ bool DpidScaler::finish() {
     }
   }
   if (p_.detail && p_.random) {
-    for (int m = 0; m < p_.dstH; ++m) pass2Row(m);
+    for (int m = 0; m < p_.dstH; ++m) {
+      pass2Row(m);
+      if (readFailed_) return false;  // provider rows died inside pass 2
+    }
   }
   // Final hold flush — slot dstH-1's D value died at the last tent(m).
   if (holdFull_ && p_.detail) {

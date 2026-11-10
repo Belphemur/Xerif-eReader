@@ -243,7 +243,8 @@ TEST(DpidScaler, TinyImageSkipsDetail) {
   const size_t tinyBytes = DpidScaler::scratchBytes(q);
   ASSERT_GT(tinyBytes, 0u);
   ASSERT_LT(tinyBytes, 8u * 1024u);  // no image-sized buffer in the plan
-  ASSERT_TRUE(s.begin(q, new uint8_t[tinyBytes], tinyBytes, &Sink::emit, &sink, &pollFalse, nullptr));
+  std::vector<uint8_t> tinyBlock(tinyBytes);
+  ASSERT_TRUE(s.begin(q, tinyBlock.data(), tinyBytes, &Sink::emit, &sink, &pollFalse, nullptr));
   for (int y = 0; y < 80; ++y) s.feedSourceRow(y, src.data() + static_cast<size_t>(y) * 100);
   ASSERT_TRUE(s.finish());
   ASSERT_EQ(sink.rows.size(), static_cast<size_t>(96));
@@ -312,6 +313,43 @@ TEST(DpidScaler, SmallUpscaleThroughputRunsThroughEveryDestinationPixel) {
       const int sy = (2 * y + 1) * sh / (2 * dh);
       ASSERT_EQ(sink.rows[y][x], src[static_cast<size_t>(sy) * sw + sx]);
     }
+  }
+}
+
+TEST(DpidScaler, EnhancedSmallClassEmitsEveryRowExactlyOnce) {
+  // Small class + CLAHE carves the dst image buffer; the nearest flush must
+  // write INTO dst_ (finish()'s emit walk then emits exactly dstH rows).
+  // The pre-fix double-emit streamed each row to the collector AND zero
+  // rows out of the zeroed dst_ (histogram half zeros -> wrong stretch,
+  // 2x row count; review 2026-11-10).
+  const int sw = 12, sh = 10, dw = 24, dh = 20;  // >= 16 px: CLAHE tiles carve
+  std::vector<uint8_t> src(static_cast<size_t>(sw) * sh);
+  for (int y = 0; y < sh; ++y) {
+    for (int x = 0; x < sw; ++x) src[static_cast<size_t>(y) * sw + x] = static_cast<uint8_t>((x * 9 + y * 23) % 251);
+  }
+  DpidScaler::Plan p{sw, sh, dw, dh, true, true, false};
+  const DpidScaler::Plan q = DpidScaler::plan(p);
+  EXPECT_TRUE(q.nearest);
+  EXPECT_FALSE(q.detail);
+  Sink sink;
+  sink.w = dw;
+  std::vector<uint8_t> block(DpidScaler::scratchBytes(q));
+  DpidScaler s;
+  ASSERT_TRUE(s.begin(q, block.data(), block.size(), &Sink::emit, &sink, &pollFalse, nullptr));
+  for (int y = 0; y < sh; ++y) s.feedSourceRow(y, src.data() + static_cast<size_t>(y) * sw);
+  ASSERT_TRUE(s.finish());
+  ASSERT_EQ(sink.rows.size(), static_cast<size_t>(dh));
+  for (const auto& r : sink.rows) ASSERT_EQ(r.size(), static_cast<size_t>(dw));
+  // No zero rows: the pre-fix double-emit streamed the nearest rows to the
+  // collector and then zero rows out of the (never-written) dst_ image after
+  // the CLAHE pass — an alternating black row band. With the fix each slot
+  // carries CLAHE-remapped midtone content before the walk.
+  for (int y = 0; y < dh; ++y) {
+    int zeros = 0;
+    for (const uint8_t v : sink.rows[y]) {
+      if (v == 0) ++zeros;
+    }
+    EXPECT_LT(zeros, static_cast<int>(dw) / 2) << "row " << y << " bakes near-black (CLAHE walked a dead image)";
   }
 }
 

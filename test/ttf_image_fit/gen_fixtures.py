@@ -253,7 +253,10 @@ ch1 = ('<?xml version="1.0" encoding="UTF-8"?>\n'
        '</body></html>\n')
 
 epub_path = os.path.join(OUT, "fit_fixtures.epub")
-with zipfile.ZipFile(epub_path, "w") as z:
+# Atomic publish: an interrupted generator must not leave a half-written EPUB
+# whose mtime would satisfy the CMake OUTPUT rule (review 2026-11-10).
+epub_tmp = epub_path + ".tmp"
+with zipfile.ZipFile(epub_tmp, "w") as z:
     z.writestr(zipfile.ZipInfo("mimetype"), "application/epub+zip", zipfile.ZIP_STORED)
     z.writestr("META-INF/container.xml",
                '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -270,4 +273,5 @@ with zipfile.ZipFile(epub_path, "w") as z:
     z.write(os.path.join(OUT, "dark.gif"), "OEBPS/images/dark.gif")
     z.write(os.path.join(OUT, "small.bmp"), "OEBPS/images/small.bmp")
 
+os.replace(epub_tmp, epub_path)
 print("ttf_image_fit fixtures:", epub_path)

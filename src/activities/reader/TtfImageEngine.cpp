@@ -286,6 +286,12 @@ struct DpidCtx {
   const ttfimg::ImageSpec* spec = nullptr;
   bool clahe = false;     // pictureDetail == Enhanced
   bool attached = false;  // dims hook ran; begin() succeeded
+  // True when the decode's ladder stepped down from the requested rung —
+  // DPID detail or CLAHE dropped after the scratch allocation failed (or the
+  // streaming ring degraded). A degraded bake must never be published under
+  // the requested quality's cache name (review 2026-11-10) — the engine
+  // skips the publish and the next pass re-decodes.
+  bool degraded = false;
   // BMP random-access provider state
   BmpSource* bmp = nullptr;
   uint8_t* bits = nullptr;  // BmpSource bit scratch (rowBytes)
@@ -377,15 +383,30 @@ bool attachScaler(DpidCtx& c, const int srcW, const int srcH, const int dstW, co
   }
   LOG_INF("TIMGE", "DPID scratch %u KiB -> %s (psram free %u KiB)", static_cast<unsigned>(need / 1024), rung,
           static_cast<unsigned>(HalMemory::getPsramHeap().freeBytes / 1024));
-  return c.scaler.begin(p, c.block.get(), need, &dpidEmitFn, &c, &dpidPollFn, &c,
-                        randomAccess ? &dpidBmpRowFn : nullptr, randomAccess ? &c : nullptr);
+  const bool okBegin = c.scaler.begin(p, c.block.get(), need, &dpidEmitFn, &c, &dpidPollFn, &c,
+                                      randomAccess ? &dpidBmpRowFn : nullptr, randomAccess ? &c : nullptr);
+  if (okBegin) {
+    // Degradation = the placed plan lost a rung the REQUESTED plan carries:
+    // the attach ladder (pool failed -> detail/clahe dropped) or the streaming
+    // ring cap (effectivePlan -> detail off). The small class's own
+    // nearest/1:1 classing is design, not degradation.
+    const DpidScaler::Plan intent =
+        DpidScaler::plan(DpidScaler::Plan{srcW, srcH, dstW, dstH, clahe, true, randomAccess});
+    const DpidScaler::Plan placed = c.scaler.placedPlan();
+    c.degraded = placed.detail != intent.detail || placed.clahe != intent.clahe;
+  }
+  return okBegin;
 }
 
 // Streaming row entry for renderSourceRows (the width comes from the SDK;
 // anything other than the placed plan's source width means a different
-// decode — refuse it).
+// decode — refuse it). Polls the abort hook per row: the removed
+// GrayCollectCtx-based hook used to poll at SDK row cadence, so a foreground
+// takeover must keep that granularity instead of waiting for the next
+// destination band (review 2026-11-10).
 bool dpidRowFn(void* user, const uint16_t y, const uint8_t* gray, const uint16_t width) {
   auto* c = static_cast<DpidCtx*>(user);
+  if (dpidPollFn(user)) return false;
   if (width != c->scaler.srcWidth()) {
     if (c->gray != nullptr) c->gray->aborted = true;
     return false;
@@ -413,6 +434,7 @@ bool dpidGifDimsFn(void* user, const int srcW, const int srcH) {
 bool dpidGifRowFn(void* user, const int srcY, const uint8_t* gray) {
   auto* c = static_cast<DpidCtx*>(user);
   if (!c->attached) return false;
+  if (dpidPollFn(user)) return false;
   c->scaler.feedSourceRow(srcY, gray);
   return !(c->gray != nullptr && c->gray->aborted);
 }
@@ -425,7 +447,8 @@ bool dpidGifRowFn(void* user, const int srcY, const uint8_t* gray) {
 // that fallback: instead of collecting gray rows the destination rows bake
 // with the caller-prepared (degenerate) map and paint — no cache, no temp.
 DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const size_t size, ttfimg::ToneBake4* bake,
-                           GfxRenderer* legacyPaint, bool (*abortPoll)(void* ctx), void* abortCtx, const bool clahe) {
+                           GfxRenderer* legacyPaint, bool (*abortPoll)(void* ctx), void* abortCtx, const bool clahe,
+                           bool* degradedOut = nullptr, bool* preblurOut = nullptr) {
   if (bake == nullptr) return DecodeResult::Failed;
   BmpSource src;
   src.file.attach(data, size);
@@ -465,13 +488,15 @@ DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const siz
   dpid.legacyPaint = legacyPaint;
   dpid.toneRow = toneRow;
   if (!attachScaler(dpid, srcW, srcH, dstW, dstH, clahe, true)) return DecodeResult::Failed;
+  if (degradedOut != nullptr) *degradedOut = dpid.degraded;
+  if (preblurOut != nullptr) *preblurOut = tentPreblurOk(srcW, srcH, dstW, dstH);
 
   if (!dpid.scaler.runRandom(&dpidBmpRowFn, &dpid)) {
     return sinkCtx.aborted ? DecodeResult::Busy : DecodeResult::Failed;
   }
   if (!dpid.scaler.finish()) {
     if (sinkCtx.aborted) return DecodeResult::Busy;
-    return legacyPaint != nullptr ? DecodeResult::Failed : DecodeResult::Failed;
+    return DecodeResult::Failed;  // row-read/emit failure: never cache garbage rows
   }
   if (sinkCtx.aborted) return DecodeResult::Busy;
   if (sinkCtx.collectFailed) return DecodeResult::Failed;  // engine legacy-passes
@@ -563,7 +588,7 @@ bool legacyPaintFn(void* user, const uint16_t rowIdx, const uint8_t* grayRow, co
     ctx->aborted = true;
     return false;
   }
-  if (ctx->bake == nullptr || ctx->toneRow == nullptr) return false;
+  if (ctx->bake == nullptr || ctx->toneRow == nullptr || ctx->spec == nullptr) return false;
   if (width != ctx->spec->w) {
     LOG_ERR("TIMGE", "SDK row width mismatch: %u != %u", width, ctx->spec->w);
     ctx->aborted = true;
@@ -585,7 +610,7 @@ bool legacyPaintFn(void* user, const uint16_t rowIdx, const uint8_t* grayRow, co
 // so the caller must not publish (and reports success: the image displayed).
 DecodeResult remapGrayToCache(const ImageSpec& spec, ttfimg::ToneBake4& bake, const char* writePath, const bool caching,
                               GfxRenderer* paint, const bool paintToTarget, bool (*abortPoll)(void* ctx),
-                              void* abortCtx, bool* cacheStreamOk) {
+                              void* abortCtx, const bool preblurRows, bool* cacheStreamOk) {
   if (cacheStreamOk != nullptr) *cacheStreamOk = false;
   uint8_t toneRowStack[256];
   uint8_t* toneRow = toneRowStack;
@@ -605,6 +630,24 @@ DecodeResult remapGrayToCache(const ImageSpec& spec, ttfimg::ToneBake4& bake, co
     bake.grayDiscard();
     return DecodeResult::Failed;
   }
+  // Tone-stage tent pre-blur (steer 2026-11-10, gated by tentPreblurOk in
+  // the decode paths): separable [1,2,1]/4 with edge replication, streamed
+  // through a 3-slot ring of blurred rows — row r's vertical tent needs
+  // h(r-1..r+1); reads stay sequential. Buffers are 3 x spec.w rows (~1.4 KB
+  // worst case), no image-scale memory. The histogram/map is NOT re-derived
+  // (the map was built from the un-blurred collection, mirroring the
+  // validated probe /tmp/pi_blockiness/probe/v2). A failed blur allocation
+  // degrades to the un-blurred bake (never a decode failure).
+  PoolBytes blurStorage;
+  uint8_t* blurSlots[3] = {nullptr, nullptr, nullptr};
+  if (preblurRows) {
+    blurStorage = poolMakeBytes(3 * static_cast<size_t>(spec.w));
+    if (blurStorage) {
+      for (int i = 0; i < 3; ++i) blurSlots[i] = blurStorage.get() + static_cast<size_t>(i) * spec.w;
+    }
+  }
+  const bool blur = blurSlots[0] != nullptr && blurSlots[1] != nullptr && blurSlots[2] != nullptr;
+
   bake.beginRemap();
 
   ToneCacheWriter writer;
@@ -612,7 +655,7 @@ DecodeResult remapGrayToCache(const ImageSpec& spec, ttfimg::ToneBake4& bake, co
   if (caching && !writerActive) {
     // Storage failure on the cache stream is not a decode failure: keep
     // painting the rows and skip the cache (the next pass re-decodes).
-    LOG_ERR("TIMGE", "Image cache open failed — painting uncached: %s", spec.href);
+    LOG_ERR("TIMGE", "Image cache open failed - painting uncached: %s", spec.href);
   }
   HalFile gray;
   if (!Storage.openFileForRead("TIMGE", bake.grayPath(), gray)) {
@@ -620,6 +663,30 @@ DecodeResult remapGrayToCache(const ImageSpec& spec, ttfimg::ToneBake4& bake, co
     bake.grayDiscard();
     return DecodeResult::Failed;
   }
+  const size_t w = static_cast<size_t>(spec.w);
+  int rowsRead = 0;
+  bool shortRead = false;
+  // Reads the next gray row sequentially and, with the blur gate on, writes
+  // the horizontal-tent blur into the row's ring slot (grayRow is the read
+  // scratch). false once the temp is exhausted or a read is short.
+  auto readBlurRow = [&]() -> bool {
+    if (rowsRead >= spec.h || shortRead) return false;
+    if (gray.read(grayRow, w) != static_cast<int>(w)) {
+      shortRead = true;
+      return false;
+    }
+    if (blur) {
+      const uint8_t* src = grayRow;
+      uint8_t* dst = blurSlots[rowsRead % 3];
+      for (int x = 0; x < spec.w; ++x) {
+        const int a = x > 0 ? src[x - 1] : src[x];
+        const int c = x + 1 < spec.w ? src[x + 1] : src[x];
+        dst[x] = static_cast<uint8_t>((a + 2 * src[x] + c + 2) / 4);
+      }
+    }
+    ++rowsRead;
+    return true;
+  };
   for (int row = 0; row < spec.h; ++row) {
     if (abortPoll != nullptr && abortPoll(abortCtx)) {
       if (writerActive) writer.abort();
@@ -627,16 +694,41 @@ DecodeResult remapGrayToCache(const ImageSpec& spec, ttfimg::ToneBake4& bake, co
       bake.grayDiscard();
       return DecodeResult::Busy;
     }
-    if (gray.read(grayRow, static_cast<size_t>(spec.w)) != spec.w) {
-      LOG_ERR("TIMGE", "Gray temp read failed at row %d: %s", row, spec.href);
-      if (writerActive) writer.abort();
-      gray.close();
-      bake.grayDiscard();
-      return DecodeResult::Failed;
+    const uint8_t* inRow;
+    if (blur) {
+      // Prime the ring: h(r) and, when inside the image, h(r+1).
+      const int need = row + 1 < spec.h ? row + 1 : row;
+      while (rowsRead <= need) {
+        readBlurRow();
+        if (shortRead) break;
+      }
+      if (shortRead) {
+        LOG_ERR("TIMGE", "Gray temp read failed at row %d: %s", row, spec.href);
+        if (writerActive) writer.abort();
+        gray.close();
+        bake.grayDiscard();
+        return DecodeResult::Failed;
+      }
+      const uint8_t* up = blurSlots[(row > 0 ? row - 1 : row) % 3];
+      const uint8_t* mid = blurSlots[row % 3];
+      const uint8_t* dn = blurSlots[(row + 1 < spec.h ? row + 1 : row) % 3];
+      for (int x = 0; x < spec.w; ++x) {
+        grayRow[x] = static_cast<uint8_t>((up[x] + 2 * mid[x] + dn[x] + 2) / 4);
+      }
+      inRow = grayRow;
+    } else {
+      if (gray.read(grayRow, w) != static_cast<int>(w)) {
+        LOG_ERR("TIMGE", "Gray temp read failed at row %d: %s", row, spec.href);
+        if (writerActive) writer.abort();
+        gray.close();
+        bake.grayDiscard();
+        return DecodeResult::Failed;
+      }
+      inRow = grayRow;
     }
     // Serpentine row bake over the adaptive map (beginRemap reset the error
     // state; the byte-exact contract moves to the 's' cache identity).
-    bake.toneRow(grayRow, toneRow);
+    bake.toneRow(inRow, toneRow);
     if (writerActive && !writer.writeRow(toneRow)) {
       // The writer dropped the file; the remaining rows still paint (the
       // same degraded-paint contract the BMP path had).
@@ -799,20 +891,35 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
         bake.grayDiscard();
         return DecodeResult::Busy;
       }
+      if (ctx.collectFailed) {
+        // Gray temp died mid-collect: the phase-1 render stopped early and
+        // the legacy pass still paints (storage-failure doctrine, round 1).
+        // Checked BEFORE the finish-failure return: the emit walk fires
+        // dpidEmitFn, so a dead temp makes finish() return false first —
+        // checking after stranded JPEG/PNG placements on a full SD card
+        // (review 2026-11-10, kody + CodeRabbit).
+        bake.grayDiscard();
+        return legacyPaintPass(spec, info.kind, source, zip, scratch, epub, nullptr, 0, bake, paint, paintToTarget,
+                               abortPoll, abortCtx, clahe);
+      }
       if (!finished) {
         bake.grayDiscard();
         return DecodeResult::Failed;
       }
-      if (ctx.collectFailed) {
-        // Gray temp died mid-collect: the phase-1 render stopped early and
-        // the legacy pass still paints (storage-failure doctrine, round 1).
-        return legacyPaintPass(spec, info.kind, source, zip, scratch, epub, nullptr, 0, bake, paint, paintToTarget,
-                               abortPoll, abortCtx, clahe);
-      }
       if (bake.grayDone()) {
         bool cacheStreamOk = false;
-        const DecodeResult remap =
-            remapGrayToCache(spec, bake, writePath, caching, paint, paintToTarget, abortPoll, abortCtx, &cacheStreamOk);
+        // A rung degradation (attach ladder or streaming ring) bakes a
+        // lower-quality result — rows still paint, but the publish under the
+        // requested rung's cache name would permanently cache them: skip the
+        // publish and let the next pass re-decode (review 2026-11-10).
+        const bool preblur = tentPreblurOk(info.width, info.height, spec.w, spec.h);
+        if (dpid.degraded && publishing) {
+          LOG_INF("TIMGE", "DPID degraded rung - painting uncached: %s", spec.href);
+          Storage.remove(writePath);
+          return DecodeResult::Ok;
+        }
+        const DecodeResult remap = remapGrayToCache(spec, bake, writePath, caching, paint, paintToTarget, abortPoll,
+                                                    abortCtx, preblur, &cacheStreamOk);
         if (remap == DecodeResult::Busy) return remap;  // foreground takeover: stay out of the way
         if (remap != DecodeResult::Ok) {
           // Phase-2 storage failure (gray re-open/read): still paint — the
@@ -866,6 +973,12 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
 
     bool decoded = false;
     bool aborted = false;
+    // Shared remap-site inputs (the two decode shapes below): a degraded rung
+    // never publishes under the requested name; the pre-blur gate uses the
+    // PROBE dims (the true source — baseline JPEG's power-of-two pre-scale is
+    // inside the SDK renderer, review 2026-11-10 steer).
+    bool planDegraded = false;
+    bool planPreblur = false;
     if (info.kind == ImageInfo::Kind::Gif) {
       // Select the converter by the SNIFFED kind, not the href: ImageProbe
       // identified this GIF from its bytes, so a mismatched or extensionless
@@ -918,10 +1031,14 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
         if (!decoded && sinkCtx.aborted) aborted = true;
       }
       if (sinkCtx.aborted) aborted = true;
+      if (collecting) {
+        planDegraded = dpid.attached && dpid.degraded;
+        planPreblur = tentPreblurOk(info.width, info.height, spec.w, spec.h);
+      }
     } else {
       const DecodeResult bmpRes =
           decodeBmpRows(spec, image.get(), imageSize, &bake, collecting || !paintToTarget ? nullptr : paint, abortPoll,
-                        abortCtx, clahe);
+                        abortCtx, clahe, &planDegraded, &planPreblur);
       decoded = bmpRes == DecodeResult::Ok;
       aborted = bmpRes == DecodeResult::Busy;
     }
@@ -938,8 +1055,13 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
     }
     if (collecting && bake.grayDone()) {
       bool cacheStreamOk = false;
-      const DecodeResult remap =
-          remapGrayToCache(spec, bake, writePath, caching, paint, paintToTarget, abortPoll, abortCtx, &cacheStreamOk);
+      if (planDegraded && publishing) {
+        LOG_INF("TIMGE", "DPID degraded rung - painting uncached: %s", spec.href);
+        Storage.remove(writePath);
+        return DecodeResult::Ok;
+      }
+      const DecodeResult remap = remapGrayToCache(spec, bake, writePath, caching, paint, paintToTarget, abortPoll,
+                                                  abortCtx, planPreblur, &cacheStreamOk);
       if (remap == DecodeResult::Busy) return remap;  // foreground takeover: stay out of the way
       if (remap != DecodeResult::Ok) {
         // Phase-2 storage failure (gray re-open/read): still paint.

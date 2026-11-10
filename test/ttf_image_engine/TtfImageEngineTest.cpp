@@ -74,14 +74,13 @@ TEST(CacheIdentity, PolicyLetterSeparatesBakes) {
   ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 10, 20, 100, 80), kDir, true, true, c, sizeof(c)));
   EXPECT_STRNE(a, b);
   EXPECT_STRNE(a, c);
-  // 'v' = the DPID detail-preserving resize feeding the texture bake (design
-  // 2026-11-09-ttf-image-dpid-clahe.md; 't' was the pre-DPID texture bake,
-  // 'u' burned by the reverted edge pass); 'w' = DPID + CLAHE (Enhanced);
-  // 'x' = the blockiness bake (0.8 diffusion, no snap/anchor, 0.5% clip)
-  // over DPID + CLAHE (2026-11-09-ttf-image-blockiness.md); 'l' = legacy.
-  EXPECT_NE(strstr(a, "/iv"), nullptr);
+  // 'y' = the pre-blur bake era (Sharp; 'v' died with it — the pre-blockiness
+  // DPID-texture bake reused that letter, so devices that ran earlier test
+  // builds re-decode); 'z' = DPID + CLAHE (Enhanced; 'w'/'x' only reached
+  // test builds); 'l' = legacy. Blockiness round 2026-11-10.
+  EXPECT_NE(strstr(a, "/iy"), nullptr);
   EXPECT_NE(strstr(b, "/il"), nullptr);
-  EXPECT_NE(strstr(c, "/ix"), nullptr);
+  EXPECT_NE(strstr(c, "/iz"), nullptr);
 }
 
 TEST(CacheIdentity, RefusesOverlongDir) {
@@ -339,6 +338,36 @@ TEST(ToneBake4, SerpentineMirrorsTheKernel) {
   uint8_t row2[w];
   forward.toneRow(gray, row2);
   EXPECT_NE(memcmp(fwd, row2, sizeof(fwd)), 0);
+}
+
+TEST(ToneBake4, SmallRangeHistUsesFixedContrastFallback) {
+  // A two-level near-flat histogram (99% level 236, speckle at 234) would
+  // stretch range 2 to the full scale, baking the flat field near-black —
+  // the small-range guard routes it to the fixed-contrast map (review
+  // 2026-11-10). compare against the degenerate (contrast-only) map.
+  ttfimg::ToneBake4 bake(16);
+  ASSERT_TRUE(bake.ok());
+  bake.hist[234] = 10;
+  bake.hist[236] = 990;
+  bake.histCount = 1000;
+  bake.beginRemap();
+  ttfimg::ToneBake4 ref(16);
+  ASSERT_TRUE(ref.ok());
+  ref.beginLegacyFallback();  // fixed contrast 1.3, gamma off
+  for (int i = 0; i < 256; ++i) ASSERT_EQ(bake.mapLut[i], ref.mapLut[i]) << "level " << i;
+}
+
+TEST(ToneBake4, StretchStillAppliesToRealHistograms) {
+  // The guard must not eat genuine range: a wide two-level histogram still
+  // stretches to full scale (lo -> 0, hi -> 255).
+  ttfimg::ToneBake4 bake(16);
+  ASSERT_TRUE(bake.ok());
+  bake.hist[40] = 512;
+  bake.hist[255] = 512;
+  bake.histCount = 1024;
+  bake.beginRemap();
+  EXPECT_EQ(bake.mapLut[40], 0);
+  EXPECT_EQ(bake.mapLut[255], 255);
 }
 
 TEST(ToneBake4, PerPixelToneStaysForwardForAscendingCallers) {

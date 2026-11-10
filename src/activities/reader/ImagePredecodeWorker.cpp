@@ -333,7 +333,14 @@ void ImagePredecodeWorker::processJob(const ttfimg::ImageSpec& spec) {
   ImageDecodeGate::releaseDecodeBus();
   // An aborted or failed decode never leaves a file (the engine drops the
   // partial cache on any failure path); "Ok" is a complete, valid cache the
-  // foreground's next pass blits. No render-path failure bookkeeping here.
+  // foreground's next pass blits. A worker Failed IS a no-cache outcome — the
+  // job produced nothing and a dropped decode means the cache stays cold for
+  // its whole sighting window: retry bounded like the gate deferrals instead
+  // of logging done (review 2026-11-10).
+  if (res == ttfimg::DecodeResult::Failed) {
+    deferJob(spec);
+    return;
+  }
   if (res != ttfimg::DecodeResult::Ok) {
     LOG_DBG("IPR", "Job skipped (kind %d): spine=%u %s", static_cast<int>(res), spec.spine, spec.href);
     return;

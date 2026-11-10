@@ -124,7 +124,10 @@ class DpidScaler {
   // Pass-2 emission for dst row m (in-place flush scheme: out(m) -> hold
   // row, previous hold -> slot m-1 once tent(m) consumed D[m-1]).
   void pass2Row(const int m);
-  uint8_t* readRow(const int sy);
+  uint8_t* readRow(const int sy);  // false on a failed provider row
+  // Reads the pass-2 vertical patch rows once (random mode). Returns the
+  // row count covered, or -1 when the copy must be skipped (no buffer).
+  int copyPass2Band(const int64_t y0q, const int64_t y1q);
 
   // CLAHE on the resident destination image (in place).
   bool clahePass();
@@ -139,23 +142,36 @@ class DpidScaler {
   bool aborted_ = false;
 
   // carved views (forward-aligned, host arithmetic only)
-  uint8_t* dst_ = nullptr;         // dstW*dstH
-  uint64_t* acc_ = nullptr;        // [dstW]
-  uint64_t* wtot_ = nullptr;       // [dstW]
-  uint8_t* hold_ = nullptr;        // dstW row, pass-2 flush scheme side buffer
-  uint8_t* tent_ = nullptr;        // dstW row, tent values of the active row
-  uint8_t* ring_ = nullptr;        // ringRows * srcW source rows (streaming)
-  uint8_t* rowBuf_ = nullptr;      // srcW, random-access provider scratch
-  uint8_t* near_ = nullptr;        // srcW, nearest-sample store (small class)
+  uint8_t* dst_ = nullptr;     // dstW*dstH
+  uint64_t* acc_ = nullptr;    // [dstW]
+  uint64_t* wtot_ = nullptr;   // [dstW]
+  uint8_t* hold_ = nullptr;    // dstW row, pass-2 flush scheme side buffer
+  uint8_t* tent_ = nullptr;    // dstW row, tent values of the active row
+  uint8_t* ring_ = nullptr;    // ringRows * srcW source rows (streaming)
+  uint8_t* rowBuf_ = nullptr;  // srcW, random-access provider scratch
+  uint8_t* near_ = nullptr;    // srcW, nearest-sample store (small class)
+  // Pass-2 band copy (random mode): the vertical patch read ONCE per output
+  // row instead of once per column — readRow's single-row cache refetches
+  // every patch row for each dst column (BMP rows are seeks; minutes-long
+  // stalls). Best-effort carve; null falls back to the per-column readRow
+  // path (ring_ streaming mode never uses it).
+  uint8_t* p2band_ = nullptr;  // p2bandRows_ * srcW rows of the band
+  uint32_t* p2wy_ = nullptr;   // [p2bandRows_] vertical coverage weights
+  int p2bandRows_ = 0;
+  // Random source-provider failure (sticky): a failed row read must fail
+  // the decode instead of baking stale rowBuf_ bytes into a valid-looking
+  // cache (truncated BMP corruption guard).
+  bool readFailed_ = false;
   int64_t nearBest_ = 0;           // overlap of the remembered nearest row
   uint16_t* claheHist_ = nullptr;  // [tiles][256]
   uint8_t* claheMap_ = nullptr;    // [tiles][256]
   int tilesX_ = 0, tilesY_ = 0, tileW_ = 0, tileH_ = 0;
 
-  int curBand_ = -1;       // dst band under pass-1 accumulation
-  int nextPass2_ = 0;      // first dst row not yet pass-2 emitted
-  int lastRand_ = -1;      // random-access last requested row
-  bool holdFull_ = false;  // hold row carries out(nextPass2_-1)
+  int curBand_ = -1;                                       // dst band under pass-1 accumulation
+  int nextPass2_ = 0;                                      // first dst row not yet pass-2 emitted
+  int lastRand_ = -1;                                      // random-access last requested row
+  static constexpr size_t kPass2BandBytesCap = 64 * 1024;  // band copy bound
+  bool holdFull_ = false;                                  // hold row carries out(nextPass2_-1)
   bool finished_ = false;
   bool ok_ = false;
 

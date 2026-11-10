@@ -38,7 +38,7 @@ validated on synthetic gradients; on real print art they are the regression.
    plateaus and force mapped ≤42 to solid level 0 — the "blacks too deep"
    blob class (epilogue page, falling-girl leggings).
 3. **±8 threshold noise**: metrically neutral on real art at the 0.8 weight
-   (salt 1164 vs 1173);, and host A/B shows it is what protects the
+   (salt 1164 vs 1173), and host A/B shows it is what protects the
    SYNTHETIC suite once snap/anchor are gone (flat-40 dropout 92.4% →
    100% solid at amp ≥ 12, gradient row delta 13.2 → 3.3 at amp 8/12+).
    Amp 12 triples the real-art isolated-speck count (420 → 1053), so amp
@@ -51,7 +51,7 @@ validated on synthetic gradients; on real print art they are the regression.
    (crush metric 9.86% → 8.65%) and still reaches true black/white where the
    art contains them.
 5. **Upscale sampling**: the small class (dst ≥ src on both axes) box-blurs
-   in pass 1, so ornamentis arrive soft and then bake with salt speckle.
+   in pass 1, so ornaments arrive soft and then bake with salt speckle.
    Nearest-center sampling keeps line art crisp.
 
 ## 3. Contract (this change)

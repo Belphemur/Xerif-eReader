@@ -122,10 +122,25 @@ constexpr size_t kPsramSmallPsramFloorBytes = 256u * 1024u;
 // Pure gate decision: a decode may start only when the budget floor is met.
 // Boards whose total PSRAM is below the budget fall back to the small floor;
 // PSRAM-less builds (0 total bytes) defer like any gate-starved job, and the
-// ladder inside the decode still degrades every rung it cannot fit.
+// ladder inside the decode still degrades every rung it cannot fit. The
+// comparison is STRICT (>): a board whose total PSRAM exactly equals the
+// budget cannot keep all of it free, so demanding the budget as free would
+// defer that board forever instead of engaging the small floor.
 constexpr bool psramBudgetOk(const size_t psramTotal, const size_t psramFree) {
-  const size_t floor = psramTotal >= kPsramBudgetBytes ? kPsramBudgetBytes : kPsramSmallPsramFloorBytes;
+  const size_t floor = psramTotal > kPsramBudgetBytes ? kPsramBudgetBytes : kPsramSmallPsramFloorBytes;
   return psramFree >= floor;
+}
+
+// Scale gate for the tone-stage tent pre-blur (steer 2026-11-10: the FS
+// cluster texture survives the 'x' bake on the owner's re-soak; the probed
+// 3x3 tent of the remap rows kills the >=2-level step clusters - probe
+// /tmp/pi_blockiness/probe/v2: hard steps 42k+ -> 0, salt 5k -> ~1k on every
+// fixture, ab_00006/00008/00018). Blur ONLY genuine downscales - at 1:1 (the
+// divider ornaments, small class) the tent bleeds black into the white
+// margin (probe ab_00007) and crisp edges beat cluster suppression there.
+// srcW/H are the PROBE dims (pre-power-of-two-prescale).
+constexpr bool tentPreblurOk(const int srcW, const int srcH, const int dstW, const int dstH) {
+  return dstW > 0 && dstH > 0 && srcW * 4 > dstW * 5 && srcH * 4 > dstH * 5;  // ratio > 1.25 both axes
 }
 
 #endif  // CROSSPOINT_TTF_READER

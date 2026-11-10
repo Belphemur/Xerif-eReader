@@ -113,9 +113,13 @@ void ToneBake4::beginRemap() {
       }
     }
   }
-  if (n == 0 || hi <= lo) {
-    // Degenerate (flat scan, or an empty collection): fixed contrast, no
-    // gamma — the doc §2.1 fallback.
+  // A two- or three-level histogram (e.g. a near-flat scan at 99% level 236
+  // with speckle at 234) has a range the percentile stretch would amplify
+  // to the full 0..255 scale, baking the flat field as near-black plus
+  // speckle — route any small range to the same fixed-contrast fallback.
+  if (n == 0 || hi <= lo || hi - lo < 3) {
+    // Degenerate (flat scan, empty collection, or a small-range histogram):
+    // fixed contrast, no gamma — the doc §2.1 fallback.
     for (int i = 0; i < 256; ++i) {
       int c = (26 * i - 765) / 20;
       if (c < 0) c = 0;
@@ -237,7 +241,11 @@ bool cacheNameFor(const ImageSpec& spec, const char* dir, const bool qualityTone
   // CLAHE local-contrast pass on top (the Enhanced pictureDetail value —
   // the setting flips re-decode, never mix bakes); 'x' is the blockiness
   // bake (diffusion 0.8, snap/anchor removed, 0.5%/99.5% clip) over the
-  // same DPID/CLAHE stack — the 2026-11-09 soak regression fix.
+  // same DPID/CLAHE stack — the 2026-11-09 soak regression fix; 'y' (Sharp;
+  // 'v' died with it: the pre-blockiness DPID-texture bake reused it) and
+  // 'z' (Enhanced; 'x' only ever shipped to test builds) invalidate every
+  // cache written before the small-range guard + nearest/CLAHE emission fix
+  // — review round 2026-11-10.
   // Identity: generation + href + placement (+ the tone policy, so the
   // quality revert switch never mixes bakes in one file). hrefExt (an
   // overlong Page href, paint-side only) IS the href for the identity.
@@ -256,7 +264,7 @@ bool cacheNameFor(const ImageSpec& spec, const char* dir, const bool qualityTone
   // Full 64-bit hash in the name: a truncated identity would let two records
   // of the same dimensions and generation share one file, and the header
   // check (dims only) would paint one image's pixels under the other's key.
-  const int n = snprintf(out, cap, "%s/i%c%08x-%016llx.pxc", dir, qualityTone ? (clahe ? 'x' : 'v') : 'l',
+  const int n = snprintf(out, cap, "%s/i%c%08x-%016llx.pxc", dir, qualityTone ? (clahe ? 'z' : 'y') : 'l',
                          static_cast<unsigned>(spec.generation), static_cast<unsigned long long>(hash));
   return n > 0 && static_cast<size_t>(n) < cap;
 }
