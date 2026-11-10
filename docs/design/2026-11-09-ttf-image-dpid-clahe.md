@@ -290,3 +290,115 @@ before the bake. plan() now selects nearest-center sampling for that class
 falls back to the fractional box) — see §3.4 of
 docs/design/2026-11-09-ttf-image-blockiness.md and the suite's three
 small-class pins. The downscale DPID path is untouched.
+
+## Amendment (2026-11-10, owner soak — pipeline rework)
+
+Owner soak verdict: "slowest it's ever been, result worse than default,
+35 s to transcode an image" (serial: one decode window 20:57:48→20:58:54 =
+66 s at rung detail). Root-caused into four findings; this rework deletes
+machinery instead of adding levers (KISS), per the owner's research round
+(DEC D / DOC A in the attachments corpus):
+
+### Streaming pass-2 removal (the 60 s)
+
+- R1 reproduced on host (probe counter on the pre-rework tree, 934×1400 →
+  440×782): 782 pass-2 calls, **895,892,800 inner iterations, 2,990,960
+  contributing (0.33%)** — the full-source-band walk per destination pixel
+  is a ~300× boundary-check overhead; host −O2 needs 0.52 s for just this
+  pass, matching the device's 66 s at 240 MHz. Post-rework the whole
+  streamed 934×1400 job (scale + bake) runs in **0.02 s** on host (26×).
+- Contract: pass 1 (exact fractional box) is the resolution carrier and
+  stays; pass 2 runs ONLY on a random-access source (`random=true`, the
+  BMP row decoder). Requesting detail on a streamed plan silently drops
+  it at the scratch/begin seam (`effectivePlan`, applied once). The
+  random-access pass-2 band copy, ring and tent-cap machinery stay (they
+  are the only pass-2 implementation left).
+- Tent pre-blur removed from the tone stage (`tentPreblurOk` gate and
+  `remapGrayToCache`'s blur path are gone) — probe-levied in the
+  blockiness doc as cost without payoff; the 66 s soak window included it.
+- Degradation semantics: `DpidCtx::degraded` now covers only ALLOCATION
+  ladder steps (pool failure → detail/clahe dropped). The reset4 streaming
+  policy is the planned data path, not a degradation, so the skipped
+  publish-and-repaint loop ("DPID degraded rung — painting uncached")
+  no longer fires on every streamed decode.
+- Cache identity: letters `y`/`z` → `m`/`n` (Sharp/Enhanced) — every stage
+  feeding the bake changed, nothing older can be reused.
+
+### Full-fidelity progressive JPEG (R2)
+
+- R2 reproduced: progressive fixtures routed through the DC-only first-scan
+  decoder (SDK `ImageRenderer`), painting a 1/8-scale block-average
+  (`00004.jpeg` = 73×175 DC grid inside a 577×1400 image). The full
+  progressive decoder already existed unwired in the SDK
+  (`libs/assets/ProgressiveJpeg`, streaming luma rows).
+- Wiring: `renderSourceRows` tries `renderJpegProgressiveFull()` first
+  (two zip opens: header parse → store/decode; rows stream at FULL res
+  into the app-side DpidScaler); any begin/decode failure maps to
+  `OutOfMemory` and falls back to the existing DC-only path, so unknown
+  progressive families and oversized stores still paint.
+  `PageRenderer` (`render()`) keeps the DC-only contract.
+- Memory: the coefficient store is ~2 B/pixel; at the worst-case measured
+  source 1500×1000 that is 2,883,840 B ≈ 2.75 MiB; with the app's decode
+  scratch it stays inside the 5 MiB budget (pinned by
+  `ProgressiveBudget.StorePlusAppScratchFitsTheBudget`).
+- Cooperative abort: `ProgressiveJpeg` gained a poll hook checked per
+  MCUs row in `scan()` and per block-row in `emit()`; the predecode worker
+  can stop a full-res scan mid-stream (host suite passes with the hook).
+
+### Exact-residue diffusion (R3) — and why the weight stays 0.8
+
+- R3 reproduced: `diffuse()` = `errVal·k·2048/(16·2560)` per term, C
+  truncation toward zero. Per-term energy loss measured: errVal 1 → 100%
+  lost, 2 → 100%, 3 → 67%, 5 → 40%, 13 → 15%, 16 → 0%. On a 4-level bake
+  (shelf step 85, dead zone ±42) small-gradient errors die before the next
+  shelf — the truncation, not the weight constant, was the cluster
+  mechanism.
+- Fix: the error plane (reset4) holds levels in units of
+  1/`kErrPlaneScale` (currently 20). Every term adds `errVal·k` exactly
+  (kernel sums 16 → mass is conserved bit-exactly); the weight folds into
+  the consume rounding `e = round(plane/20)` (one division per slot). The
+  consume never discards a slot's residue — later emissions keep
+  re-diffusing it.
+- Weight decision (the brief required numbers, not a silent choice):
+  host probe across the 29-fixture corpus (mean |4-level tone − source
+  gray| per pixel, plus lone-speck / hard-edge / 3-level-window counts):
+  - truncated 0.8 (pre-rework): toneErr mean 21.67, salt 691,418,
+    steps 148,567, 3-level windows 157,054
+  - exact 1.0: toneErr 22.84, salt 784,859 (+13.5%), steps 120,680 (−18.8%),
+    windows 139,316
+  - exact 0.8 (shipped): toneErr 22.30, salt 688,063, steps 118,991 (−19.9%
+    vs pre-rework), windows 130,051 (−17.2%)
+  Exact 1.0 bakes tone-correct dither on constant fields (mapped 13 →
+  exactly 13/85 ≈ 10% level-1 specks vs the truncated regime's 8%). The
+  0.8 weight keeps the 2026-11-08 texture campaign's empirically
+  preferred texture feel for near-zero extra cost (its per-term rounding
+  losses were what required it; as an exact rational weight 4/5 the
+  plane scale makes it lossless). Flat dark field keeps dominance
+  ≥85% level 0 (measured 90.02% — the pin moved from exactly-90 to 85:
+  90.02% is the tone-correct equilibrium).
+- Threshold-noise amp: unchanged at 8. Crucially, amp 0 now means a TRUE
+  zero offset: the bare hash term (0..15, x-keyed) is NOT zero-mean and
+  broke exact mirror pins (caught by `SerpentineMirrorsTheKernel` in this
+  same rework — the old damped regime masked it).
+
+### No-op stretch skip (R4)
+
+- R4 reproduced on the corpus: the 0.5%/99.5% percentile stretch is an
+  exact identity on 7/29 fixtures (lo=0 ∧ hi=255; hi pinned at 255 on
+  27/29). `beginRemap()` now logs `STRETCH skip: no-op rung` and maps
+  identity — the arithmetic (and its flip-floppery) is skipped, output
+  bytes identical to the stretch it replaces.
+- Threshold constants (R5): NOT changed. The legacy path's fine-tuned
+  thresholds live in HARDWARE-level space (`BitmapHelpers.cpp:54`
+  quantizeSimple), while the bake quantizes REMAPPED 8-bit gray; a
+  correct mapping needs DOC A's on-device reflectance calibration, which
+  is a soak-round instrument, not a code guess. Left for the next round.
+
+### JPEGDEC pin (task 0)
+
+Pin bumped 86282979 → upstream tip 32132971 (2026-11-09); our three local
+patches retired — all carry upstream equivalents (`d98402d19`, `d4069f83e`,
+`51ed31a72`, `582d8a7e5`), proven byte-identical by a host decode A/B on
+the progressive fixture + 4 crop windows (identical output; the baseline
+file differs in 2 bytes at MCU overshoot past the decoded grid — never
+consumed by the app's block clipping).
