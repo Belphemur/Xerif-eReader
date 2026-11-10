@@ -16,10 +16,10 @@ naming conflict with [CrossPoint](https://github.com/crosspoint-reader/crosspoin
 the upstream firmware this fork builds on: one name per project, so bug reports, firmware
 files and community discussions always land in the right place.
 
-Nothing changes on your device: books, fonts, settings and reading progress are untouched,
-and OTA keeps updating exactly as before. Firmware flashed before the rename follows the
-repository move transparently, and releases keep shipping both `xpoint-*.bin` and
-`xerif-*.bin` builds so pre-rename devices keep updating. See the
+Nothing changes on your device: books, fonts, settings and reading progress are untouched.
+Firmware on current-generation releases keeps updating over OTA exactly as before; releases
+ship `xerif-*.bin` builds. Very old pre-rename devices (v1.16–v2.10) stop receiving
+over-the-air updates and stay on their current firmware. See the
 [latest release](https://github.com/Belphemur/Xerif-eReader/releases/latest).
 
 **Xerif eReader** is open-source e-reader firmware for ESP32-based devices — community-built,

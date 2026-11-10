@@ -143,8 +143,7 @@ jobs:
       fail-fast: false
       matrix:
         # Short board-specific names keep pull-request artifacts easy to identify.
-        # The release workflow publishes xerif-<version>-<device>.bin (plus
-        # xpoint-* compatibility assets for pre-rename OTA devices).
+        # The release workflow publishes xerif-<version>-<device>.bin.
         include:
           - env: default
             asset: firmware.bin

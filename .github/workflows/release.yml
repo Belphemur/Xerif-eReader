@@ -1,8 +1,6 @@
 name: Compile Release
 
-# Builds every board's release firmware on tag push and publishes each .bin
-# under BOTH names during the OTA asset-name transition:
-#   xpoint-<version>-<device>.bin        (compatibility name for pre-rename OTA)
+# Builds every board's release firmware on tag push and publishes each .bin as
 #   xerif-<version>-<device>.bin         (current name)
 # (the combined C3 X4/X3 binary uses device tag x3-x4). It then creates a draft
 # GitHub Release, attaches all build artifacts, and generates + signs a per-board
@@ -141,10 +139,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           version="${RELEASE_TAG#v}"
-          xpoint_asset="xpoint-${version}-${{ matrix.device }}.bin"
           xerif_asset="xerif-${version}-${{ matrix.device }}.bin"
-          cp ".pio/build/${{ matrix.pio_env }}/firmware.bin" \
-            ".pio/build/${{ matrix.pio_env }}/${xpoint_asset}"
           cp ".pio/build/${{ matrix.pio_env }}/firmware.bin" \
             ".pio/build/${{ matrix.pio_env }}/${xerif_asset}"
           # Stamp the release version into the image's esp_app_desc_t: the
@@ -154,13 +149,10 @@ jobs:
           # recomputes the appended digest and the XOR checksum byte (the
           # same invariants the dev lane stamps under), then the full
           # verifier runs — no release asset reaches the tag stale.
-          for release_asset in "${xpoint_asset}" "${xerif_asset}"; do
-            image=".pio/build/${{ matrix.pio_env }}/${release_asset}"
-            python3 scripts/patch_dev_version.py --image "${image}" --version "${version}"
-            python3 scripts/patch_dev_version.py --image "${image}" --verify
-            python3 scripts/patch_dev_version.py --image "${image}" --validate
-          done
-          echo "xpoint_name=$xpoint_asset" >> "$GITHUB_OUTPUT"
+          image=".pio/build/${{ matrix.pio_env }}/${xerif_asset}"
+          python3 scripts/patch_dev_version.py --image "${image}" --version "${version}"
+          python3 scripts/patch_dev_version.py --image "${image}" --verify
+          python3 scripts/patch_dev_version.py --image "${image}" --validate
           echo "xerif_name=$xerif_asset" >> "$GITHUB_OUTPUT"
 
       - name: Prepare license asset
@@ -185,7 +177,6 @@ jobs:
           name: ${{ steps.asset.outputs.xerif_name }}
           path: |
             .pio/build/${{ matrix.pio_env }}/bootloader.bin
-            .pio/build/${{ matrix.pio_env }}/${{ steps.asset.outputs.xpoint_name }}
             .pio/build/${{ matrix.pio_env }}/${{ steps.asset.outputs.xerif_name }}
             .pio/build/${{ matrix.pio_env }}/firmware.elf
             .pio/build/${{ matrix.pio_env }}/firmware.map
@@ -213,13 +204,13 @@ jobs:
         id: collect
         run: |
           mkdir -p dist
-          # Each artifact carries one xpoint-*.bin and one identical
-          # xerif-*.bin. Search for actual *files* recursively and never match a
-          # directory (a directory match made `cp` fail with "omitting directory").
+          # Each artifact carries one xerif-*.bin. Search for actual *files*
+          # recursively and never match a directory (a directory match made
+          # `cp` fail with "omitting directory").
           for d in artifacts/*/; do
             while IFS= read -r bin; do
               cp "$bin" "dist/$(basename "$bin")"
-            done < <(find "$d" -type f \( -name 'xpoint-*.bin' -o -name 'xerif-*.bin' \))
+            done < <(find "$d" -type f -name 'xerif-*.bin')
           done
           # License notices asset (upstream #4064, hand-ported): the x3-x4 job
           # builds dist/LICENSE, the download-artifact above carries it in as
@@ -264,13 +255,11 @@ jobs:
               "picco": "picco",
           }
           version = os.environ["GITHUB_REF_NAME"].lstrip("v")
-          # Sign both asset families. Xpoint entries MUST come first:
-          # pre-rename devices (v1.16..v2.10) select the manifest entry whose
-          # URL matches the xpoint asset they found in the release JSON, and
-          # older cap-8 parsers return the first board match they encounter.
-          # Xerif devices select the entry whose URL matches the xerif asset.
+          # Sign one asset family (xerif). Only latest-generation firmware
+          # still auto-updates: pre-rename devices (v1.16..v2.10) look for
+          # xpoint-*.bin and stop finding updates once the compat family is
+          # gone — they keep running without device-visible breakage.
           families = (
-              ("xpoint", f"xpoint-{version}-"),
               ("xerif", f"xerif-{version}-"),
           )
           repo = os.environ["GITHUB_REPOSITORY"]
@@ -359,5 +348,5 @@ jobs:
             --draft \
             --title "Xerif ${{ steps.collect.outputs.tag }}" \
             --notes-file dist/NOTES.md \
-            dist/xpoint-*.bin dist/xerif-*.bin \
+            dist/xerif-*.bin \
             dist/manifest.json dist/manifest.json.sig dist/LICENSE
