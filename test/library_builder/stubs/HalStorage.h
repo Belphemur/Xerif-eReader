@@ -167,6 +167,12 @@ class HalFile {
     pos = std::min(pos, size);
     return true;
   }
+  // Single-byte read (HalFile stream convention).
+  int read() {
+    uint8_t byte = 0;
+    return read(&byte, 1) == 1 ? byte : -1;
+  }
+  bool write(uint8_t data) { return write(&data, 1) == 1; }
   int read(void* out, size_t size) {
     fake::reads++;
     if (size == 0) return 0;
