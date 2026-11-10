@@ -165,7 +165,6 @@ add_subdirectory(activity_result)
 add_subdirectory(sd_font_registry)
 add_subdirectory(clipping_preview)
 add_subdirectory(vocab_notebook)
-add_subdirectory(dict_history)
 add_subdirectory(clipping_store)
 add_subdirectory(glyph_bitmap)
 

@@ -305,6 +305,7 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   doublePwrBtn =
       clamp(doc["doublePwrBtn"] | (uint8_t)((doc["doubleClickPwrLight"] | (uint8_t)1) ? PWR_FRONTLIGHT : IGNORE),
             (uint8_t)SHORT_PWRBTN_COUNT, (uint8_t)PWR_FRONTLIGHT);
+(feat(vocab): collapse both lookup toggles into the Vocabulary Notebook)
 
   // SD card font family name — not in SettingsList, load manually
   const char* sfn = doc["sdFontFamilyName"] | "";

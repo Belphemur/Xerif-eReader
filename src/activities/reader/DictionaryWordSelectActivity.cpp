@@ -13,7 +13,6 @@
 #include <iterator>
 
 #include "CrossPointSettings.h"
-#include "DictHistoryStore.h"
 #include "DictionaryDefinitionActivity.h"
 #include "HapticFeedback.h"
 #include "components/UITheme.h"
@@ -520,11 +519,6 @@ void DictionaryWordSelectActivity::performLookup(const std::string& raw, const s
     if (SETTINGS.vocabularyHistoryEnabled &&
         !VocabularyStore::append(vocabulary, lookupText, headword, definition, dict.definitionsAreHtml())) {
       LOG_ERR("VOCAB", "Could not save successful dictionary lookup");
-    }
-    // Re-lookup history (§F4): the effective query, newest first. Failures
-    // are non-fatal by contract, exactly like the vocabulary export.
-    if (SETTINGS.dictionaryHistoryEnabled) {
-      (void)DictHistoryStore::record(lookupText.empty() ? trimmed : lookupText);
     }
     auto activity = makeUniqueNoThrow<DictionaryDefinitionActivity>(renderer, mappedInput, std::move(headword),
                                                                     std::move(definition), SETTINGS.dictionaryName,

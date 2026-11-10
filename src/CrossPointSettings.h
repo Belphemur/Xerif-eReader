@@ -442,11 +442,10 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t ttfFontPointSize = DEFAULT_TTF_FONT_POINT_SIZE;
   // Dictionary folder name under /dictionaries (empty = no dictionary)
   char dictionaryName[32] = "";
-  // Save successful dictionary lookups to vocabulary history (default off).
+  // Vocabulary Notebook (addendum 2026-11-09): one toggle for the
+  // /Vocabulary.txt notebook — save the lookup record AND feed the recency
+  // list/chips read back from it (VocabularyStore). Default off.
   uint8_t vocabularyHistoryEnabled = 0;
-  // Keep the last 50 successful lookups as a re-lookup history surfaced in
-  // the dictionary search overlay (default off; see DictHistoryStore).
-  uint8_t dictionaryHistoryEnabled = 0;
   // Master switch for all SD-card plugin discovery/execution. New installs keep
   // this disabled; settings migration enables it when pre-existing plugin files
   // are found so a firmware update never silently disables an existing setup.

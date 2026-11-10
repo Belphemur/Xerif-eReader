@@ -151,7 +151,6 @@ struct Renderer {
 struct Settings {
   bool touchReaderControls = true;
   int getReaderFontId() const { return 0; }
-  unsigned char dictionaryHistoryEnabled = 0;
 } SETTINGS;
 struct MappedInputManager {
   enum class Button { Back };
@@ -659,18 +658,6 @@ int main() {
 
 harness = harness.replace('bool DictionaryDefinitionActivity::prepareDefinition',
                           plain_scratch + '\nbool DictionaryDefinitionActivity::prepareDefinition', 1)
-history_stub = r"""
-// The navigation harness has no SD card; provide the store contract the
-// compiled navigateDefinition body calls (record is gated by the disabled
-// harness toggle and never invoked by these cases).
-class DictHistoryStore {
- public:
-  static void load(std::vector<std::string>& out) { out.clear(); }
-  static bool record(const std::string&) { return false; }
-};
-"""
-harness = harness.replace('void DictionaryDefinitionActivity::navigateDefinition',
-                          history_stub + '\nvoid DictionaryDefinitionActivity::navigateDefinition', 1)
 with tempfile.TemporaryDirectory() as directory:
     path = Path(directory)
     (path / "navigation.cpp").write_text(harness)

@@ -16,7 +16,6 @@
 #include <utility>
 
 #include "CrossPointSettings.h"
-#include "DictHistoryStore.h"
 #include "DictHtmlSniff.h"
 #include "HapticFeedback.h"
 #include "ReaderUtils.h"
@@ -248,13 +247,11 @@ bool DictionaryDefinitionActivity::closeButtonContains(const int x, const int y)
 }
 
 void DictionaryDefinitionActivity::openSearch() {
-  // Recent lookups ride into the search keyboard as touch chips (§F4); they
-  // are hidden entirely when the toggle is off or the store is empty — the
+  // Recent lookups ride into the search keyboard as touch chips; they are
+  // read from the Vocabulary Notebook tail (addendum 2026-11-09) and are
+  // hidden entirely when the toggle is off or the notebook is empty — the
   // shared keyboard serves other entries unchanged.
   std::vector<std::string> recents;
-  if (SETTINGS.dictionaryHistoryEnabled) {
-    DictHistoryStore::load(recents);
-  }
   auto search = makeUniqueNoThrow<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH), content.headword, 0,
                                                          InputType::Text, std::move(recents));
   if (!search) {
@@ -583,12 +580,6 @@ void DictionaryDefinitionActivity::navigateDefinition(const bool back) {
   } else {
     auto& previous = lookup->history[lookup->depth++];
     previous.query = std::move(lookup->query);
-    // Same recording point as the word selector: the query just resolved to a
-    // definition, so both entry surfaces (word select and this activity's
-    // search) land here. Failures are non-fatal by contract.
-    if (SETTINGS.dictionaryHistoryEnabled) {
-      (void)DictHistoryStore::record(lookup->pendingWord);
-    }
     lookup->query = std::move(lookup->pendingWord);
     previous.page = content.currentPage;
     previous.selectionPage = content.selectionPage;
