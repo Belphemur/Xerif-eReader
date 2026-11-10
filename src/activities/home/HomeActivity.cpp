@@ -205,9 +205,8 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
           // Same for a reflowable book without a cache (e.g. after "Delete Book
           // Cache"): read the cover location straight from the source.
           const bool isTxtOrMd = FsHelpers::hasTxtExtension(book.path) || FsHelpers::hasMarkdownExtension(book.path);
-          bool success =
-              (isTxtOrMd || !cacheLoaded) ? epub.generateThumbBmpFromSource(thumbHeight)
-                                          : epub.generateThumbBmp(thumbHeight);
+          bool success = (isTxtOrMd || !cacheLoaded) ? epub.generateThumbBmpFromSource(thumbHeight)
+                                                     : epub.generateThumbBmp(thumbHeight);
           if (!success) {
             RECENT_BOOKS.updateBook(book.path, book.title, book.author, "");
             book.coverBmpPath = "";
