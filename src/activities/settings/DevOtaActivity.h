@@ -104,6 +104,12 @@ class DevOtaActivity : public Activity {
   bool installWriting = false;
   OptionPopup<> confirmPopup;
 
+  // [TLS-PROBE] (docs/design/2026-11-10-tls-teardown.md §5): the resting LIST
+  // state is sampled on entry and again 3 s later (one-shot) to show whether
+  // anything decays after the fetch's TCP closes.
+  uint32_t probeListEnterMs_ = 0;
+  bool probeSettleLogged_ = false;
+
   // Touch for the hand-rendered LIST and FAILED screens (boards like the
   // X4 Pro drive Confirm/Back only through the GT911, so without this the
   // picker is a dead end): render() registers the hit rects on the render

@@ -99,21 +99,34 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
   freeink::FetchOptions options;
   options.redirectToHttp = downgradeRedirectsToHttp;
   bool answeredBySameOrigin = true;
+  // [TLS-PROBE] (docs/design/2026-11-10-tls-teardown.md §5): measure each hop's
+  // TCP/TLS handshake. configure() runs on every attempt's fresh client before
+  // the GET, so connect() here IS the handshake; the GET then rides the
+  // connected socket (ensureConnected is a no-op on a matching connection).
+  // The abort callback is the same one fetchResumable receives, so a cancelled
+  // connect behaves exactly as a connect performed inside the GET would.
+  const freeink::SecureHttpClient::AbortCallback probeAbort = [cancelFlag] { return cancelFlag && *cancelFlag; };
+  int probeHop = 0;
   const freeink::FetchResult result = freeink::fetchResumable(
       url, options,
       [&](freeink::SecureHttpClient& http, const bool sameOrigin) {
         answeredBySameOrigin = sameOrigin;
         applyCommonClientSetup(http);
+        const uint32_t probePreFree = ESP.getFreeHeap();
+        const uint32_t probePreMax = ESP.getMaxAllocHeap();
+        const uint32_t connectStart = millis();
+        http.connect(probeAbort);
+        LOG_DBG("HTTP", "[TLS-PROBE] hop %d connect %ums free %u->%u maxBlock %u->%u url %s", ++probeHop,
+                static_cast<unsigned>(millis() - connectStart), probePreFree, ESP.getFreeHeap(), probePreMax,
+                ESP.getMaxAllocHeap(), url.c_str());
         // Credentials and caller headers stay with the starting origin; a
         // redirect elsewhere (or to plain http) gets neither.
         if (sameOrigin) {
           if (!username.empty() && !password.empty()) http.setBasicAuth(username, password);
           for (const auto& h : headers) http.addHeader(h.first, h.second);
         }
-        LOG_DBG("HTTP", "wolfSSL GET: %s (heap %u, max block %u)", url.c_str(), (unsigned)ESP.getFreeHeap(),
-                (unsigned)ESP.getMaxAllocHeap());
       },
-      sink, [cancelFlag] { return cancelFlag && *cancelFlag; });
+      sink, probeAbort);
   if (bytesOut) *bytesOut = result.bytes;
   // FetchResult::status is -1 when no response arrived (bad URL, DNS, connect, TLS).
   g_lastStatus = result.status < 0 ? 0 : result.status;

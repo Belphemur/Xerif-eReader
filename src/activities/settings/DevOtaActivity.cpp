@@ -3,6 +3,7 @@
 #include <BatteryMonitor.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <Logging.h>
 #include <WiFi.h>
 
 #include <algorithm>
@@ -98,6 +99,9 @@ void DevOtaActivity::onEnter() {
   // subactivity; with saved credentials it auto-connects — the boot-hook
   // resume path depends on that, since nobody watches a picker at boot.
   WiFi.mode(WIFI_STA);
+  // [TLS-PROBE] stage sample for the owner's per-phase allocation table
+  // (docs/design/2026-11-10-tls-teardown.md §5).
+  logMemAt("devota_enter");
   startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
                          [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
 }
@@ -126,6 +130,7 @@ void DevOtaActivity::onWifiSelectionComplete(const bool success) {
     return;
   }
 
+  LOG_DBG("DEVOTA", "[TLS-PROBE] wifi-up free=%u maxBlock=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
   {
     RenderLock lock(*this);
     state = CHECKING;
@@ -212,6 +217,10 @@ void DevOtaActivity::fetchManifest() {
     listScrollTop_ = 0;
     state = LIST;
   }
+  probeListEnterMs_ = millis();
+  probeSettleLogged_ = false;
+  LOG_DBG("DEVOTA", "[TLS-PROBE] list-enter free=%u maxBlock=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+  logMemAt("devota_list");
   requestUpdate();
 }
 
@@ -445,6 +454,16 @@ void DevOtaActivity::loop() {
   // Touch first: LIST/FAILED take taps through the interaction table, the
   // CONFIRMING popup routes its own touches inside OptionPopup::handleInput.
   if (handleHandRenderedTouch()) return;
+
+  // [TLS-PROBE] one-shot settle sample 3 s after the list landed (docs/design/
+  // 2026-11-10-tls-teardown.md §5): shows what (if anything) decays after the
+  // fetch's TCP closes.
+  if (state == LIST && probeListEnterMs_ != 0 && !probeSettleLogged_ &&
+      static_cast<long>(millis() - (probeListEnterMs_ + 3000)) >= 0) {
+    probeSettleLogged_ = true;
+    LOG_DBG("DEVOTA", "[TLS-PROBE] list-settle+3s free=%u maxBlock=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    logMemAt("devota_settle");
+  }
 
   if (state == CONFIRMING) {
     if (confirmPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return;

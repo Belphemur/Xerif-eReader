@@ -4,6 +4,7 @@
 // HttpDownloader.h pulls Arduino/SdFat, whose macros collide with lwip's
 // ip4_addr.h unless seen first (same pin as OtaUpdater.cpp).
 #include "HttpDownloader.h"
+#include <Arduino.h>
 #include <Logging.h>
 #include <esp_ota_ops.h>
 // clang-format on
@@ -112,9 +113,20 @@ Error fetchDevManifest(OtaDevVersionEntry* entries, int maxEntries, int* outCoun
   if (!entries || maxEntries <= 0 || !outCount) return Error::JSON_PARSE_ERROR;
 
   std::string releaseBody;
-  if (!HttpDownloader::fetchUrl(devReleaseUrl, releaseBody, "", "", MAX_RELEASE_BYTES)) {
-    LOG_ERR("DEVOTA", "Dev release fetch failed");
-    return Error::HTTP_ERROR;
+  {
+    // [TLS-PROBE] (docs/design/2026-11-10-tls-teardown.md §5): free/maxBlock
+    // around each fetch shows whether anything survives a single request.
+    const uint32_t preFree = ESP.getFreeHeap();
+    const uint32_t preMax = ESP.getMaxAllocHeap();
+    const uint32_t fetchStart = millis();
+    const bool ok = HttpDownloader::fetchUrl(devReleaseUrl, releaseBody, "", "", MAX_RELEASE_BYTES);
+    LOG_DBG("DEVOTA", "[TLS-PROBE] release-json %ums free %u->%u maxBlock %u->%u amt=%zu ok=%d",
+            static_cast<unsigned>(millis() - fetchStart), preFree, ESP.getFreeHeap(), preMax, ESP.getMaxAllocHeap(),
+            releaseBody.size(), ok ? 1 : 0);
+    if (!ok) {
+      LOG_ERR("DEVOTA", "Dev release fetch failed");
+      return Error::HTTP_ERROR;
+    }
   }
 
   // Reuse the release parser to locate the manifest.json asset (name + URL);
@@ -127,9 +139,18 @@ Error fetchDevManifest(OtaDevVersionEntry* entries, int maxEntries, int* outCoun
   }
 
   std::string manifestBody;
-  if (!HttpDownloader::fetchUrl(info.manifestUrl, manifestBody, "", "", MAX_MANIFEST_BYTES)) {
-    LOG_ERR("DEVOTA", "Dev manifest fetch failed");
-    return Error::HTTP_ERROR;
+  {
+    const uint32_t preFree = ESP.getFreeHeap();
+    const uint32_t preMax = ESP.getMaxAllocHeap();
+    const uint32_t fetchStart = millis();
+    const bool ok = HttpDownloader::fetchUrl(info.manifestUrl, manifestBody, "", "", MAX_MANIFEST_BYTES);
+    LOG_DBG("DEVOTA", "[TLS-PROBE] manifest %ums free %u->%u maxBlock %u->%u amt=%zu ok=%d",
+            static_cast<unsigned>(millis() - fetchStart), preFree, ESP.getFreeHeap(), preMax, ESP.getMaxAllocHeap(),
+            manifestBody.size(), ok ? 1 : 0);
+    if (!ok) {
+      LOG_ERR("DEVOTA", "Dev manifest fetch failed");
+      return Error::HTTP_ERROR;
+    }
   }
   if (!parseOtaDevManifest(manifestBody.data(), manifestBody.size(), entries, maxEntries, outCount)) {
     LOG_ERR("DEVOTA", "Dev manifest parse failed");
@@ -174,7 +195,12 @@ Error installFromManifestEntry(const OtaDevVersionEntry& entry, ProgressCallback
       onProgress(ctx, static_cast<int>(pct), false);
     }
   };
+  const uint32_t preFree = ESP.getFreeHeap();
+  const uint32_t preMax = ESP.getMaxAllocHeap();
+  const uint32_t dlStart = millis();
   const auto err = HttpDownloader::downloadToFile(entry.url, STAGING_PATH, dlProgress);
+  LOG_DBG("DEVOTA", "[TLS-PROBE] asset-download %ums free %u->%u maxBlock %u->%u",
+          static_cast<unsigned>(millis() - dlStart), preFree, ESP.getFreeHeap(), preMax, ESP.getMaxAllocHeap());
   if (err != HttpDownloader::OK) {
     LOG_ERR("DEVOTA", "Download failed (%d)", static_cast<int>(err));
     Storage.remove(STAGING_PATH);
