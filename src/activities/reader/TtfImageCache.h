@@ -54,27 +54,32 @@ constexpr bool absoluteGrayImageRoute(const bool pageHasImages, const bool quali
 // fixed-point error diffusion); error state runs row-sequentially over
 // IMAGE-LOCAL columns — the FloydSteinberg4 invariant — so placement
 // independence and worker/foreground parity hold by construction.
-// Quantization is nearest-of-{0, 80, 155, 255} via the midpoints
-// {40, 117, 205} (the 2026-11-10 fidelity campaign: level 2 moved off the
-// eink-image 170 — photo paper whites dithered 170/255 at ~50% duty where
-// the panel's own white would do). The diffusion is Sierra-Lite in exact
-// 1/4-level units: forward 2/4, down-behind 1/4, down 1/4 — the plane holds
-// quarter-levels, so every distributed term is an integer and per-pixel
-// mass is conserved bit-exactly (4·errVal quarter-units out per 4·e in,
-// with the consume-rounding residue rem4 carried into the forward slot).
-// Near-white paper (mapped ≥ 252) snaps to level 3 with no diffusion: the
-// white field carries no error and stays clean (no salt churn).
+// Quantization is nearest-of-{0, 48, 112, 255} via the midpoints
+// {28, 78, 182} (iteration-3 owner audit 2026-11-11: calibrated to the X4
+// Pro UC8279 reflectance derived from the legacy BitmapHelpers path's
+// err targets {15, 35, 90, 210} × 255/210 — physical level 2 sits near
+// ~112, not 155, so midtone art maps onto the panel's own tones).
+// Near-white paper (mapped ≥ 240, the KCC-standard white-point clip) snaps
+// to level 3 with no diffusion: 8×8 DCT ringing (240..251) around black
+// text on white paper can no longer accumulate into dark dots.
+// The diffusion is serpentine Atkinson in exact 1/8-level units across six
+// neighbors (forward 1, forward 2, next-row behind/below/ahead, two-rows-
+// down below — 6/8 = 75% spread, 25% absorbed): the wider neighbor set
+// kills the checkerboard worms and edge blobs the 100% Sierra-Lite plane
+// produced on flat midtones while 1/8 shift-only terms keep the integer
+// plane exact (8·errVal eighth-units out per 8·e consumed).
 struct ToneBake4 : ToneBaker {
   static constexpr int kGammaNum = 22;  // γ = kGammaNum/kGammaDen (§7)
   static constexpr int kGammaDen = 10;
   static constexpr bool kGammaEnabled = false;  // §2.2: stretch owns the range; device tune flips this
   static constexpr int kContrastNum = 13;       // 1.3 (eink-image default), pivot 128
   static constexpr int kContrastDen = 10;
-  // Sierra-Lite plane (fidelity campaign 2026-11-10): the plane holds error
-  // in exact 1/4-level units, so every distributed term is an integer and
-  // per-pixel mass is conserved bit-exactly (forward 2/4, down-behind 1/4,
-  // down 1/4 — 4·errVal quarter-units out per 4·e consumed, with the
-  // consume-rounding residue rem4 carried into the forward slot).
+  // Atkinson plane (iteration-3 owner audit 2026-11-11): the plane holds
+  // error in exact 1/8-level units, so every distributed term is an integer
+  // (six neighbors at 1/8 each — 6/8 of the pixel's error spreads, 2/8 is
+  // absorbed; that absorption is what breaks the checkerboard worms).
+  // Two-slot right margin (xi = x + 2): the forward-2 term at the last
+  // column lands exactly on index w+3 — no per-pixel bounds checks.
   // Percentile clip (blockiness design 2026-11-09): 0.5% / 99.5%. The old
   // 1%/99% clip sat at gray ~62 on soft-shadow art, crushing every shadow
   // below it to level 0 (the "blacks too deep" soak defect) while
@@ -82,10 +87,10 @@ struct ToneBake4 : ToneBaker {
   // true black/white where the art contains them.
   static constexpr int kClipNum = 5;     // percentile clip out of kClipDen
   static constexpr int kClipDen = 1000;  // => 0.5% / 99.5%
-  // Sierra-Lite quantizer.
-  static constexpr uint8_t kLevels[4] = {0, 80, 155, 255};
-  static constexpr int kMids[3] = {40, 117, 205};  // nearest-level midpoints
-  static constexpr int kWhiteSnap = 252;           // mapped value that snaps to paper white
+  // Atkinson quantizer (X4 Pro panel-calibrated levels, white snap 240).
+  static constexpr uint8_t kLevels[4] = {0, 48, 112, 255};
+  static constexpr int kMids[3] = {28, 78, 182};  // nearest-level midpoints
+  static constexpr int kWhiteSnap = 240;          // mapped value that snaps to paper white
 
   uint8_t gammaLut[256];
   uint8_t contrastLut[256];
@@ -101,8 +106,9 @@ struct ToneBake4 : ToneBaker {
   size_t grayPathLen = 0;
   bool grayOpen = false;
   bool grayFailed = false;         // sticky write failure (grayDone refuses)
-  std::unique_ptr<int32_t[]> err;  // error plane, quarter-level units
+  std::unique_ptr<int32_t[]> err;  // error plane, eighth-level units
   std::unique_ptr<int32_t[]> errNext;
+  std::unique_ptr<int32_t[]> errNext2;
   const int width;
   bool reverse = false;  // serpentine: the current row scans right-to-left
   int row = 0;           // baked row index
@@ -126,17 +132,19 @@ struct ToneBake4 : ToneBaker {
       contrastLut[i] = static_cast<uint8_t>(c);
     }
     if (w > 0) {
-      err.reset(new (std::nothrow) int32_t[w + 2]);
-      errNext.reset(new (std::nothrow) int32_t[w + 2]);
-      if (err && errNext) {
-        memset(err.get(), 0, (w + 2) * sizeof(int32_t));
-        memset(errNext.get(), 0, (w + 2) * sizeof(int32_t));
+      err.reset(new (std::nothrow) int32_t[w + 4]);
+      errNext.reset(new (std::nothrow) int32_t[w + 4]);
+      errNext2.reset(new (std::nothrow) int32_t[w + 4]);
+      if (err && errNext && errNext2) {
+        memset(err.get(), 0, (w + 4) * sizeof(int32_t));
+        memset(errNext.get(), 0, (w + 4) * sizeof(int32_t));
+        memset(errNext2.get(), 0, (w + 4) * sizeof(int32_t));
       }
     }
     memset(hist, 0, sizeof(hist));
     memset(mapLut, 0, sizeof(mapLut));  // valid only after beginRemap()
   }
-  bool ok() const { return err != nullptr && errNext != nullptr; }
+  bool ok() const { return err != nullptr && errNext != nullptr && errNext2 != nullptr; }
 
   // ── adaptive two-phase API (§2.1) ───────────────────────────────────────
   // The gray temp is a raw row-major 8-bit stream (no header: the caller
@@ -169,20 +177,20 @@ struct ToneBake4 : ToneBaker {
   uint8_t toneDir(const int x, const int gray, const bool reverseScan) {
     const int mv = mapv(static_cast<uint8_t>(gray));
     // White-paper snap: near-pure paper emits level 3, zeroes the slot and
-    // diffuses nothing — the white field carries no error and stays clean
-    // (no salt churn over the page).
+    // diffuses nothing — the white field carries no error and stays clean.
+    // Snap 240 (KCC-standard clip): 8×8 DCT ringing (240..251) around black
+    // text on white paper can no longer accumulate into dark dots.
     if (mv >= kWhiteSnap) {
-      err[x + 1] = 0;
+      err[x + 2] = 0;
       return 3;
     }
-    // Consume the slot exactly: e4 is quarter-levels; e the rounded level,
-    // rem4 the exact rounding residue (carried into the forward slot below
-    // — nothing of the plane is ever dropped).
-    const int e4 = err[x + 1];
-    const int e = e4 >= 0 ? (e4 + 2) >> 2 : -((2 - e4) >> 2);
-    err[x + 1] = 0;
-    const int rem4 = e4 - (e << 2);
-    const int v = mv + e;
+    // Consume the slot: e8 is eighth-levels; e the rounded whole level.
+    const int e8 = err[x + 2];
+    err[x + 2] = 0;
+    const int e = e8 >= 0 ? ((e8 + 4) >> 3) : -(((4 - e8) >> 3));
+    int v = mv + e;
+    if (v < 0) v = 0;
+    if (v > 255) v = 255;
     int t = 3;
     if (v < kMids[0])
       t = 0;
@@ -190,18 +198,17 @@ struct ToneBake4 : ToneBaker {
       t = 1;
     else if (v < kMids[2])
       t = 2;
-    const int errVal = v - kLevels[t];
-    // Serpentine Sierra-Lite, quarter-level units: forward 2/4 (+ the
-    // consume residue), down-behind 1/4, down 1/4.
-    if (!reverseScan) {
-      if (x + 1 < width) err[x + 2] += (errVal << 1) + rem4;
-      errNext[x] += errVal;  // down-behind
-      errNext[x + 1] += errVal;
-    } else {
-      if (x > 0) err[x] += (errVal << 1) + rem4;
-      errNext[x + 2] += errVal;  // down-behind (to the right)
-      errNext[x + 1] += errVal;
-    }
+    const int errVal = v - static_cast<int>(kLevels[t]);  // eighth-level units
+    // Serpentine Atkinson, eighth-level units, six neighbors (75% spread):
+    // forward 1, forward 2, next row behind/below/ahead, two rows down below.
+    const int d = reverseScan ? -1 : 1;
+    const int xi = x + 2;
+    err[xi + d] += errVal;
+    err[xi + 2 * d] += errVal;
+    errNext[xi - d] += errVal;
+    errNext[xi] += errVal;
+    errNext[xi + d] += errVal;
+    errNext2[xi] += errVal;
     return static_cast<uint8_t>(t);
   }
   // ToneBaker's forward kernel — kept for ascending-x callers and the tests;
@@ -221,9 +228,12 @@ struct ToneBake4 : ToneBaker {
     nextRow();
   }
   void nextRow() override {
-    if (err == nullptr || errNext == nullptr) return;
-    memcpy(err.get(), errNext.get(), (width + 2) * sizeof(int32_t));
-    memset(errNext.get(), 0, (width + 2) * sizeof(int32_t));
+    if (err == nullptr || errNext == nullptr || errNext2 == nullptr) return;
+    // Rotate: err ← errNext ← errNext2 ← zero. Swapping the plane pointers
+    // avoids the copy; the third plane is zeroed in place for the new tail.
+    err.swap(errNext);
+    errNext.swap(errNext2);
+    memset(errNext2.get(), 0, (width + 4) * sizeof(int32_t));
     reverse = !reverse;
     ++row;
   }

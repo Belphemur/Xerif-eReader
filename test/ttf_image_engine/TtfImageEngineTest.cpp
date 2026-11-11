@@ -74,13 +74,13 @@ TEST(CacheIdentity, PolicyLetterSeparatesBakes) {
   ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 10, 20, 100, 80), kDir, true, true, c, sizeof(c)));
   EXPECT_STRNE(a, b);
   EXPECT_STRNE(a, c);
-  // 'o' = Sharp, 'p' = DPID + CLAHE (Enhanced), 'l' = legacy: the 2026-11-10
-  // fidelity campaign invalidated every pre-campaign bake — halo-free
-  // sharpen, Sierra-Lite quantizer, decoder-trap fixes, and the in-file
-  // identity header.
-  EXPECT_NE(strstr(a, "/io"), nullptr);
+  // 'a' = Sharp, 'b' = DPID + CLAHE (Enhanced), 'l' = legacy: the
+  // iteration-3 owner audit bake (2026-11-11) invalidated every pre-campaign
+  // bake — panel-calibrated levels, white snap 240, Atkinson 1/8 diffusion,
+  // coring-6/darkFloor sharpen.
+  EXPECT_NE(strstr(a, "/ia"), nullptr);
   EXPECT_NE(strstr(b, "/il"), nullptr);
-  EXPECT_NE(strstr(c, "/ip"), nullptr);
+  EXPECT_NE(strstr(c, "/ib"), nullptr);
 }
 
 TEST(CacheIdentity, RefusesOverlongDir) {
@@ -305,18 +305,18 @@ TEST(ToneBake4, IsPlacementIndependent) {
 }
 
 static int64_t planeMass(const ttfimg::ToneBake4& bake) {
-  const int n = bake.width + 2;
+  const int n = bake.width + 4;
   int64_t m = 0;
-  for (int i = 0; i < n; ++i) m += bake.err[i] + bake.errNext[i];
+  for (int i = 0; i < n; ++i) m += bake.err[i] + bake.errNext[i] + bake.errNext2[i];
   return m;
 }
 
-TEST(ToneBake4, SierraLiteSpreadsTheWholeError) {
-  // Sierra-Lite plane (2026-11-10 fidelity campaign): slots hold exact
-  // 1/4-level units — forward 2/4, down-behind 1/4, down 1/4 — so every
-  // distributed term is an integer and one tone() spreads exactly
-  // 4·errVal quarter-units (the FS reset4 plane's per-term-truncation
-  // contract, rebased on the new kernel). A fresh slot carries no residue.
+TEST(ToneBake4, AtkinsonSpreadsThreeQuartersOfTheError) {
+  // Atkinson plane (iteration-3 owner audit): slots hold exact 1/8-level
+  // units — six neighbors at 1/8 each — so every distributed term is an
+  // integer and one tone() spreads exactly 6·errVal eighth-units (75% of
+  // the error; the absorbed 2/8 is the worm-killing damping). A fresh slot
+  // carries no residue.
   ttfimg::ToneBake4 bake(8);
   ASSERT_TRUE(bake.ok());
   const int64_t m0 = planeMass(bake);
@@ -331,24 +331,29 @@ TEST(ToneBake4, SierraLiteSpreadsTheWholeError) {
     t = 2;
   const int errVal = v - ttfimg::ToneBake4::kLevels[t];
   bake.tone(0, 127);
-  EXPECT_EQ(planeMass(bake) - m0, 4 * errVal);
-  // The forward slot carries the double weight; the vertical slots one
-  // quarter each (ascending visit: err[2] = forward, errNext[0..1] down).
-  EXPECT_EQ(bake.err[2], errVal * 2);
-  EXPECT_EQ(bake.errNext[0], errVal);
+  EXPECT_EQ(planeMass(bake) - m0, 6 * errVal);
+  // The 1/8 terms land on six slots (ascending visit: xi = x+2 = 2;
+  // forward +1/+2 = err[3..4], next row behind/below/ahead = errNext[1..3],
+  // two rows down below = errNext2[2]).
+  EXPECT_EQ(bake.err[3], errVal);
+  EXPECT_EQ(bake.err[4], errVal);
   EXPECT_EQ(bake.errNext[1], errVal);
+  EXPECT_EQ(bake.errNext[2], errVal);
+  EXPECT_EQ(bake.errNext[3], errVal);
+  EXPECT_EQ(bake.errNext2[2], errVal);
 }
 
 TEST(ToneBake4, ConsumedErrorFeedsTheQuantizerInput) {
   // The consumed slot error joins the mapped value BEFORE quantization:
-  // seed e4 = 9 quarter-levels -> consumed e = 2 (round (9+2)>>2), rem4 = 1
-  // carried into the forward slot; the quantizer sees mv + 2.
+  // seed e8 = 37 eighth-levels -> consumed e = 5 (round (37+4)>>3); the
+  // rounding residual is absorbed with the plane's 2/8 (the consume zeroes
+  // the slot); the quantizer sees mv + 5.
   ttfimg::ToneBake4 bake(8);
   ASSERT_TRUE(bake.ok());
-  bake.err[1] = 9;
+  bake.err[2] = 37;
   const int64_t m0 = planeMass(bake);
   const int mv = bake.mapv(127);
-  const int v = mv + 2;
+  const int v = mv + 5;
   int t = 3;
   if (v < ttfimg::ToneBake4::kMids[0])
     t = 0;
@@ -358,24 +363,25 @@ TEST(ToneBake4, ConsumedErrorFeedsTheQuantizerInput) {
     t = 2;
   const int errVal = v - ttfimg::ToneBake4::kLevels[t];
   bake.tone(0, 127);
-  EXPECT_EQ(bake.err[1], 0);               // fully consumed; the residue moved forward
-  EXPECT_EQ(bake.err[2], errVal * 2 + 1);  // forward + rem4
-  // Mass: 4·errVal distributed + the 9 consumed... the slot lost its 9,
-  // gained nothing — total delta = 4·errVal + 1 − 9.
-  EXPECT_EQ(planeMass(bake) - m0, 4 * errVal + 1 - 9);
+  EXPECT_EQ(bake.err[2], 0);  // fully consumed
+  EXPECT_EQ(bake.err[3], errVal);
+  EXPECT_EQ(bake.err[4], errVal);
+  // Mass: 6·errVal distributed eighth-units minus the 37 consumed.
+  EXPECT_EQ(planeMass(bake) - m0, 6 * errVal - 37);
 }
 
 TEST(ToneBake4, WhitePaperSnapsClean) {
-  // Mapped values >= 252 emit level 3 with the slot zeroed and no
-  // diffusion: the paper field stays clean and carries no error (fidelity
-  // campaign 2026-11-10).
+  // Mapped values >= 240 (the KCC-standard clip, iteration-3 audit) emit
+  // level 3 with the slot zeroed and no diffusion: the paper field stays
+  // clean and carries no error — 8×8 DCT ringing (240..251) can no longer
+  // accumulate into dark dots.
   ttfimg::ToneBake4 bake(8);
   ASSERT_TRUE(bake.ok());
-  bake.err[1] = 37;  // pending error must be dropped by the snap
+  bake.err[2] = 37;  // pending error must be dropped by the snap
   const int64_t m0 = planeMass(bake);
   const uint8_t t = bake.tone(0, 255);
   EXPECT_EQ(t, 3);
-  EXPECT_EQ(bake.err[1], 0);
+  EXPECT_EQ(bake.err[2], 0);
   EXPECT_EQ(planeMass(bake) - m0, -37);  // slot zeroed, nothing diffused
 }
 
@@ -557,20 +563,19 @@ TEST(ToneBake4, GradientUsesAllFourTones) {
 
 TEST(ToneBake4, StepInputChangesToneAtTheBoundary) {
   // The sRGB-space thresholds moved with the LUTs (§5.2) and now with the
-  // Sierra-Lite midpoints {40, 117, 205}: sRGB 30 maps into the level-1
-  // band, sRGB 60/100 into level 2, sRGB 10 into level 0 — pinned with
-  // margin against LUT-build drift. Fresh bake per pick: tone() diffuses,
-  // and a prior pick's error must not move a boundary pin.
+  // panel-calibrated midpoints {28, 78, 182}: sRGB 10 maps into the level-1
+  // band (mapped 38, between 28 and 78), sRGB 30/60/100 into level 2 —
+  // pinned with margin against LUT-build drift. Fresh bake per pick:
+  // tone() diffuses, and a prior pick's error must not move a boundary pin.
   const auto pick = [](const uint8_t g) {
     ttfimg::ToneBake4 bake(8);
     return bake.tone(0, g);
   };
-  EXPECT_EQ(pick(30), 1);
+  EXPECT_EQ(pick(6), 0);   // mapped 21 < 28: level 0
+  EXPECT_EQ(pick(10), 1);  // mapped 38: level 1
+  EXPECT_EQ(pick(30), 2);  // mapped 86: level 2
   EXPECT_EQ(pick(60), 2);
-  EXPECT_EQ(pick(100), 2);
-  // Deep shadow: the brightening curve parks sRGB 10 below level 1's
-  // midpoint (mapped 38 vs mid 40).
-  EXPECT_EQ(pick(10), 0);
+  EXPECT_EQ(pick(100), 2);  // mapped 178, four under the 182 midpoint
 }
 
 TEST(ToneBake4, LutStructure) {

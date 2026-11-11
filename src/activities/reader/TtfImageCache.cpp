@@ -154,10 +154,11 @@ void ToneBake4::beginRemap() {
     }
   }
   adaptive = true;
-  // Phase 1 did not diffuse: reset the FS error state and the serpentine.
-  if (err != nullptr && errNext != nullptr) {
-    memset(err.get(), 0, (width + 2) * sizeof(int32_t));
-    memset(errNext.get(), 0, (width + 2) * sizeof(int32_t));
+  // Phase 1 did not diffuse: reset the error state and the serpentine.
+  if (err != nullptr && errNext != nullptr && errNext2 != nullptr) {
+    memset(err.get(), 0, (width + 4) * sizeof(int32_t));
+    memset(errNext.get(), 0, (width + 4) * sizeof(int32_t));
+    memset(errNext2.get(), 0, (width + 4) * sizeof(int32_t));
   }
   reverse = false;
   row = 0;
@@ -281,7 +282,7 @@ uint64_t cacheHash64(const ImageSpec& spec) {
   return hash;
 }
 
-char cacheRevisionLetter(const bool qualityTone, const bool clahe) { return qualityTone ? (clahe ? 'p' : 'o') : 'l'; }
+char cacheRevisionLetter(const bool qualityTone, const bool clahe) { return qualityTone ? (clahe ? 'b' : 'a') : 'l'; }
 
 CacheIdentity cacheIdentity(const ImageSpec& spec, const bool qualityTone, const bool clahe) {
   CacheIdentity id;
@@ -314,6 +315,11 @@ bool cacheNameFor(const ImageSpec& spec, const char* dir, const bool qualityTone
   // (Enhanced) are the 2026-11-10 fidelity campaign — halo-free sharpen,
   // Sierra-Lite quantizer, decoder-trap fixes, and the in-file identity
   // header (11-byte CacheIdentity header replaces the bare dims word).
+  // 'a' (Sharp) and 'b' (Enhanced) are the iteration-3 owner audit bake
+  // (2026-11-11) — panel-calibrated levels {0,48,112,255} (midpoints
+  // {28,78,182}), white snap 240, serpentine Atkinson 1/8 diffusion,
+  // coring-6/darkFloor sharpen (both letters never used in this file's
+  // history — swept).
 
   // Full 64-bit hash in the name: a truncated identity would let two records
   // of the same dimensions and generation share one file, and the header

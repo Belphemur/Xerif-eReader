@@ -425,3 +425,74 @@ against it.
 6. Conventional PR title (Title Check); squash-merge by owner later.
 7. Report-first discipline: write `~/.pi/supervisor/reports/<job>.md` at round start and
    update after each commit; marker `TTF_IMAGE_CONTRAST_DONE`.
+
+##### Amendment 6 (2026-11-11, iteration 3 — owner audit: panel-calibrated quantizer, Atkinson diffusion, sharpen darkFloor, decode arena)
+
+The owner's post-flash audit (attachment `pasted-text-2026-11-11_10-45-57-036.md`,
+"We have more fix to do, this is the way forward" — normative owner directive)
+measured the PR #303 head on the three soak pages and named one build trap plus
+three algorithmic defects. Every fix below implements that audit verbatim.
+
+- **Decode arena (audit §1.2, build trap)**: a deflated full-page JPEG needs
+  ~74–81 KiB inside the decode arena (inflate window + tinfl ~46 KiB, skipBuf +
+  TJpgDec ~9 KiB, srcW×16 band 15.5–22 KiB, RowScaler ~3.5 KiB);
+  `ImagePredecodeWorker::kDecodeArenaBytes` was 32 KiB, so every deflated
+  934–1400 px page (the two baseline pages the audit measures) stepped down
+  through `renderJpeg`'s arena retry and painted at half resolution, uncached,
+  with the `Decode scale reduced below the preferred pick` warning. Raised to
+  128 KiB (PSRAM-backed, outside the DRAM pool; the 5 MiB engine budget pins
+  hold — the budget gate measures the store + scaler scratch, the arena is a
+  separate reserve-time PSRAM block).
+- **Sharpen darkFloor (audit bug A)**: after the ~2.12× box downscale a 1.5 px
+  black stroke's center IS the destination 3×3 minimum, so the old
+  `outv >= mn` clamp forbade 100% of thin-stroke darkening (the PR's own
+  `DarkStrokeRecoversItsShoulder` pin codified it: `out[7] == 120`). The dark
+  side is no longer clamped to `mn` — dark gain is 1.25× (`kSharpenDarkQ4 20`,
+  was 16/1.0) bounded by the local contrast span
+  (`darkFloor = mn − (mx − mn)`, never below 0), so `[255,120,200,255]`
+  recovers the stroke center (measured 60) while soft shading (amplitude ≤ 10)
+  stays byte-identical. The bright side keeps the strict `outv <= mx` clamp
+  (zero white halos) at 0.25× gain, coring is 3 → 6 so the 8×8 JPEG mosquito
+  ripple (±6) is never sharpened, and the tent blur/Q4 rescale carry the
+  audit's +8/−8 rounding.
+- **Panel-calibrated quantizer (audit bug B/C)**: the X4 Pro UC8279's physical
+  levels derive from the legacy `BitmapHelpers` err targets {15, 35, 90, 210}
+  scaled to paper white — `kLevels {0, 48, 112, 255}`, midpoints
+  `{28, 78, 182}` (were {0, 80, 155, 255}/{40, 117, 205}). Level 2 sits near
+  ~112 on the panel, not 155, so the beige wall and blonde hair of 00005 bake
+  onto the panel's own tone instead of 50–60% dark dots.
+- **White snap 240 (audit bug B)**: `kWhiteSnap 252 → 240` (the KCC-standard
+  white-point clip). 8×8 DCT quantization ringing (240..251) around black text
+  on white paper no longer accumulates through the diffusion plane into
+  3.76×3.76 px dot clouds — the "Lego blocks" of 00006's white field.
+- **Serpentine Atkinson diffusion (audit bug C)**: the 100%-conserving
+  quarter-level Sierra-Lite plane is replaced by the audit's serpentine
+  Atkinson in exact 1/8-level units — six neighbors at 1/8 (forward 1, forward
+  2, next row behind/below/ahead, two rows down below; planes `int32_t[w+4]`
+  with a two-slot right margin so the last column's forward-2 term lands
+  exactly on index w+3, no per-pixel bounds checks), consume rounding
+  `e = (e8+4)>>3` / `−((4−e8)>>3)`, residual + 2/8 absorbed at consume. RAM
+  +1 plane ≈ 1.8 KB at the 454 px placement. Measured trade-offs, kept
+  deliberately (the owner ordered Atkinson over the worm-prone 100%
+  conserving plane — KCC/HyperDither/the legacy `AtkinsonDitherer` path):
+  band-boundary entry bursts (a full row's duty switching on then off —
+  `GradientHasNoSustainedDensityOscillation` re-pinned 2 → 8 isolated bursts,
+  measured 7), a slightly higher gradient row-delta floor (measured 6.06/8.54
+  vs the mode-lock defect signature 16.6 — `GradientHasNoRowPeriodicBanding`
+  re-pinned 6/6 → 10/11), and the low-duty dead zone (a flat field with a
+  ~10% bracketing duty parks on the lower level — `FlatMidtone…` documents
+  measured 100% level 2; the tone error is the panel's own nearest tone).
+  Overall gradient tone preservation holds (measured avg 127.94 vs ideal
+  127.5 on the 30→210 ramp).
+- **Cache letters (Fix C)**: `cacheRevisionLetter` 'o'/'p' → 'a' (Sharp) /
+  'b' (Enhanced) — both swept unused in this file's history; every pre-audit
+  cache regenerates. Legacy 'l' unchanged.
+- **Host pins**: Sharpen suite re-measured to the new contract (dark recovery
+  `out[7] < 100`, shoulder `<= 200`, soft shading byte-identical + direct
+  darkFloor arithmetic pin, JPEG-ring ripple byte-identical); ToneBake4 plane
+  tests re-derived for the Atkinson plane (6/8 spread, consume rounding,
+  snap-240 slot zeroing at `err[x+2]`); boundary picks re-pinned to the
+  {28, 78, 182} midpoints; texture flat-field duties re-measured (flat100:
+  72.5% level 2 vs the 67% prediction). Budget pins
+  (`ProgressiveBudget.*`, `ImageBudgetGate.*`, `PsramBudget.*`) hold
+  unchanged.
