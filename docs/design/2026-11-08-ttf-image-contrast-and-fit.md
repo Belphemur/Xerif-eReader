@@ -496,3 +496,157 @@ three algorithmic defects. Every fix below implements that audit verbatim.
   72.5% level 2 vs the 67% prediction). Budget pins
   (`ProgressiveBudget.*`, `ImageBudgetGate.*`, `PsramBudget.*`) hold
   unchanged.
+
+---
+
+## 7. Amendment 2026-11-11 — Image viewer on the engine
+
+Owner directive: images opened from the file browser render through the same
+production pipeline the reader's pages use (this doc's §§1–3), on the same
+display flow. Feature branch `feat/image-viewer-engine` off the #303 head;
+its own PR. The brief for this amendment lives in the owner's work order.
+
+### 7.1 Standalone-source decision (adapter — the smaller diff)
+
+`ttfimg::decodeAndCache` is driven end-to-end by `zip.find(href)` →
+`ZipEntry` → `ZipEntryReader` → `probeImage`/`ImageRenderer::renderSourceRows`
+(TtfImageEngine.cpp:876–905). The SDK already carries the seam a standalone SD
+file needs: `ZipEntryReader::rawEntry(size)` synthesizes a HEADERLESS stored
+entry whose source IS the raw data at offset 0 (FreeInkBook
+ZipCatalog.h, `kRawHeaderOffset`), and `ZipCatalog::find/findByHash` are
+virtual. The host suite already proves the shape: `HostFileSource`
+(test/ttf_image_fit/TtfImageFitTest.cpp:249) is a `BookSource` over one file.
+
+Decision: **option (a), a thin adapter pair** — `StandaloneImageSource`
+(`BookSource` over one open `HalFile`, seek64+readAt) and
+`StandaloneImageCatalog` (`ZipCatalog` subclass whose `find` returns one
+synthetic `rawEntry(fileSize)`). ~60 lines, zero engine changes; the whole
+dispatch (probe → kind → quality/revert → degrade ladder → cache publish)
+runs unmodified, so the viewer bakes byte-identically to a reader page of the
+same source bytes.
+
+The loser (option (b), a `decodeAndCache` overload taking a path) would fork
+the ~330-line dispatch body into a second copy that skips the zip probe — a
+second place the pipeline knowledge (tone, cache, degrade) lives, exactly the
+copy this feature exists to avoid. Rejected on DRY; KISS-within-DRY picks the
+adapter because it is also the smaller diff.
+
+The engine takes `Epub*` only for GIF/BMP PSRAM extraction; the viewer passes
+`nullptr`, and JPEG/PNG never reach that branch. The catalog and source are
+stack locals of one synchronous decode (no worker, no predecode in the
+viewer) — nothing outlives the call.
+
+### 7.2 Placement: one integer derivation (`ttfimg::fitPlacement`)
+
+Today's `fitImage` (BmpViewerActivity.cpp:29) derives the centered fit with
+float math and truncation. That derivation moves ONCE into
+`ttfimg::fitPlacement(srcW, srcH, screenW, screenH)` → `{x, y, w, h}` (pure,
+unguarded next to `ImageSpec` so non-TTF builds and host tests compile it),
+with the exact same expression sequence (`min` of the two ratios and 1.0,
+`(int)` truncation, 1-clamps, centered). `fitImage` becomes a thin adapter
+that fills a `RenderConfig` from the helper — the sleep-cover path and the
+small-board legacy path keep their RenderConfig shape with no second copy of
+the math. Behavior change is bounded to rounding by construction, pinned by a
+host test that runs the legacy formula and the helper over a dim matrix and
+asserts equality.
+
+### 7.3 Viewer display flow (the reader's absolute arm, not a variant)
+
+`renderImage()` routes JPEG/PNG through the engine on TTF boards:
+
+- **Route predicate**: the reader's own decision table
+  `ttfimg::absoluteGrayImageRoute(pageHasImages, qualityTone, !X3, UC8279,
+  absoluteSupported)` (TtfImageCache.h) — the viewer consumes it; it does not
+  grow a second grayscale-decision table. `qualityTone =
+  SETTINGS.imageDecodeQuality != 0`, `clahe = qualityTone &&
+  SETTINGS.pictureDetail != 0` — the reader's settings semantics verbatim
+  (QuickPageRelayout.cpp:29).
+- **Absolute arm** (route true), the `renderTtfImageGrayAbsolute` order
+  (EpubReaderActivity.cpp:5050): paint the Bayer-dithered base
+  (`setDitherImagesInBw(true)` scope + engine paint) → `displayGrayscaleBase
+  (Absolute)` (failure = plain display of the painted base) →
+  `storeBwBuffer()` (failure = keep the base, log, done — the planes cannot
+  be undone without it) → plane pass LSB (`clearScreen(0xFF)`, mode LSB,
+  engine paint, `copyGrayscaleLsbBuffers()`) → plane pass MSB →
+  `displayGrayBuffer()` BEFORE `setRenderMode(BW)` (the order the arm's
+  comment pins) → `restoreBwBuffer()` → `cleanupGrayscaleWithFrameBuffer()`.
+  The stored-BW discipline replaces the legacy viewer's third full decode:
+  the base is restored from the stored buffer, not re-decoded.
+- **Quality arm, non-absolute panels**: single paint with
+  `setDitherImagesInBw(true)` + `displayBuffer(FAST_REFRESH)` (the reader's
+  base-pass treatment of images outside the absolute route).
+- **Revert arm** (`imageDecodeQuality == 0`): the reader's §5.6 semantics —
+  `PageRenderer::renderImages` over a one-image synthetic `Page` (SDK
+  error-diffusion paint, no tone cache), single pass. This changes today's
+  viewer behavior on the revert switch (the legacy converter plane-danced
+  even without tone) to match the reader it shares a setting with.
+- **Failure**: a decode failure mid-plane returns false with the base kept
+  and logged — the reader's semantics. No partial plane upload is shown.
+
+### 7.4 Cache identity, directory, freshness
+
+- Directory: `/.crosspoint/viewer/ficache` (the app's own hidden cache root;
+  no user-folder pollution; created with `Storage.mkdir(path, true)`).
+- Identity: unchanged engine identity — `cacheNameFor`/`hasValidCache`/
+  `blitFromCache` with `spec.href` = the SD path (≤111 chars; longer paths
+  key through `hrefExt` exactly like the reader's overlong-page-href
+  handling), placement, tone-policy letters. Same-file reopens and sibling
+  navigation are cache hits.
+- Freshness: `spec.generation` = the file's byte size. It lives in the cache
+  NAME (`%08x`), so a replaced file with a different size gets a fresh bake;
+  the in-file identity header still validates dims. **Documented
+  limitation**: a replacement with the identical size serves the stale bake
+  until the next change — there is no app-side FAT-mtime accessor today, and
+  a HAL surface addition for a cosmetic edge loses to KISS this round. A
+  mtime-based identity is the recorded follow-up if the owner ever sees it.
+- Sweep: none this round. Stale viewer bakes linger in the viewer ficache
+  dir (each ≤ ~96 KB at full page). Recorded follow-up: an age- or size-based
+  sweep if accumulation matters; deleting on exit would defeat the cache.
+- Scratch arena: one 192 KiB pool block sized from
+  `TtfBookRuntime::kScratchBytes` — the reader's own scratch budget, so the
+  SDK's degrade thresholds (progressive store acceptance, DC fallback,
+  power-of-two step-down) behave identically to a reader decode. Allocation
+  failure fails the render honestly (no legacy fallback on engine boards).
+- Gate: no `ImageDecodeGate` claim. Rule 4's bus exists for decodes reaching
+  SHARED surfaces (the book's seek+read window, the ZIP extraction cache);
+  the viewer's decode touches its own source, its own cache dir, and
+  call-local decoder state (gate header rule 3), so there is no shared claim
+  surface. The SD card itself stays behind `HalStorage`'s lock.
+
+### 7.5 What retires, what stays
+
+- `PngToFramebufferConverter` usage leaves `BmpViewerActivity` (the display
+  path is the engine); the converter files stay (SleepActivity still uses
+  them).
+- `JpegToFramebufferConverter` stays ONLY in `saveJpegSleepCover` — the
+  sleep-cover encode is out of scope (design doc "UX untouched") and its
+  output format is a legacy-bake contract. Deliberate duplication, recorded.
+- Small boards (no `CROSSPOINT_TTF_READER`): viewer compiles exactly as
+today (converters + `fitImage`). Compile-time switch, the existing pattern.
+- BMP sources keep the legacy `Bitmap` path on every board: the engine's BMP
+  decode needs a resident buffer + `Epub` extraction (decodeBmpRows), while
+  the legacy path streams rows off the card. Deliberate duplication
+  (documented non-goal this round — no engine rewrite for BMP).
+
+### 7.6 DRY / SOLID / KISS decision log
+
+| Decision | Winner | What the loser cost |
+| --- | --- | --- |
+| Standalone file access: adapter vs engine overload | **DRY** (adapter) | The overload forks the decode dispatch into a second pipeline copy |
+| Display sequence: replicate `renderTtfImageGrayAbsolute` order incl. store/restore | **DRY/SOLID** | A viewer-variant sequence would diverge on the next reader fix (e.g. the displayGrayBuffer-before-BW order bug class) |
+| Route predicate + settings semantics consumed from the reader | **DRY** | A second grayscale decision table drifting from the reader's |
+| `fitPlacement` single derivation, `fitImage` as adapter | **DRY** | Two rounding derivations to keep in lockstep |
+| Cache identity/dir/freshness via the engine's own scheme, generation = size | **KISS (within DRY)** | mtime identity would need a new HAL accessor for a rare staleness edge |
+| No `ImageDecodeGate` in the viewer | **KISS** | Taking the bus would serialize the viewer behind a reader worker that shares no surface with it |
+| BMP + small boards keep legacy paths | **SOLID over KISS** (deliberate, documented duplication) | Unifying BMP would drag resident-buffer/extraction contracts into the engine for one source kind |
+| Legacy converters deleted from the viewer display path | **KISS (deletion over deprecation)** | Keeping them compiled-in as a fallback doubles the code a maintainer must reason about |
+
+### 7.7 Verification
+
+Host: `fitPlacement` exactness vs the legacy formula (480×800 + a small
+panel); cache-hit reuses the same `.pxc` for a repeated decode; a decode
+failure renders no plane pass. A/B: legacy-converter vs engine render of the
+same PNG/JPEG at 480×800, dumped host-side and inspected; salt/steps metrics
+on the 00005/00006-derived anchors recorded in the final report. Device:
+owner flash test (X4 Pro: PNG + JPEG from the file browser, sibling
+navigation cache hits, sleep cover unchanged, BMP unchanged).
