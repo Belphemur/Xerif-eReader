@@ -319,16 +319,22 @@ bool cacheNameFor(const ImageSpec& spec, const char* dir, bool qualityTone, bool
 bool hasValidCache(const ImageSpec& spec, const char* dir, bool qualityTone, bool clahe);
 
 // Halo-free clamped dark-stroke sharpen core (the owner's
-// sharpenRowHaloFree, fidelity campaign 2026-11-10): one row triple in, one
-// row out, pure integer. A 3×3 tent blur (separable (1,2,1)/4 ⊗ (1,2,1)/4,
-// >>4) gives the high-pass detail; a ±3 coring deadzone leaves smooth
-// gradients untouched; the detail is restored asymmetrically (dark strokes
-// at strength 1.0, bright side at 0.375) and the output is strictly clamped
-// to the original 3×3 [min,max] — zero overshoot, so no halos. Border rows
-// replicate: pass the same pointer for prev/next at the frame edges.
-constexpr int kSharpenDarkQ4 = 16;  // dark-stroke gain, Q4 (16/16 = 1.0)
-constexpr int kSharpenLightQ4 = 6;  // bright-side gain, Q4 (6/16 = 0.375)
-constexpr int kSharpenCoring = 3;   // |detail| deadzone
+// sharpenRowHaloFree, fidelity campaign 2026-11-10; iteration-3 owner audit
+// 2026-11-11): one row triple in, one row out, pure integer. A 3×3 tent blur
+// (separable (1,2,1)/4 ⊗ (1,2,1)/4, rounded >>4) gives the high-pass detail;
+// a ±6 coring deadzone leaves smooth gradients and 8×8 JPEG mosquito ripple
+// untouched; the detail is restored asymmetrically (dark strokes 1.25× —
+// after a ~2× box downscale a 1.5 px stroke's center IS the destination
+// minimum, so it must be allowed to recover toward ink — bright side 0.25×).
+// The bright side is clamped strictly to the 3×3 max (zero white halos); the
+// dark side is NOT clamped to the 3×3 min — that clamp is what kept thin
+// strokes at their diluted value — it is bounded instead by the local
+// contrast span (darkFloor = mn − (mx − mn)), so low-contrast shading can
+// never crush below its own span. Border rows replicate: pass the same
+// pointer for prev/next at the frame edges.
+constexpr int kSharpenDarkQ4 = 20;  // dark-stroke gain, Q4 (20/16 = 1.25)
+constexpr int kSharpenLightQ4 = 4;  // bright-side gain, Q4 (4/16 = 0.25)
+constexpr int kSharpenCoring = 6;   // |detail| deadzone (≥ JPEG ±6 ripple)
 inline void sharpenRowHaloFree(const uint8_t* prev, const uint8_t* self, const uint8_t* next, const int w,
                                uint8_t* out) {
   for (int x = 0; x < w; ++x) {
@@ -336,15 +342,14 @@ inline void sharpenRowHaloFree(const uint8_t* prev, const uint8_t* self, const u
     const int xr = x < w - 1 ? x + 1 : w - 1;
     const int orig = self[x];
     int outv = orig;
-    // 3×3 tent, (1,2,1) ⊗ (1,2,1) / 16 — exact integer weights.
+    // 3×3 tent, (1,2,1) ⊗ (1,2,1) / 16 — exact integer weights, +8 rounds.
     const int h0 = prev[xl] + 2 * prev[x] + prev[xr];
     const int h1 = self[xl] + 2 * self[x] + self[xr];
     const int h2 = next[xl] + 2 * next[x] + next[xr];
-    const int detail = orig - ((h0 + 2 * h1 + h2) >> 4);
+    const int blur = (h0 + 2 * h1 + h2 + 8) >> 4;
+    int detail = orig - blur;
     if (detail < -kSharpenCoring || detail > kSharpenCoring) {
-      const int kQ4 = detail < 0 ? kSharpenDarkQ4 : kSharpenLightQ4;
-      outv = orig + ((detail * kQ4) >> 4);
-      // Strict local clamp against the ORIGINAL 3×3 neighborhood.
+      // Local 3×3 [min,max] of the ORIGINAL neighborhood.
       int mn = 255;
       int mx = 0;
       for (const uint8_t* r : {prev, self, next}) {
@@ -358,8 +363,20 @@ inline void sharpenRowHaloFree(const uint8_t* prev, const uint8_t* self, const u
         if (c < mn) mn = c;
         if (c > mx) mx = c;
       }
-      if (outv < mn) outv = mn;
-      if (outv > mx) outv = mx;
+      if (detail > 0) {
+        detail -= kSharpenCoring;
+        outv = orig + ((detail * kSharpenLightQ4 + 8) >> 4);
+        if (outv > mx) outv = mx;  // strict upper clamp = ZERO white halos
+      } else {
+        detail += kSharpenCoring;
+        outv = orig + ((detail * kSharpenDarkQ4 - 8) >> 4);
+        // Do NOT clamp to mn: after a ~2× box downscale a 1.5 px stroke's
+        // center IS mn, so clamping ≥ mn would disable thin-stroke
+        // darkening entirely. Bound the pull by the local contrast span:
+        const int darkFloor = mn - (mx - mn);
+        const int floor0 = darkFloor > 0 ? darkFloor : 0;
+        if (outv < floor0) outv = floor0;
+      }
     }
     out[x] = static_cast<uint8_t>(outv);
   }

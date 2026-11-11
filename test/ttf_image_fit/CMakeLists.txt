@@ -84,6 +84,7 @@ add_custom_command(
   COMMAND ${CMAKE_COMMAND} -E env PYTHONPATH= "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/gen_fixtures.py"
           "${CMAKE_CURRENT_BINARY_DIR}/fixtures"
   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/gen_fixtures.py"
+          "${REPO_ROOT}/test/epubs/test_jpeg_images.epub"
   COMMENT "ttf_image_fit: generating progressive-JPEG/GIF/BMP fixtures + EPUB"
   VERBATIM
 )

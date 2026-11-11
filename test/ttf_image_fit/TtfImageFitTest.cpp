@@ -1164,14 +1164,68 @@ struct LineField {
 }  // namespace
 
 TEST(Sharpen, DarkStrokeRecoversItsShoulder) {
-  // The line's dark center stays at the local minimum (the clamp forbids
-  // inventing ink); the light shoulder — the box spread — is driven back
-  // toward the field, narrowing the stroke.
+  // Iteration-3 owner audit: after the ~2.12× box downscale the stroke's
+  // center IS the destination 3×3 minimum (120), so the old mn clamp
+  // forbade any darkening — the diluted stroke stayed diluted while the
+  // shoulder bleached. The dark side is now bounded by the local contrast
+  // span instead: the center recovers toward ink, the shoulder keeps the
+  // field value (detail 6 sits exactly on the coring edge — untouched),
+  // and nothing overshoots the field above.
   LineField f;
   const auto out = f.sharpened();
-  EXPECT_EQ(out[7], 120);  // the stroke's own darkest value is preserved
-  EXPECT_GT(out[8], 200);  // the shoulder brightens (toward the field)
+  EXPECT_LT(out[7], 100);  // dark recovery: 120 pulls back toward ink
+  EXPECT_LE(out[8], 200);  // the shoulder does NOT bleach upward
+  for (const int v : out) {
+    EXPECT_LE(v, 255);  // no overshoot anywhere
+  }
   EXPECT_EQ(out[0], 255);  // the far field is untouched
+}
+
+TEST(Sharpen, SoftShadingNeverCrushesBelowItsSpan) {
+  // Low-contrast shading (amplitude ≤10): the tent leaves every |detail| ≤ 6
+  // (coring) — the rows pass through untouched, so subtle texture cannot be
+  // crushed at all.
+  const int w = 32;
+  std::vector<uint8_t> prev(w, 200), self(w, 200), next(w, 200);
+  for (int x = 0; x < w; ++x) {
+    const int d = (x % 4 == 2) ? -10 : ((x % 4 == 0) ? 10 : 0);
+    prev[x] = static_cast<uint8_t>(200 + d);
+    self[x] = static_cast<uint8_t>(200 + d);
+    next[x] = static_cast<uint8_t>(200 + d);
+  }
+  std::vector<uint8_t> out(w);
+  ttfimg::sharpenRowHaloFree(prev.data(), self.data(), next.data(), w, out.data());
+  EXPECT_EQ(0, memcmp(out.data(), self.data(), static_cast<size_t>(w)));
+
+  // The dark floor arithmetic itself: one 170 dip on a 200 field (span
+  // mx − mn = 30 → floor 140). detail = −15 fires the branch, the pull
+  // recovers toward ink, and the floor holds the output at ≥ 140.
+  std::vector<uint8_t> f2(w, 200);
+  f2[10] = 170;
+  std::vector<uint8_t> out2(w);
+  ttfimg::sharpenRowHaloFree(f2.data(), f2.data(), f2.data(), w, out2.data());
+  EXPECT_LT(out2[10], 170) << "the dip must recover toward ink";
+  EXPECT_GE(out2[10], 140) << "dark pull exceeded the local contrast span";
+}
+
+TEST(Sharpen, JpegRingRippleStaysUntouched) {
+  // White paper with an 8×8 DCT ripple: coring 6 leaves |detail| ≤ 6
+  // untouched, so the JPEG mosquito ripple is never sharpened into dots
+  // (the 00006 white-field defect, iteration-3 owner audit).
+  const int w = 64;
+  std::vector<uint8_t> prev(w), self(w), next(w);
+  for (int x = 0; x < w; ++x) {
+    // Ripple detail against the tent blur stays within ±6 everywhere:
+    // a flat 255 field with a single 249 dip per 8-px block (detail 6 at
+    // the dip, ≤4 at its neighbors).
+    const uint8_t v = (x % 8 == 4) ? 249 : 255;
+    prev[x] = v;
+    self[x] = v;
+    next[x] = v;
+  }
+  std::vector<uint8_t> out(w);
+  ttfimg::sharpenRowHaloFree(prev.data(), self.data(), next.data(), w, out.data());
+  EXPECT_EQ(0, memcmp(out.data(), self.data(), static_cast<size_t>(w)));
 }
 
 TEST(Sharpen, ZeroHaloOutsideADarkSquare) {
