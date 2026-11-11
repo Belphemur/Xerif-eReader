@@ -569,4 +569,100 @@ TEST(DpidScaler, EmitAbortPropagates) {
   EXPECT_LT(sink.rows.size(), static_cast<size_t>(DH));
 }
 
+TEST(DpidScaler, FinishReportsRefusedFinalBand) {
+  // Bufferless mode streams completed bands straight to the emit hook; the
+  // LAST band flushes from finish(). A refusal there used to read as success
+  // (finish returned true without re-checking aborted_).
+  const int SW = 64, SH = 400, DW = 32, DH = 50;
+  std::vector<uint8_t> src(static_cast<size_t>(SW) * SH);
+  for (size_t i = 0; i < src.size(); ++i) src[i] = static_cast<uint8_t>(i * 7 + i / SW * 13);
+  struct LastBandSink {
+    std::vector<std::vector<uint8_t>> rows;
+    int w;
+    int limit;
+    static bool emit(void* user, int, const uint8_t* row) {
+      auto* s = static_cast<LastBandSink*>(user);
+      s->rows.emplace_back(row, row + s->w);
+      return static_cast<int>(s->rows.size()) <= s->limit;  // refuse the final band
+    }
+  } sink{{}, DW, DH - 1};
+  const DpidScaler::Plan p{SW, SH, DW, DH, /*clahe=*/false, /*detail=*/false, /*random=*/false};
+  std::vector<uint8_t> block(DpidScaler::scratchBytes(p));
+  DpidScaler s;
+  ASSERT_TRUE(s.begin(p, block.data(), block.size(), &LastBandSink::emit, &sink, nullptr, nullptr));
+  for (int y = 0; y < SH; ++y) s.feedSourceRow(y, src.data() + static_cast<size_t>(y) * SW);
+  EXPECT_EQ(sink.rows.size(), static_cast<size_t>(DH - 1));  // the final band waits for finish()
+  EXPECT_FALSE(s.finish());                                  // the refused final band fails the decode
+  // The refused band was still handed to the sink (the hook decides by its
+  // return); the decode result is what must read as failure.
+  EXPECT_EQ(sink.rows.size(), static_cast<size_t>(DH));
+}
+
+TEST(DpidScaler, PassTwoLoopHonorsTheAbortPoll) {
+  // Random detail plans run the O(band x srcW) pass-2 walk at finish(); the
+  // PollFn contract covers that remainder (the header says ~60 s on device).
+  // An immediate-true poll must stop the walk BEFORE it re-reads provider
+  // rows: pass 1 reads exactly srcH rows, and an unpolled walk would re-read
+  // the pass-2 patches on top of that.
+  const int SW = 96, SH = 192, DW = 48, DH = 96;
+  struct RandSink {
+    int providerCalls = 0;
+    static bool emit(void*, int, const uint8_t*) { return true; }
+    static bool row(void* user, int srcY, uint8_t* out) {
+      auto* s = static_cast<RandSink*>(user);
+      ++s->providerCalls;
+      std::memset(out, static_cast<uint8_t>(srcY * 3), 96);
+      return true;
+    }
+    static bool poll(void*) { return true; }  // abort at the first check
+  } sink;
+  const DpidScaler::Plan p{SW, SH, DW, DH, /*clahe=*/false, /*detail=*/true, /*random=*/true};
+  std::vector<uint8_t> block(DpidScaler::scratchBytes(p));
+  DpidScaler s;
+  ASSERT_TRUE(
+      s.begin(p, block.data(), block.size(), &RandSink::emit, &sink, &RandSink::poll, &sink, &RandSink::row, &sink));
+  ASSERT_TRUE(s.runRandom(&RandSink::row, &sink));
+  EXPECT_EQ(sink.providerCalls, SH);  // pass 1 only
+  EXPECT_FALSE(s.finish());           // the pass-2 walk must stop on the poll
+  EXPECT_EQ(sink.providerCalls, SH);  // ...before any pass-2 provider re-read
+}
+
+// Defined here (friend of DpidScaler): exposes the typed carve addresses so
+// the pin can assert natural alignment on an exact-need scratch block.
+struct DpidScalerCarveProbe {
+  static uintptr_t acc(const DpidScaler& s) { return reinterpret_cast<uintptr_t>(s.acc_); }
+  static uintptr_t wtot(const DpidScaler& s) { return reinterpret_cast<uintptr_t>(s.wtot_); }
+  static uintptr_t p2wy(const DpidScaler& s) { return reinterpret_cast<uintptr_t>(s.p2wy_); }
+  static uintptr_t claheHist(const DpidScaler& s) { return reinterpret_cast<uintptr_t>(s.claheHist_); }
+};
+
+TEST(DpidScaler, TypedCarvesStayNaturallyAligned) {
+  // Odd dstW/srcW make every subsequent carve offset arbitrary — the old
+  // carve handed out raw offsets and could place the uint32 pass-2 weights
+  // and the uint16 CLAHE histogram at misaligned addresses (faults on the
+  // S3). carve() now rounds each typed view up.
+  struct ProbeSink {
+    std::vector<std::vector<uint8_t>> rows;
+    int w = 479;
+    static bool emit(void* user, int, const uint8_t* row) {
+      auto* s = static_cast<ProbeSink*>(user);
+      s->rows.emplace_back(row, row + s->w);
+      return true;
+    }
+    static bool row(void*, int, uint8_t*) { return true; }
+  } sink;
+  const DpidScaler::Plan p{933, 1401, 479, 799, true, true, true};
+  const size_t need = DpidScaler::scratchBytes(p);
+  std::vector<uint8_t> block(need + 64);  // slack above exact-need too
+  DpidScaler scaler;
+  ASSERT_TRUE(scaler.begin(p, block.data(), need, &ProbeSink::emit, &sink, nullptr, nullptr, &ProbeSink::row, &sink));
+  EXPECT_EQ(DpidScalerCarveProbe::acc(scaler) % alignof(uint64_t), 0u);
+  EXPECT_EQ(DpidScalerCarveProbe::wtot(scaler) % alignof(uint64_t), 0u);
+  // Odd dims keep the band copy under the 64 KiB cap, so the uint32 weights
+  // are actually carved — the misalignment the review flagged.
+  EXPECT_NE(DpidScalerCarveProbe::p2wy(scaler), 0u);
+  EXPECT_EQ(DpidScalerCarveProbe::p2wy(scaler) % alignof(uint32_t), 0u);
+  EXPECT_EQ(DpidScalerCarveProbe::claheHist(scaler) % alignof(uint16_t), 0u);
+}
+
 }  // namespace ttfimg

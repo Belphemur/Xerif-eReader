@@ -177,6 +177,26 @@ using PoolBytes = std::unique_ptr<uint8_t[], PoolDeleter>;
 
 inline PoolBytes poolMakeBytes(size_t size) { return PoolBytes{static_cast<uint8_t*>(poolMalloc(size))}; }
 
+// poolMakeBytes with a guaranteed block alignment: the default heap guarantees
+// only 4 bytes (heap_caps UNALIGNED_MEM_ALIGNMENT_BYTES), which is not enough
+// for blocks that host typed views carved at internal offsets (uint64
+// accumulators, uint32 weights). ESP-IDF serves both tiers through
+// heap_caps_aligned_alloc (its free() routes to heap_caps_free, matching
+// poolFree); the host uses std::aligned_alloc (size rounded to the C
+// multiple-of-alignment requirement).
+inline PoolBytes poolMakeAlignedBytes(size_t align, size_t size) {
+#if defined(ESP_PLATFORM)
+#if defined(BOARD_HAS_PSRAM)
+  return PoolBytes{static_cast<uint8_t*>(heap_caps_aligned_alloc(align, size, MALLOC_CAP_SPIRAM))};
+#else
+  return PoolBytes{static_cast<uint8_t*>(heap_caps_aligned_alloc(align, size, MALLOC_CAP_DEFAULT))};
+#endif
+#else
+  if (size % align != 0) size += align - (size % align);
+  return PoolBytes{static_cast<uint8_t*>(std::aligned_alloc(align, size))};
+#endif
+}
+
 // Largest block the default allocator can currently serve for a heap
 // allocation. With SPIRAM_USE_MALLOC the sdkconfig's internal-only threshold
 // (SPIRAM_MALLOC_ALWAYSINTERNAL) only sets preference order — ≤threshold tries

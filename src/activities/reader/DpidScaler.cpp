@@ -132,7 +132,10 @@ size_t DpidScaler::scratchBytes(const Plan& planIn) {
   const size_t dstW = static_cast<size_t>(p.dstW);
   const bool tooSmallForClahe = p.clahe && (p.dstW / kClaheTiles < 2 || p.dstH / kClaheTiles < 2);
   const bool needsImage = p.detail || (p.clahe && !tooSmallForClahe);
-  size_t bytes = dstW * 8 * 2 + dstW;                   // acc + wtot accumulators, hold row
+  size_t bytes = dstW * 8 * 2 + dstW;  // acc + wtot accumulators, hold row
+  // begin() aligns the typed carves (uint64/uint32/uint16) up inside the
+  // block; budget the worst-case pad so an exact-need block still carves.
+  bytes += kCarveAlignSlack;
   if (p.nearest) bytes += static_cast<size_t>(p.srcW);  // nearest-sample row
   if (needsImage) bytes += dstW * static_cast<size_t>(p.dstH);
   if (needsImage && p.detail) bytes += dstW;           // tent row
@@ -181,14 +184,21 @@ bool DpidScaler::begin(const Plan& planIn, uint8_t* block, const size_t bytes, E
   finished_ = false;
 
   size_t off = 0;
-  auto carve = [&](const size_t n) -> void* {
-    if (block == nullptr || n == 0 || off + n > bytes || off + n < off) return nullptr;
-    void* out = block + off;
-    off += n;
+  // Typed views must sit at their natural alignment: the PSRAM scratch comes
+  // from poolMalloc (4-byte guarantee) and unaligned uint32/uint16 loads
+  // fault on the S3. Each carve rounds the offset up to the requested
+  // alignment; scratchBytes() carries the worst-case pad.
+  auto carve = [&](const size_t n, const size_t align = 1) -> void* {
+    if (block == nullptr || n == 0 || align == 0) return nullptr;
+    const size_t mis = off % align;
+    const size_t start = mis != 0 ? off + (align - mis) : off;
+    if (start > bytes || n > bytes - start) return nullptr;
+    void* out = block + start;
+    off = start + n;
     return out;
   };
-  acc_ = static_cast<uint64_t*>(carve(dstW * 8));
-  wtot_ = static_cast<uint64_t*>(carve(dstW * 8));
+  acc_ = static_cast<uint64_t*>(carve(dstW * 8, alignof(uint64_t)));
+  wtot_ = static_cast<uint64_t*>(carve(dstW * 8, alignof(uint64_t)));
   hold_ = static_cast<uint8_t*>(carve(dstW));
   dst_ = nullptr;
   tent_ = nullptr;
@@ -209,7 +219,7 @@ bool DpidScaler::begin(const Plan& planIn, uint8_t* block, const size_t bytes, E
     if (bandBytes + bandBytes / 4 <= kPass2BandBytesCap) {
       p2bandRows_ = static_cast<int>(rows);
       p2band_ = static_cast<uint8_t*>(carve(rows * static_cast<size_t>(p_.srcW)));
-      p2wy_ = static_cast<uint32_t*>(carve(rows * sizeof(uint32_t)));
+      p2wy_ = static_cast<uint32_t*>(carve(rows * sizeof(uint32_t), alignof(uint32_t)));
       if (p2band_ == nullptr || p2wy_ == nullptr) {
         // The provider row scratch above already carved; losing the band
         // copy only costs throughput (same carve-failure shape as near_).
@@ -227,7 +237,8 @@ bool DpidScaler::begin(const Plan& planIn, uint8_t* block, const size_t bytes, E
     tilesX_ = tilesY_ = kClaheTiles;
     tileW_ = p_.dstW / kClaheTiles;
     tileH_ = p_.dstH / kClaheTiles;
-    claheHist_ = static_cast<uint16_t*>(carve(sizeof(uint16_t) * kClaheTiles * kClaheTiles * kClaheBins));
+    claheHist_ =
+        static_cast<uint16_t*>(carve(sizeof(uint16_t) * kClaheTiles * kClaheTiles * kClaheBins, alignof(uint16_t)));
     claheMap_ = static_cast<uint8_t*>(carve(static_cast<size_t>(kClaheTiles * kClaheTiles) * kClaheBins));
   }
   if (p_.nearest) {
@@ -620,13 +631,17 @@ bool DpidScaler::finish() {
   if (readFailed_) return false;  // provider row decode failed mid-run
   if (aborted_) return false;     // emit refusal / takeover: report via finish() too
 
-  // Last pass-1 band + the random pass-2 rows it unblocks.
+  // Last pass-1 band + the random pass-2 rows it unblocks. flushBand() may
+  // stream the final band straight to the emit hook (bufferless) — its
+  // refusal must fail the decode, not read as success (review 2026-11-11).
   if (curBand_ >= 0) flushBand();
+  if (aborted_) return false;
   if (dst_ == nullptr) return true;  // bufferless: rows already streamed out
   // Random detail: every band flushed, so every pass-2 patch is resident;
   // row dstH-1 has no row below it, so it always emits.
   if (p_.detail && p_.random) {
     for (int m = 0; m < p_.dstH; ++m) {
+      if (poll_ != nullptr && poll_(pollUser_)) return false;  // takeover stops the walk
       pass2Row(m);
       if (readFailed_) return false;  // provider rows died inside pass 2
     }

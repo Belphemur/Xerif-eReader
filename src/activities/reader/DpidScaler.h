@@ -172,10 +172,19 @@ class DpidScaler {
   uint8_t* claheMap_ = nullptr;    // [tiles][256]
   int tilesX_ = 0, tilesY_ = 0, tileW_ = 0, tileH_ = 0;
 
+  // Test seam: the carve-alignment pins need the typed-view addresses (host
+  // builds tolerate misalignment, so the property is only observable here).
+  friend struct DpidScalerCarveProbe;
+
   int curBand_ = -1;                                       // dst band under pass-1 accumulation
   int lastRand_ = -1;                                      // random-access last requested row
   static constexpr size_t kPass2BandBytesCap = 64 * 1024;  // band copy bound
-  bool holdFull_ = false;                                  // hold row carries out(dstH-1)
+  // Worst-case pad begin()'s typed carves apply inside the block (uint64
+  // accumulators, uint32 pass-2 weights, uint16 CLAHE histograms) so an
+  // exact-need scratchBytes() block still carves. The block itself comes
+  // from poolMakeAlignedBytes(8), so the first carve sits on 8 already.
+  static constexpr size_t kCarveAlignSlack = 8;
+  bool holdFull_ = false;  // hold row carries out(dstH-1)
   bool finished_ = false;
   bool ok_ = false;
 };
