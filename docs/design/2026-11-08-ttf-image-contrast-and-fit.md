@@ -326,10 +326,17 @@ pages (all sources verified byte-identical to `test-images/epub/`):
 7. *In-file cache identity header* (app, owner steer 0b): `.pxc` files now open
    with an 11-byte header — magic `'C','P'`, bake revision letter, identity-hash
    top 32 bits, then the dims — verified on every read (`hasValidCache`,
-   `blitFromCache`). A file whose content cannot match its key (older bake, torn
-   write surviving finalize, hash-collision remnant) is invalid, removed, and
-   regenerated. Cache letters bump 'm'/'n' → 'o'/'p' (both never used in history —
-   swept); the letter change alone invalidates every pre-campaign cache.
+   `blitFromCache`), together with the file length. What the check proves: the
+   file was written by THIS bake letter under THIS placement identity and is
+   long enough to hold its declared grid — an older bake, a wrong placement,
+   a torn/short write surviving finalize are all caught and the file is
+   removed and regenerated. What it does NOT prove: the payload bytes are
+   intact — a same-length bit-flip inside the tone data passes the header
+   check and displays until the file is regenerated some other way, and two
+   images whose 64-bit identity hashes collide (top 32 bits equal, same
+   length) are indistinguishable. Cache letters bump 'm'/'n' → 'o'/'p' (both
+   never used in history — swept); the letter change alone invalidates every
+   pre-campaign cache.
 
 **Host A/B (real decode stack, owner pages, placements 319×774 / 454×680 / 454×658).**
 Metrics over the final tone grid vs the scaler's gray (lower toneErr = truer tone;
