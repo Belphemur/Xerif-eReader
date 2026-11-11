@@ -259,6 +259,114 @@ Compute the used dynamic range **per image** and stretch it to [0, 255]:
   380 KB-RAM baseline this firmware targets. Revisit only if SD-lock telemetry shows
   real contention.
 
+##### Amendment 5 (2026-11-10, fidelity fix — decoder traps, halo-free sharpen, Sierra-Lite quantizer)
+
+Owner photo-vs-source A/B on the X4 Pro soak pinned four failure modes on three
+pages (all sources verified byte-identical to `test-images/epub/`):
+
+| Source | Format | Device photo | Symptom |
+| --- | --- | --- | --- |
+| `00004.jpeg` | progressive 577×1400 | PXL_…235030137 (GOOD) | reference page |
+| `00005.jpeg` | baseline 934×1400 | PXL_…235037333 | muddy wall, clumpy fade, broken fine lines, smeared © text |
+| `00006.jpeg` | baseline 965×1400 | PXL_…235049369 | 3.6 px Lego blocks in white paper, stair-block letterforms, muddy art |
+
+**Part 0 verdict (measured on host with the real decode stack).**
+
+- *Claim B confirmed (both bad pages)*: the baseline pre-scale loop
+  (`ImageRenderer.cpp` `renderJpeg`) picked TJpgDec scale=1 — 934×1400 decoded at
+  467×700 for a 454×680 placement, 965×1400 at 482×700 — and the app box re-resampled
+  the 1.03–1.09× remainder. Every 1.5 px ink line landed on the power-of-two grid:
+  the Lego/stair blocks and the clumpy fade are that re-resample's signature (host
+  probe: dims hook reported 467×700 / 482×700 pre-fix, full frame dims post-fix).
+- *Claim A refuted as stated*: the progressive DC-only fallback is not in play on
+  `00006` (baseline SOF0; TJpgDec serves it). The fallback mechanisms the owner
+  flagged ARE real and fixed anyway: `renderJpegProgressiveFull` could report frame
+  dims and then fail mid-decode, the DC fallback re-reporting 1/8-scale dims (double
+  report); a DC-thumbnail was cache-eligible (`degraded` tracked only detail/CLAHE
+  rung loss); `ProgressiveJpeg::emit` allocated its IDCT strip from the internal heap.
+
+**Fixes (SDK branch `feat/jpeg-fidelity` off b3efb446a, app on this branch).**
+
+1. *Pre-scale 1.5× margin* (SDK): TJpgDec scale steps only while the halved dims
+   still leave a 1.5× margin on both axes — `934 → 454` decodes at full resolution.
+2. *Single dims report* (SDK): the full-fidelity progressive path defers the dims
+   report to the first emitted row (the PNG path's dimsSent shape); a mid-decode
+   fallback reports once (1/8-scale dims) and LOG_WRNs status + SOF component count
+   (`probeImage` now reports `jpegComponents`).
+3. *PSRAM emit strip* (SDK): `ProgressiveJpeg::emit` allocates the stride·8 strip
+   from the same PSRAM-backed store pool as the coefficient store; internal-heap
+   fragmentation no longer drops a wide page to the DC fallback.
+4. *DC-fallback thumbnails* (app): the probe result rides in `DpidCtx`; a
+   progressive stream reporting `srcW < info.width` sets `dcFallback` — bilinear
+   class (nearest suppressed via `DpidScaler::Plan::bilinear`) and `degraded` (never
+   published under the requested quality's cache name).
+5. *Halo-free dark-stroke sharpen* (app, this amendment's §2 slot): after the
+   scaler's emit walk, before `collectRow`. Pure core `sharpenRowHaloFree`
+   (TtfImageCache.h): 3×3 tent (1,2,1)⊗(1,2,1)/16, ±3 coring deadzone, asymmetric
+   Q4 gain (dark strokes 16/16, light side 6/16), output strictly clamped to the
+   original 3×3 [min,max] — zero overshoot, no halos. Streaming wrapper: 3-row
+   original ring + one output row (4 × spec.w ≈ 1.8 KB at the 454 px placement)
+   from its own pool block; allocation failure or out-of-order rows degrade to
+   un-sharpened. Gate `sharpenOk` (>1.25× on either axis, the tentPreblurOk shape)
+   — 1:1 ornaments and the Insert-page upscale are untouched. The one-row delay
+   flushes through the same sinks after `finish()` (decode failure paths included).
+6. *Sierra-Lite quantizer* (app): `ToneBake4::toneDir` rebuilt — levels
+   {0, 80, 155, 255} (level 2 off the eink-image 170), midpoints {40, 117, 205};
+   white-paper snap (mapped ≥ 252 → level 3, slot zeroed, no diffusion); serpentine
+   Sierra-Lite in exact 1/4-level units (forward 2/4 + consume residue, down-behind
+   1/4, down 1/4 — bit-exact mass conservation, no ±8 threshold noise, no 0.8
+   weight). BeginRemap paper-guard implemented verbatim (owner directive): with
+   ≥5% non-paper pixels the 250..255 bins are ignored when locating the dark anchor.
+   **Measured scope note**: the guard is inert under the current percentile
+   arithmetic — the ascending lo loop already lands on content whenever content
+   ≥ 5%, and the anchor only enters the paper bins when content < 0.5% (guard does
+   not fire; pre-campaign behavior stands, pinned as
+   `PaperGuardKeepsTheDarkAnchorOnWhiteHeavyPages` pin 2). White-page cleanliness
+   rides on the white-paper snap + the corrected decode instead.
+7. *In-file cache identity header* (app, owner steer 0b): `.pxc` files now open
+   with an 11-byte header — magic `'C','P'`, bake revision letter, identity-hash
+   top 32 bits, then the dims — verified on every read (`hasValidCache`,
+   `blitFromCache`). A file whose content cannot match its key (older bake, torn
+   write surviving finalize, hash-collision remnant) is invalid, removed, and
+   regenerated. Cache letters bump 'm'/'n' → 'o'/'p' (both never used in history —
+   swept); the letter change alone invalidates every pre-campaign cache.
+
+**Host A/B (real decode stack, owner pages, placements 319×774 / 454×680 / 454×658).**
+Metrics over the final tone grid vs the scaler's gray (lower toneErr = truer tone;
+salt = tone-isolated single pixels; hardSteps = ≥2-level adjacent jumps — crisper
+edges raise it by design):
+
+| page | bake | toneErr | salt | hardSteps |
+| --- | --- | --- | --- | --- |
+| 00005 | old (FS 0.8 + noise, pre-scale 467) | 26.81 | 12407 | 1264 |
+| 00005 | new quantizer | 29.80 | 14007 | 2756 |
+| 00005 | new quantizer + sharpen | 29.62 | 13934 | 3959 |
+| 00006 | old | 4.10 | 504 | 1566 |
+| 00006 | new quantizer + sharpen | 4.11 | 562 | 3909 |
+| 00004 | old | 38.41 | 8675 | 1585 |
+| 00004 | new quantizer + sharpen | 38.82 | 8715 | 2724 |
+
+toneErr is measured against each bake's own level set (old {0,85,170,255}, new
+{0,80,155,255}) — cross-bake comparisons of toneErr are indicative only; the
+gallery vision check is the arbiter. hardSteps roughly doubles with sharpening — that IS the contrast restoration; the galleries (vision
+-checked) show the decisive deltas: 00005's faces/hair recover definition and the
+wall's clumped 3.6 px bricks dissolve into uniform fine-grain dither; 00006's
+letterforms lose the stair-block raggedness and Bell's boots tighten with cleaner
+white paper; 00004 (the good page) stays at least as good, slightly crisper.
+
+Flat-field duty under the new quantizer (texture suite re-pins): flat 91 → 85.7%
+level 1 (predicted (91−80)/(155−80) = 14.7% level 2), flat 13 → 84.1% level 0
+(predicted 16.25% dropout), flat 126 → 38.4/61.6% — Sierra-Lite is tone-correct to
+within ~1 point of the ideal duty on all three.
+
+**Decode budget**: the new stages are O(dst) integer — sharpen ≈ 30 ops/px on 454 px
+rows + the ring copy; Sierra-Lite replaces the old plane arithmetic 1:1 (no new
+plane pass). The pre-scale change decodes MORE pixels (full 934×1400 vs 467×700):
+TJpgDec IDCT work scales ~4× on such pages — measured against the 00001-class page
+(889×1400), which already decoded full-resolution pre-campaign under the same ~2 s
+cold budget, so the budget bound stands; the sharpen/quantizer additions are noise
+against it.
+
 ## 3. Parity requirements (unchanged from PR #301)
 
 - All four decoders (SDK JPEG/PNG rows, BMP decode, GIF converter) route through one bake.
