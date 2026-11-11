@@ -111,6 +111,11 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   if (dictionaryName[0] != '\0') {
     doc["dictionaryName"] = dictionaryName;
   }
+  // Dynamic display-index settings (varies by board) are skipped by the
+  // generic persistence loop — save the power actions manually.
+  doc["shortPwrBtn"] = shortPwrBtn;
+  doc["doublePwrBtn"] = doublePwrBtn;
+
   // Language -- managed by LanguageSelectActivity, not in SettingsList.
   // Stored as ISO code string ("EN", "DE", ...) for stability across enum reorders.
   doc["language"] = (language < getLanguageCount()) ? LANGUAGE_CODES[language] : "EN";
@@ -274,7 +279,6 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   // Font family — uses dynamic getter/setter in SettingsList so the generic loop skips it.
   const uint8_t storedFontFamily = doc["fontFamily"] | STORED_NOTOSANS;
   fontFamily = NOTOSANS;
-
   // GT911 idle sleep toggle — not in SettingsList, load manually (bool-fold:
   // anything non-zero counts as enabled).
   touchIdleSleep = doc["touchIdleSleep"] | (uint8_t)1 ? 1 : 0;
@@ -289,6 +293,15 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
     homeButtonDoubleTapAction = static_cast<uint8_t>(HomeButtonAction::ReaderMenu);
     homeButtonLongPressAction = static_cast<uint8_t>(HomeButtonAction::ToggleFrontlight);
   }
+
+  // Power actions use board-specific display-index mappings and are skipped by
+  // the generic settings loop — load them manually. doublePwrBtn is upstream's
+  // action selector; settings written by older fork builds only carry the
+  // doubleClickPwrLight bool, which migrates (1 = frontlight, 0 = ignore).
+  shortPwrBtn = clamp(doc["shortPwrBtn"] | (uint8_t)SLEEP, (uint8_t)SHORT_PWRBTN_COUNT, (uint8_t)SLEEP);
+  doublePwrBtn =
+      clamp(doc["doublePwrBtn"] | (uint8_t)((doc["doubleClickPwrLight"] | (uint8_t)1) ? PWR_FRONTLIGHT : IGNORE),
+            (uint8_t)SHORT_PWRBTN_COUNT, (uint8_t)PWR_FRONTLIGHT);
 
   // SD card font family name — not in SettingsList, load manually
   const char* sfn = doc["sdFontFamilyName"] | "";

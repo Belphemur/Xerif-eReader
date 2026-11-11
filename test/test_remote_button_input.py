@@ -6,6 +6,10 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 source = (ROOT / "src/MappedInputManager.cpp").read_text()
+settings_header = (ROOT / "src/CrossPointSettings.h").read_text()
+power_actions = "enum SHORT_PWRBTN {" + settings_header.split(
+    "enum SHORT_PWRBTN {", 1
+)[1].split("};", 1)[0] + "};"
 # Exercise production frame/dispatch methods with physical input under test control.
 methods = []
 for signature, following in (
@@ -88,11 +92,15 @@ struct CrossPointSettings {
   enum { PREV_NEXT, NEXT_PREV, PREV_PREV, NEXT_NEXT, SIDE_BUTTONS_DISABLED };
   int sideButtonLayout = PREV_NEXT;
   int frontButtonBack = 0, frontButtonConfirm = 1, frontButtonLeft = 2, frontButtonRight = 3;
-  enum { IGNORE = 0, PWR_BOOKMARK = 7, PWR_SYNC = 8, PWR_READER_MENU = 9 };
-  int shortPwrBtn = IGNORE;
+  POWER_ACTIONS
+  int shortPwrBtn = IGNORE, doublePwrBtn = PWR_FRONTLIGHT;
   int vibration = VIBRATION_OFF, hapticIntensity = 0;
   int homeButtonTapAction = 0, homeButtonDoubleTapAction = 0, homeButtonLongPressAction = 0;
 } SETTINGS;
+struct BoardConfig {
+  static bool isX4Pro() { return true; }
+  static bool hasHomeKey() { return false; }
+};
 struct HalHaptics {
   static void feedback(bool, bool, int) {}
   static void longPress(bool, int) {}
@@ -180,6 +188,7 @@ manager_source = (ROOT / "src/activities/ActivityManager.cpp").read_text()
 remote_turn = "bool ActivityManager::remoteTurn(" + manager_source.split(
     "bool ActivityManager::remoteTurn(", 1
 )[1].split("bool ActivityManager::handleForcedRefresh()", 1)[0]
+harness = harness.replace("POWER_ACTIONS", power_actions)
 harness = harness.replace("int main() {", r"""
 #include <atomic>
 #include <memory>

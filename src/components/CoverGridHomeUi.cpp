@@ -31,9 +31,9 @@ constexpr int COVER_ROW_EXTRA_HEIGHT = 8;
 CoverGridHomeUi::CoverGridHomeUi(GfxRenderer& renderer)
     : UiAppHost(renderer), coverCache(renderer), renderer(renderer) {}
 
-void CoverGridHomeUi::begin(const std::vector<RecentBook>& recent, bool opds, bool continuing) {
+void CoverGridHomeUi::begin(const std::vector<RecentBook>& recent, const SlotTab slot, bool continuing) {
   books = &recent;
-  hasOpds = opds;
+  slotTab = slot;
   hasContinueReading = continuing;
   if (!recent.empty()) coverCache.begin();
   resetUi();
@@ -300,7 +300,7 @@ void CoverGridHomeUi::drawTabs(UiScreen& screen, fui::Rect rect) {
   };
   addTab(FolderIcon);
   addTab(LibraryIcon);
-  if (hasOpds) addTab(BlocksIcon);  // the OPDS/Plugins library slot
+  if (slotTab != SlotTab::NONE) addTab(slotTab == SlotTab::OPDS ? BookIcon : BlocksIcon);
 #ifdef READING_STATS_ENABLED
   addTab(ChartBarIcon);
 #endif

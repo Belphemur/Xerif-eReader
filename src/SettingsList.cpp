@@ -198,9 +198,7 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
                           StrId::STR_LONG_PRESS_BEHAVIOR_ORIENTATION},
                          "longPressButtonBehavior", StrId::STR_CAT_CONTROLS));
   // Double-click power frontlight shortcut only exists on the X4 Pro.
-  if (BoardConfig::isX4Pro())
-    emit(SettingInfo::Toggle(StrId::STR_DBL_CLICK_PWR_LIGHT, &CrossPointSettings::doubleClickPwrLight,
-                             "doubleClickPwrLight", StrId::STR_CAT_CONTROLS));
+  if (BoardConfig::isX4Pro()) emit(buildDoublePowerButtonSetting());
   emit(buildShortPowerButtonSetting());
 #if FREEINK_CAP_HOME_KEY || FREEINK_CAP_MENU_BUTTON
   // Home-button catalog rows stay available to the web API on every board

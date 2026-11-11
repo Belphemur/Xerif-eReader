@@ -213,7 +213,9 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
     }
   }
   // Touch boards without a home key: a short power click can carry a reader
-  // shortcut (see SHORT_PWRBTN).
+  // shortcut (see SHORT_PWRBTN). On the X4 Pro the frontlight double-click
+  // window (resolved above at the snapshot) withholds an ambiguous release
+  // from the served mask, so this mapping naturally sees only final releases.
   if (homeAction == HomeButtonAction::Ignore && mapButton(Button::Power, &HalGPIO::wasReleased)) {
     switch (SETTINGS.shortPwrBtn) {
       case CrossPointSettings::PWR_BOOKMARK:
@@ -648,7 +650,7 @@ bool MappedInputManager::wasLightPanelGesture() const { return wasTopEdgeDownSwi
 
 void MappedInputManager::resolvePowerDoubleClickWindow(const uint8_t newReleasedEdges) const {
 #if FREEINK_CAP_TOUCH
-  if (!BoardConfig::isX4Pro() || !SETTINGS.doubleClickPwrLight) return;
+  if (!BoardConfig::isX4Pro() || SETTINGS.doublePwrBtn == CrossPointSettings::IGNORE) return;
   const unsigned long now = millis();
   // Classify only NEWLY captured releases (coderabbit 5r7g): the frame mask
   // also carries published (deferred-expiry) bits across blocking pumps —
@@ -685,7 +687,7 @@ void MappedInputManager::resolvePowerDoubleClickWindow(const uint8_t newReleased
 bool MappedInputManager::isPowerClickHoldCandidate() const {
   // A power press in progress still inside the click window could resolve as
   // a double-click candidate on release — suppress button-down power-off.
-  return BoardConfig::isX4Pro() && SETTINGS.doubleClickPwrLight &&
+  return BoardConfig::isX4Pro() && SETTINGS.doublePwrBtn != CrossPointSettings::IGNORE &&
          gpio.getPowerButtonHeldTime() <= kPowerClickMaxHoldMs;
 }
 
@@ -705,11 +707,12 @@ bool MappedInputManager::consumePowerConfirmPress() const {
 bool MappedInputManager::wasPowerConfirmClick() const {
   if (!gpio.hasTouch() || SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::PWR_CONFIRM) return false;
   // Wait out the X4 Pro's frontlight double-click window before treating its
-  // first release as Confirm. With the shortcut disabled, and on other touch
-  // boards, the release counts directly — from the SNAPSHOT (soak-fix7): a
-  // direct gpio.wasReleased would find the edge already consumed by the
-  // snapshot loop (double-read loses it) and always report false.
-  if (BoardConfig::isX4Pro() && SETTINGS.doubleClickPwrLight) return powerConfirmClickFrame;
+  // first release as Confirm. With the shortcut disabled (doublePwrBtn ==
+  // Ignore), and on other touch boards, the release counts directly — from
+  // the SNAPSHOT (soak-fix7): a direct gpio.wasReleased would find the edge
+  // already consumed by the snapshot loop (double-read loses it) and always
+  // report false.
+  if (BoardConfig::isX4Pro() && SETTINGS.doublePwrBtn != CrossPointSettings::IGNORE) return powerConfirmClickFrame;
   return edgeSnapshot(Button::Power, /*pressed=*/false) &&
          gpio.getPowerButtonHeldTime() <= SETTINGS.getPowerButtonDuration();
 }
@@ -740,6 +743,9 @@ bool MappedInputManager::wasPressed(const Button button) const {
 }
 
 bool MappedInputManager::wasReleased(const Button button) const {
+  if (button == Button::Power && BoardConfig::isX4Pro() && SETTINGS.doublePwrBtn != CrossPointSettings::IGNORE) {
+    return false;  // Classified clicks are dispatched once through homeAction.
+  }
   if (button == Button::Confirm && remoteInput.button == RemoteButton::Confirm) return true;
   if (button == Button::Back && remoteInput.button == RemoteButton::Back) return true;
   if ((button == Button::NavNext || button == Button::Right) && remoteInput.button == RemoteButton::Next) return true;

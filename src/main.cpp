@@ -388,10 +388,32 @@ bool handleX4ProFrontlightDoubleClick() {
   // Window ownership moved into MappedInputManager (soak-fix7 JFhK): the
   // manager holds the first release out of the served mask until the window
   // resolves, so Sleep/Force-Refresh handlers cannot fire on an ambiguous
-  // click. This consumes only the resolved double-click verdict.
+  // click. This consumes only the resolved double-click verdict. The ACTION
+  // is upstream's doublePwrBtn selector (ported action surface): Frontlight
+  // toggles the light; the other SHORT_PWRBTN actions run their loop-path
+  // equivalents on the double-click (Sleep / ForceRefresh; Footnotes and
+  // PWR_CONFIRM are reader-activity actions with no global equivalent, so
+  // they fall back to Frontlight).
   if (mappedInputManager.consumePowerDoubleClick()) {
-    toggleFrontlight();
-    return true;
+    const uint8_t action = SETTINGS.doublePwrBtn;
+    switch (action) {
+      case CrossPointSettings::SHORT_PWRBTN::FORCE_REFRESH:
+        LOG_DBG("MAIN", "Power double-click: manual refresh");
+        if (!activityManager.handleForcedRefresh()) {
+          RenderLock lock;
+          renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+        }
+        return true;
+      case CrossPointSettings::SHORT_PWRBTN::SLEEP:
+        LOG_INF("MAIN", "Power double-click: sleep");
+        enterDeepSleep(false);
+        return true;
+      case CrossPointSettings::SHORT_PWRBTN::IGNORE:
+        return true;  // window resolved but the action is disabled: consume it
+      default:
+        toggleFrontlight();
+        return true;
+    }
   }
   return false;
 }
@@ -1748,7 +1770,8 @@ void loop() {
 
   // Consume the second X4 Pro power-button release so it does not also run a
   // configured short-power action after toggling the frontlight. The window
-  // itself (arming, expiry → powerConfirmClickFrame) lives in the manager.
+  // itself (arming, expiry → powerConfirmClickFrame) lives in the manager;
+  // the double-click ACTION comes from upstream's doublePwrBtn selector.
   if (handleX4ProFrontlightDoubleClick()) {
     return;
   }

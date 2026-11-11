@@ -211,7 +211,7 @@ releases. All fonts carry the SIL Open Font License (OFL).
 - WebDAV handler
 - AP mode (hotspot) and STA mode (join existing Wi-Fi), both with QR helpers
 - Calibre wireless connect flow
-- OPDS browser with saved servers (up to 8), search, pagination, and direct download
+- OPDS browser with saved servers (up to 8), search, pagination, and direct download; hold Back for one second and release in a catalog to return to the main menu
 - OTA update checks and installs from GitHub releases
 - KOReader progress sync
 

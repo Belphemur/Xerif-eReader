@@ -7,4 +7,5 @@
 // NetworkModeSelectionActivity.h so ActivityManager.h can thread the resume mode
 // through goToFileTransfer() without pulling the full menu activity (which would
 // include Activity.h → ActivityManager.h, a cycle).
-enum class NetworkMode { JOIN_NETWORK, CONNECT_CALIBRE, CREATE_HOTSPOT, USB_DRIVE, MAX };
+enum class NetworkMode { JOIN_NETWORK, CONNECT_CALIBRE, CREATE_HOTSPOT, USB_DRIVE, OPDS_BROWSER, MAX };
+// OPDS_BROWSER appended (upstream moved the OPDS browser under File Transfer); MAX stays last.

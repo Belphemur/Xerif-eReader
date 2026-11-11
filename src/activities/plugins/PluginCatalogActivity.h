@@ -36,10 +36,9 @@ std::vector<PluginRef> discoverPlugins();
 // See docs/sd-plugins.md for the device.json schema.
 class PluginCatalogActivity final : public CatalogActivity {
  public:
-  // showOpds adds the OPDS row; rootMode returns Home instead of popping to Settings.
+  // rootMode returns Home instead of popping to Settings.
   // Out-of-line construction/destruction needs the complete SecureHttpClient type.
-  explicit PluginCatalogActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool showOpds = false,
-                                 bool rootMode = false);
+  explicit PluginCatalogActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool rootMode = false);
   ~PluginCatalogActivity() override;
 
   void onEnter() override;

@@ -198,6 +198,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     PWR_BOOKMARK = 7,
     PWR_SYNC = 8,
     PWR_READER_MENU = 9,
+    PWR_FRONTLIGHT = 10,
     SHORT_PWRBTN_COUNT
   };
 
@@ -344,6 +345,10 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // short click sleep; a long press (see POWER_BUTTON_HOLD_MS) always powers
   // the device off, regardless of this setting.
   uint8_t shortPwrBtn = SLEEP;
+  // X4 Pro double click action; Ignore disables the single-click delay.
+  // (action selector ported from upstream's power-button rework; the click
+  // detection itself stays on the fork's PowerClickWindow state machine.)
+  uint8_t doublePwrBtn = PWR_FRONTLIGHT;
   // EPUB reading orientation settings
   // 0 = portrait (default), 1 = landscape clockwise, 2 = inverted, 3 = landscape counter-clockwise
   uint8_t orientation = PORTRAIT;
