@@ -22,6 +22,9 @@ class HalFile {
     cursor = 0;
   }
   uint64_t fileSize64() { return data ? data->size() : 0; }
+  // Real HalFile API surface (SdCardBookSource::modificationTime). Test-set.
+  uint32_t modificationTime() { return s_modificationTime; }
+  static uint32_t s_modificationTime;
   // Engine core calls size() (real HalFile API).
   size_t size() { return data ? data->size() : 0; }
   size_t position() const { return cursor; }

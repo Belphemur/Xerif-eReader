@@ -25,6 +25,13 @@ class HalStorage {
     return openFileForWrite(moduleName, path.c_str(), file);
   }
   bool exists(const char* path);
+  // Directory creation is a no-op on the flat in-memory map (the real mkdir
+  // gates nothing the decode tests exercise).
+  bool mkdir(const char* path, const bool pFlag = true) {
+    (void)path;
+    (void)pFlag;
+    return true;
+  }
   // Failure injection: the Nth openFileForWrite fails when set (0 = off).
   static int failOpenForWriteAtCall;
   static int openForWriteCallCount;
