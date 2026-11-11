@@ -19,6 +19,11 @@ class BmpViewerActivity final : public Activity {
   void doSetSleepCover();
   bool canSetSleepCover() const;
   bool renderImage();
+#if defined(CROSSPOINT_TTF_READER)
+  // Engine-board JPEG/PNG display: the production TTF image pipeline + the
+  // reader's absolute-arm plane sequence (design amendment §7).
+  bool renderImageEngine(const MappedInputManager::Labels& labels);
+#endif
   bool saveJpegSleepCover();
 
   std::string filePath;

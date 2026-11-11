@@ -2,15 +2,34 @@
 
 #include <Bitmap.h>
 #include <Epub/converters/JpegToFramebufferConverter.h>
-#include <Epub/converters/PngToFramebufferConverter.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalDisplay.h>
+#include <HalGPIO.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Memory.h>
+#include <render/PageRenderer.h>
+
+// fitPlacement (the shared placement derivation) is unguarded engine surface;
+// the TTF-only decode/draw pieces below it are not.
+#include "activities/reader/TtfImageEngine.h"
+
+#if defined(CROSSPOINT_TTF_READER)
+#include <epub/ImageProbe.h>
+#include <epub/ZipCatalog.h>
+
+#include "activities/reader/TtfBookRuntime.h"
+#include "activities/reader/TtfImageCache.h"
+#include "adapters/FrameTargetFactory.h"
+#include "adapters/SdCardBookSource.h"
+#include "adapters/StandaloneImageCatalog.h"
+#else
+#include <Epub/converters/PngToFramebufferConverter.h>
+#endif
 
 #include <algorithm>
+#include <cstring>
 
 #include "CrossPointSettings.h"
 #include "activities/util/ConfirmationActivity.h"
@@ -26,13 +45,14 @@ constexpr char TRANSPARENT_SLEEP_ROOT_PNG[] = "/sleep-overlay.png";
 constexpr size_t COPY_BUFFER_SIZE = 2048;
 constexpr uint8_t GRAYSCALE_PALETTE[] = {0, 0, 0, 0, 85, 85, 85, 0, 170, 170, 170, 0, 255, 255, 255, 0};
 
+// The centered-fit RenderConfig is an adapter over the engine's ONE integer
+// placement derivation (ttfimg::fitPlacement, design amendment §7.2) — the
+// same numbers the legacy formula produced, shared with the engine viewer
+// path instead of a second rounding derivation.
 RenderConfig fitImage(const ImageDimensions& dimensions, const GfxRenderer& renderer) {
-  const float scale = std::min({static_cast<float>(renderer.getScreenWidth()) / dimensions.width,
-                                static_cast<float>(renderer.getScreenHeight()) / dimensions.height, 1.0f});
-  const int width = std::max(1, std::min(renderer.getScreenWidth(), static_cast<int>(dimensions.width * scale)));
-  const int height = std::max(1, std::min(renderer.getScreenHeight(), static_cast<int>(dimensions.height * scale)));
-  RenderConfig config{(renderer.getScreenWidth() - width) / 2, (renderer.getScreenHeight() - height) / 2, width,
-                      height};
+  const ttfimg::Placement place =
+      ttfimg::fitPlacement(dimensions.width, dimensions.height, renderer.getScreenWidth(), renderer.getScreenHeight());
+  RenderConfig config{place.x, place.y, place.w, place.h};
   config.useExactDimensions = true;
   return config;
 }
@@ -105,6 +125,18 @@ bool BmpViewerActivity::canSetSleepCover() const {
 }
 
 bool BmpViewerActivity::renderImage() {
+  const bool hasPrevious = siblingImages.size() > 1 && currentImageIndex > 0;
+  const bool hasNext = siblingImages.size() > 1 && currentImageIndex != -1 &&
+                       currentImageIndex < static_cast<int>(siblingImages.size()) - 1;
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), canSetSleepCover() ? tr(STR_SET_SLEEP_COVER) : "",
+                                            hasPrevious ? "<" : "", hasNext ? ">" : "");
+#if defined(CROSSPOINT_TTF_READER)
+  // Engine boards: JPEG/PNG go through the production TTF image pipeline
+  // (design amendment §7). BMP files never reach renderImage — onEnter routes
+  // them to the legacy Bitmap path on every board.
+  return renderImageEngine(labels);
+#else
+  // Small boards keep the legacy converter display verbatim.
   const bool jpeg = FsHelpers::hasJpgExtension(filePath);
   JpegToFramebufferConverter jpegDecoder;
   PngToFramebufferConverter pngDecoder;
@@ -115,11 +147,6 @@ bool BmpViewerActivity::renderImage() {
   if (dimensions.width <= 0 || dimensions.height <= 0) return false;
 
   const auto config = fitImage(dimensions, renderer);
-  const bool hasPrevious = siblingImages.size() > 1 && currentImageIndex > 0;
-  const bool hasNext = siblingImages.size() > 1 && currentImageIndex != -1 &&
-                       currentImageIndex < static_cast<int>(siblingImages.size()) - 1;
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), canSetSleepCover() ? tr(STR_SET_SLEEP_COVER) : "",
-                                            hasPrevious ? "<" : "", hasNext ? ">" : "");
   const auto drawImage = [&]() {
     if (!decoder.decodeToFramebuffer(filePath, renderer, config)) return false;
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
@@ -157,7 +184,208 @@ bool BmpViewerActivity::renderImage() {
   if (!drawImage()) ready = false;
   renderer.cleanupGrayscaleWithFrameBuffer();
   return ready;
+#endif
 }
+
+#if defined(CROSSPOINT_TTF_READER)
+
+namespace {
+constexpr char VIEWER_FICACHE_DIR[] = "/.crosspoint/viewer/ficache";
+
+// Dither scope: the base pass carries the image as a Bayer dither (the
+// reader's baseDither, QuickPageRelayout.cpp:231); the flag must not leak
+// into later painting on this renderer.
+struct DitherScope {
+  GfxRenderer& renderer;
+  ~DitherScope() { renderer.setDitherImagesInBw(false); }
+};
+}  // namespace
+
+// Engine-board JPEG/PNG display (design amendment §7.3): the production
+// pipeline + the reader's absolute-arm plane sequence, not a variant.
+bool BmpViewerActivity::renderImageEngine(const MappedInputManager::Labels& labels) {
+  // Standalone file → production dispatch (§7.1): the open file is presented
+  // as a headerless raw stored entry, so decodeAndCache runs unmodified. Both
+  // objects are call-scoped — nothing outlives the synchronous decode.
+  freeink::book::SdCardBookSource source(filePath.c_str());
+  ttfimg::StandaloneImageCatalog catalog;
+  if (!source.isValid() || !catalog.open(source.size())) {
+    LOG_ERR("BMP", "Standalone image open failed: %s", filePath.c_str());
+    return false;
+  }
+  const freeink::book::ZipEntry* entry = catalog.find(filePath.c_str());
+  if (entry == nullptr) return false;
+
+  // The reader's scratch budget (TtfBookRuntime::kScratchBytes): identical
+  // SDK degrade thresholds (progressive store, DC fallback, JPEG pre-scale
+  // step-down) to a reader decode. Allocation failure fails the render
+  // honestly — no legacy fallback exists on engine boards.
+  const PoolBytes scratchBlock = poolMakeBytes(freeink::book::TtfBookRuntime::kScratchBytes);
+  if (!scratchBlock) {
+    LOG_ERR("BMP", "OOM: image decode scratch");
+    return false;
+  }
+  freeink::book::Arena scratch(scratchBlock.get(), freeink::book::TtfBookRuntime::kScratchBytes);
+
+  // Placement comes from the engine's own probe — the one source of truth
+  // (decodeAndCache re-probes internally; the header scan is cheap next to
+  // the decode).
+  freeink::book::ImageInfo info;
+  if (freeink::book::probeImage(source, *entry, scratch, &info) != freeink::book::BookStatus::Ok ||
+      (info.kind != freeink::book::ImageInfo::Kind::Jpeg && info.kind != freeink::book::ImageInfo::Kind::Png)) {
+    LOG_ERR("BMP", "Image probe failed: %s", filePath.c_str());
+    return false;
+  }
+  const ttfimg::Placement place =
+      ttfimg::fitPlacement(info.width, info.height, renderer.getScreenWidth(), renderer.getScreenHeight());
+
+  ttfimg::ImageSpec spec{};
+  if (filePath.size() >= ttfimg::ImageSpec::kHrefCap) {
+    // Same overlong-href rule as the reader's paint (QuickPageRelayout.cpp:57):
+    // the identity and the decode take the pointer; the decode is
+    // synchronous, so the spec's outliving requirement holds.
+    spec.hrefExt = filePath.c_str();
+  } else {
+    strncpy(spec.href, filePath.c_str(), ttfimg::ImageSpec::kHrefCap - 1);
+  }
+  spec.generation = ttfimg::viewerGeneration(source.modificationTime(), source.size());
+  spec.x = place.x;
+  spec.y = place.y;
+  spec.w = place.w;
+  spec.h = place.h;
+  spec.orientation = static_cast<uint8_t>(renderer.getOrientation());
+
+  // The reader's settings semantics verbatim (QuickPageRelayout.cpp:29).
+  const bool qualityTone = SETTINGS.imageDecodeQuality != 0;
+  const bool clahe = qualityTone && SETTINGS.pictureDetail != 0;
+  const bool imageGrayscale = SETTINGS.imageRendering == CrossPointSettings::IMAGES_DISPLAY;
+
+  if (!Storage.exists(VIEWER_FICACHE_DIR) && !Storage.mkdir(VIEWER_FICACHE_DIR)) {
+    // Storage-failure doctrine: the decode degrades to painting uncached,
+    // so the viewer keeps going rather than failing the image here.
+    LOG_ERR("BMP", "Viewer cache dir unavailable: %s", VIEWER_FICACHE_DIR);
+  }
+
+  // One paint step, shared by every pass: cache blit first, else the same
+  // decode the reader's foreground runs (first-write cache, §5.4 G3 parity).
+  const auto paintEngineImage = [&]() -> bool {
+    if (ttfimg::hasValidCache(spec, VIEWER_FICACHE_DIR, qualityTone, clahe) &&
+        ttfimg::blitFromCache(renderer, spec, VIEWER_FICACHE_DIR, qualityTone, clahe)) {
+      return true;
+    }
+    char cachePath[256];
+    if (!ttfimg::cacheNameFor(spec, VIEWER_FICACHE_DIR, qualityTone, clahe, cachePath, sizeof(cachePath))) return false;
+    const size_t mark = scratch.mark();
+    const ttfimg::DecodeResult res = ttfimg::decodeAndCache(
+        spec, cachePath, source, catalog, scratch, /*epub=*/nullptr, &renderer, qualityTone, /*caching=*/true,
+        /*abortPoll=*/nullptr, /*abortCtx=*/nullptr, /*paintToTarget=*/true, clahe);
+    scratch.release(mark);
+    if (res != ttfimg::DecodeResult::Ok) {
+      LOG_DBG("BMP", "Image decode kind=%d: %s", static_cast<int>(res), filePath.c_str());
+      return false;
+    }
+    return true;
+  };
+
+  const auto drawHints = [&]() { GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4); };
+
+  // Revert arm (imageDecodeQuality == 0): the reader's §5.6 semantics — SDK
+  // error-diffusion paint over a one-image synthetic page, no tone cache.
+  if (!qualityTone) {
+    freeink::book::PageImage img{};
+    img.href = (spec.hrefExt != nullptr) ? spec.hrefExt : spec.href;
+    img.x = place.x;
+    img.y = place.y;
+    img.width = static_cast<uint16_t>(place.w);
+    img.height = static_cast<uint16_t>(place.h);
+    freeink::book::Page page{};
+    page.images = &img;
+    page.imageCount = 1;
+    const freeink::book::BookStatus st =
+        freeink::book::PageRenderer::renderImages(page, source, catalog, scratch, makeFrameTarget(renderer));
+    if (st != freeink::book::BookStatus::Ok) {
+      LOG_DBG("BMP", "Revert image render failed: %s", filePath.c_str());
+      return false;
+    }
+    drawHints();
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    return true;
+  }
+
+  // The reader's grayscale decision table, not a viewer variant (§7.3).
+  const bool route =
+      imageGrayscale && ttfimg::absoluteGrayImageRoute(
+                            /*pageHasImages=*/true, qualityTone, gpio.deviceIsX3(),
+                            display.getController() == HalDisplay::Controller::UC8279,
+                            renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported());
+
+  if (!route) {
+    // Non-absolute panels (and X3): the reader's base-pass treatment — the
+    // baked tones dither into the B/W framebuffer.
+    renderer.clearScreen();
+    renderer.setRenderMode(GfxRenderer::BW);
+    bool painted = true;
+    {
+      DitherScope scope{renderer};
+      renderer.setDitherImagesInBw(true);
+      painted = paintEngineImage();
+    }
+    if (painted) drawHints();
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    return painted;
+  }
+
+  // Absolute arm — the renderTtfImageGrayAbsolute order
+  // (EpubReaderActivity.cpp:5050), stored-BW discipline included.
+  renderer.clearScreen();
+  renderer.setRenderMode(GfxRenderer::BW);
+  {
+    DitherScope scope{renderer};
+    renderer.setDitherImagesInBw(true);
+    if (!paintEngineImage()) return false;  // nothing displayed yet: fail clean
+  }
+  drawHints();
+
+  if (!renderer.displayGrayscaleBase(HalDisplay::GrayscaleMode::Absolute)) {
+    LOG_ERR("BMP", "Could not start absolute image display; keeping B/W base");
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    return true;
+  }
+  if (!renderer.storeBwBuffer()) {
+    // The plane passes overwrite the framebuffer; without the stored base
+    // they cannot be undone — keep the displayed base (reader semantics).
+    LOG_ERR("BMP", "Failed to store BW buffer; keeping B/W base");
+    renderer.setRenderMode(GfxRenderer::BW);
+    return true;
+  }
+
+  bool ready = true;
+  for (const auto msbPass : {false, true}) {
+    // Seed both planes' white; the walk clears each plane's dark bits.
+    renderer.clearScreen(0xFF);
+    renderer.setRenderMode(msbPass ? GfxRenderer::GRAYSCALE_MSB : GfxRenderer::GRAYSCALE_LSB);
+    if (!paintEngineImage()) {
+      ready = false;
+      break;
+    }
+    drawHints();  // the plane upload replaces the whole frame — hints join the planes
+    if (msbPass) {
+      renderer.copyGrayscaleMsbBuffers();
+    } else {
+      renderer.copyGrayscaleLsbBuffers();
+    }
+  }
+
+  // displayGrayBuffer BEFORE setRenderMode(BW) — the arm's exact order:
+  // setRenderMode(BW) while absoluteGrayPlanes is set cancels the pass.
+  if (ready) renderer.displayGrayBuffer();
+  renderer.setRenderMode(GfxRenderer::BW);
+  renderer.restoreBwBuffer();
+  renderer.cleanupGrayscaleWithFrameBuffer();
+  return ready;
+}
+
+#endif  // CROSSPOINT_TTF_READER
 
 void BmpViewerActivity::onEnter() {
   Activity::onEnter();
