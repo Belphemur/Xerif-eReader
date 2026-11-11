@@ -409,17 +409,19 @@ bool attachScaler(DpidCtx& c, const int srcW, const int srcH, const int dstW, co
                   const bool randomAccess) {
   DpidScaler::Plan p{srcW, srcH, dstW, dstH, clahe, true, randomAccess, false, c.dcFallback};
   size_t need = DpidScaler::scratchBytes(p);
-  c.block = poolMakeBytes(need);
+  // 8-aligned block: the scaler carves uint64/uint32/uint16 views at internal
+  // offsets and poolMakeBytes only guarantees 4 (review 2026-11-11).
+  c.block = poolMakeAlignedBytes(8, need);
   if (!c.block) {
     // Keep CLAHE (the Enhanced promise) and drop only the detail pass.
     DpidScaler::Plan p2 = p;
     p2.detail = false;
     need = DpidScaler::scratchBytes(p2);
-    c.block = poolMakeBytes(need);
+    c.block = poolMakeAlignedBytes(8, need);
     if (!c.block && p2.clahe) {
       p2.clahe = false;  // λ0 fractional box: the small accumulator block
       need = DpidScaler::scratchBytes(p2);
-      c.block = poolMakeBytes(need);
+      c.block = poolMakeAlignedBytes(8, need);
     }
     if (!c.block) return false;
     p = p2;
@@ -470,6 +472,12 @@ bool attachScaler(DpidCtx& c, const int srcW, const int srcH, const int dstW, co
       c.sharpen.w = dstW;
       c.sharpen.rowsSeen = 0;
       c.sharpen.active = true;
+    } else {
+      // A sharpened bake and an un-sharpened one produce different bytes:
+      // the un-sharpened result must never publish under the sharpened
+      // cache key (review 2026-11-11) — same rule as the DPID ladder.
+      c.degraded = true;
+      LOG_INF("TIMGE", "DPID sharpen block unavailable - painting uncached");
     }
   }
   return okBegin;
@@ -494,7 +502,7 @@ bool dpidRowFn(void* user, const uint16_t y, const uint8_t* gray, const uint16_t
 
 // Dims hook: single call before the first row; allocates the block here so
 // the JPEG power-of-two pre-scale (which sets srcW/srcH) is already known.
-bool dpidDimsFn(void* user, const uint16_t srcW, const uint16_t srcH) {
+bool dpidDimsFn(void* user, const uint16_t srcW, const uint16_t srcH, const bool scaleReduced) {
   auto* c = static_cast<DpidCtx*>(user);
   // A progressive stream whose full decode fell back to the DC-only first
   // scan reports 1/8-scale dims (blocksW x blocksH < the probe's frame
@@ -507,6 +515,15 @@ bool dpidDimsFn(void* user, const uint16_t srcW, const uint16_t srcH) {
   if (c->attached && c->dcFallback) {
     LOG_WRN("TIMGE", "DC fallback decode %ux%u < frame %u, ncomp %u - bilinear, uncached: %s", srcW, srcH,
             c->info->width, static_cast<unsigned>(c->info->jpegComponents), c->spec->href);
+    c->degraded = true;
+  }
+  if (c->attached && scaleReduced) {
+    // The SDK's arena-retry stepped the decode below the fidelity-preferred
+    // pre-scale (SDK reports it via the dims hook, 2026-11-11 review). The
+    // reduced-scale result still paints, but it must not publish under the
+    // full-quality cache key — a later full-detail decode would otherwise
+    // be blocked by the cache forever.
+    LOG_WRN("TIMGE", "Decode scale reduced below the preferred pick - painting uncached: %s", c->spec->href);
     c->degraded = true;
   }
   return c->attached;
@@ -909,7 +926,11 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
       if (!dpid.attached) {
         // The whole allocation ladder failed (even the ~8 KB λ0 block): the
         // image still paints through the legacy pass (memory doctrine — the
-        // same shape as the gray-temp failure, review round 1).
+        // same shape as the gray-temp failure, review round 1). Release the
+        // collect temp FIRST: the legacy decode holds no rows for it, and
+        // leaving the handle open across a full legacy decode strands an
+        // empty .g file on the card (review 2026-11-11).
+        bake.grayDiscard();
         return legacyPaintPass(spec, info.kind, source, zip, scratch, epub, nullptr, 0, bake, paint, paintToTarget,
                                abortPoll, abortCtx, clahe);
       }

@@ -16,6 +16,8 @@ import sys
 import zipfile
 import zlib
 
+SRC = os.path.dirname(os.path.abspath(__file__))
+
 W, H = 800, 1200
 OUT = sys.argv[1]
 os.makedirs(OUT, exist_ok=True)
@@ -237,6 +239,7 @@ opf = """<?xml version="1.0" encoding="UTF-8"?>
     <item id="i5" href="images/dark.png" media-type="image/png"/>
     <item id="i3" href="images/dark.gif" media-type="image/gif"/>
     <item id="i4" href="images/small.bmp" media-type="image/bmp"/>
+    <item id="i7" href="images/baseline_stored.jpg" media-type="image/jpeg"/>
   </manifest>
   <spine><itemref idref="ch1"/></spine>
 </package>
@@ -272,6 +275,13 @@ with zipfile.ZipFile(epub_tmp, "w") as z:
     z.write(os.path.join(OUT, "dark.png"), "OEBPS/images/dark.png")
     z.write(os.path.join(OUT, "dark.gif"), "OEBPS/images/dark.gif")
     z.write(os.path.join(OUT, "small.bmp"), "OEBPS/images/small.bmp")
+    # STORED baseline JPEG (extracted from the committed jpeg-images book):
+    # the arena-retry pin needs a small scratch arena, and a deflated entry
+    # spends 32 KiB on the inflate window alone before the JPEG decoder
+    # starts. Same reasoning as the SDK suite's stored512.epub.
+    with zipfile.ZipFile(os.path.join(SRC, os.pardir, os.pardir, "test", "epubs", "test_jpeg_images.epub")) as src_epub:
+        baseline = src_epub.read("OEBPS/images/scaling_test.jpg")
+    z.writestr("OEBPS/images/baseline_stored.jpg", baseline, zipfile.ZIP_STORED)
 
 os.replace(epub_tmp, epub_path)
 print("ttf_image_fit fixtures:", epub_path)

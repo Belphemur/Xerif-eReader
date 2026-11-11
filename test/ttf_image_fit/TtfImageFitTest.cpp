@@ -378,7 +378,7 @@ TEST(ImageFitSdkProgressiveFull, RendersFullResLumaRowsThroughRenderSourceRows) 
     bool seen[1200] = {};
     int rowW = 0;
     int pollCalls = 0;
-    static bool onDims(void* user, uint16_t w, uint16_t h) {
+    static bool onDims(void* user, uint16_t w, uint16_t h, bool /*scaleReduced*/) {
       auto* self = static_cast<FullResCapture*>(user);
       self->dimW = w;
       self->dimH = h;
@@ -437,7 +437,7 @@ TEST(ImageFitSdkProgressiveFull, PollHookAbortsBeforeAnyRow) {
   struct AbortCapture {
     int dimW = 0, dimH = 0;
     int rows = 0;
-    static bool onDims(void* user, uint16_t w, uint16_t h) {
+    static bool onDims(void* user, uint16_t w, uint16_t h, bool /*scaleReduced*/) {
       auto* self = static_cast<AbortCapture*>(user);
       self->dimW = w;
       self->dimH = h;
@@ -471,6 +471,77 @@ TEST(ProgressiveBudget, StorePlusAppScratchFitsTheBudget) {
   const size_t scratch = ttfimg::DpidScaler::scratchBytes(appScratch);
   EXPECT_LT(store + scratch, ttfimg::kPsramBudgetBytes)
       << "full-fidelity store + decode scratch must fit the 5 MiB budget at 1500x1000";
+}
+
+// Review pin (2026-11-11): a baseline JPEG whose fidelity-preferred full-res
+// decode exceeds the caller's decode arena steps down through the SDK's
+// arena-retry, and the SDK now REPORTS that step-down through the dims hook.
+// The engine must paint the reduced-scale decode but never publish it under
+// the full-quality cache key — a cached reduced decode would permanently
+// block the real page. The control leg pins the same image publishing
+// normally once the arena holds the preferred pick.
+TEST(ImageFitSdk, ArenaRetryDecodePaintsUncachedAndFullArenaPublishes) {
+  static uint8_t bookBuf[1 << 20];
+  static uint8_t openScratch[64 * 1024];
+  static uint8_t smallScratch[26 * 1024];
+  HostFileSource source;
+  ASSERT_TRUE(source.open(FIT_FIXTURES "/fit_fixtures.epub"));
+  freeink::book::Arena bookArena(bookBuf, sizeof(bookBuf));
+  freeink::book::Book book;
+  {
+    freeink::book::Arena openScratchArena(openScratch, sizeof(openScratch));
+    ASSERT_EQ(book.open(source, bookArena, openScratchArena), freeink::book::BookStatus::Ok);
+  }
+  Epub epub;
+  auto& storage = HalStorage::getInstance();
+
+  ttfimg::ImageSpec spec = makeSpec(0, 40, 480, 720);
+  snprintf(spec.href, sizeof(spec.href), "OEBPS/images/baseline_stored.jpg");
+  // STORED entry: a deflated one spends 32 KiB on the inflate window before
+  // the JPEG decoder starts, which would mask the band-sized arena margin.
+  ASSERT_EQ(book.zip().find(spec.href)->method, 0);
+
+  // Arena sizing (SDK renderJpeg, this fixture): the preferred full-res pick
+  // needs skipBuf 1K + work 8K + band 1200*16 + scaler state ~3.4K + srcRow
+  // 1.2K ≈ 34 KiB; the retried scale-1 pick (600x750) ≈ 23 KiB. 26 KiB
+  // forces the retry without failing the decode outright.
+  {
+    storage.resetFiles();
+    spec.generation = 21;
+    FakeRenderer r;
+    char cachePath[256];
+    ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, false, cachePath, sizeof(cachePath)));
+    freeink::book::Arena small(smallScratch, sizeof(smallScratch));
+    const auto res = ttfimg::decodeAndCache(spec, cachePath, source, book.zip(), small, &epub, &r, true, true, nullptr,
+                                            nullptr, true);
+    ASSERT_EQ(res, ttfimg::DecodeResult::Ok) << "the retry-scale decode must still paint";
+    // Long ink in the box (a dropped/blanked paint is the failure mode this
+    // suite guards; dither-tolerant like expectBoxCoverage).
+    long dark = 0;
+    for (int y = spec.y; y < spec.y + spec.h; y += 8)
+      for (int x = spec.x; x < spec.x + spec.w; ++x)
+        if (physicalBitIsBlack(r, x, y)) ++dark;
+    EXPECT_GT(dark, 0) << "the placement never painted";
+    // ...but nothing was published under the full-quality key.
+    EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true, false));
+    EXPECT_FALSE(storage.exists((std::string(cachePath) + ".t").c_str()));
+    EXPECT_FALSE(storage.exists((std::string(cachePath) + ".g").c_str()));
+  }
+
+  // Control: a roomy arena holds the preferred full-res decode and publishes.
+  {
+    storage.resetFiles();
+    spec.generation = 22;
+    FakeRenderer r;
+    static uint8_t bigScratch[4 << 20];
+    char cachePath[256];
+    ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, false, cachePath, sizeof(cachePath)));
+    freeink::book::Arena big(bigScratch, sizeof(bigScratch));
+    const auto res =
+        ttfimg::decodeAndCache(spec, cachePath, source, book.zip(), big, &epub, &r, true, true, nullptr, nullptr, true);
+    ASSERT_EQ(res, ttfimg::DecodeResult::Ok);
+    EXPECT_TRUE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true, false));
+  }
 }
 
 TEST(ImageFitSdk, BaselineJpegCoversEveryPlacement) {
