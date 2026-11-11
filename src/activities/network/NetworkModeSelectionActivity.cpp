@@ -13,10 +13,10 @@ namespace fui = freeink::ui;
 
 namespace {
 struct ModeRow {
-  NetworkMode mode;
-  StrId label;
-  StrId desc;
-  UIIcon icon;
+  NetworkMode mode{};
+  StrId label = StrId::STR_NONE_OPT;
+  StrId desc = StrId::STR_NONE_OPT;
+  UIIcon icon = UIIcon::None;
 };
 
 constexpr ModeRow MODE_ROWS[] = {
