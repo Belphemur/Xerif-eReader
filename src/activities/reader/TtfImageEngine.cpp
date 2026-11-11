@@ -497,7 +497,10 @@ bool dpidRowFn(void* user, const uint16_t y, const uint8_t* gray, const uint16_t
     return false;
   }
   c->scaler.feedSourceRow(y, gray);
-  return !(c->gray != nullptr && c->gray->aborted);
+  // A destination sink failure (dead gray temp) makes every further source
+  // row useless — stop the SDK decode at this callback boundary instead of
+  // streaming the rest of the image into a dead scaler (review 2026-11-11).
+  return !(c->gray != nullptr && (c->gray->aborted || c->gray->collectFailed));
 }
 
 // Dims hook: single call before the first row; allocates the block here so
@@ -542,7 +545,8 @@ bool dpidGifRowFn(void* user, const int srcY, const uint8_t* gray) {
   if (!c->attached) return false;
   if (dpidPollFn(user)) return false;
   c->scaler.feedSourceRow(srcY, gray);
-  return !(c->gray != nullptr && c->gray->aborted);
+  // Same dead-sink stop as dpidRowFn.
+  return !(c->gray != nullptr && (c->gray->aborted || c->gray->collectFailed));
 }
 
 // Quality BMP decode (DPID design 2026-11-09 §Contract 2): the source rows
@@ -785,7 +789,14 @@ DecodeResult remapGrayToCache(const ImageSpec& spec, ttfimg::ToneBake4& bake, co
   gray.close();  // FAT refuses remove on an open handle
   bake.grayDiscard();
   if (cacheStreamOk != nullptr) *cacheStreamOk = streamOk;
-  if (writerActive && !streamOk) return DecodeResult::Failed;
+  if (writerActive && !streamOk) {
+    // A dead cache stream still painted every row (the caller skips the
+    // publish on !cacheStreamOk): a foreground decode must report the
+    // display success, or a full card turns a painted image into a file
+    // error (review 2026-11-11). A worker job (no paint) produced nothing
+    // and must keep failing so the job defers and retries.
+    return paintToTarget ? DecodeResult::Ok : DecodeResult::Failed;
+  }
   return DecodeResult::Ok;  // rows painted; cache written when writerActive
 }
 
@@ -982,7 +993,13 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
         }
         // Degraded cache stream: rows painted, no cache — skip the publish.
         if (publishing && !cacheStreamOk) return DecodeResult::Ok;
-        if (!publishResult(cachePath, writePath, publishing)) return DecodeResult::Failed;
+        if (!publishResult(cachePath, writePath, publishing)) {
+          // Publish failure is storage, not decode: the rows are already on
+          // screen (paintToTarget), so report the display and let the next
+          // pass re-decode for the cache. The worker produced nothing and
+          // keeps failing (deferral retry).
+          return paintToTarget ? DecodeResult::Ok : DecodeResult::Failed;
+        }
         return DecodeResult::Ok;
       }
       // A failed/short gray write — or a failed close, which keeps the
@@ -1123,7 +1140,10 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
       }
       // Degraded cache stream: rows painted, no cache — skip the publish.
       if (publishing && !cacheStreamOk) return DecodeResult::Ok;
-      if (!publishResult(cachePath, writePath, publishing)) return DecodeResult::Failed;
+      if (!publishResult(cachePath, writePath, publishing)) {
+        // Same paint-vs-publish contract as the JPEG/PNG branch above.
+        return paintToTarget ? DecodeResult::Ok : DecodeResult::Failed;
+      }
       return DecodeResult::Ok;
     }
     // !collecting: the decode above already painted through the legacy path

@@ -580,8 +580,27 @@ asserts equality.
   error-diffusion paint, no tone cache), single pass. This changes today's
   viewer behavior on the revert switch (the legacy converter plane-danced
   even without tone) to match the reader it shares a setting with.
-- **Failure**: a decode failure mid-plane returns false with the base kept
-  and logged — the reader's semantics. No partial plane upload is shown.
+- **Failure**: a failure BEFORE the base is displayed (open/probe/base
+  paint) returns false and onEnter shows the file-error text. A failure
+  AFTER the base is displayed (store-buffer failure, a plane pass) keeps the
+  displayed base and reports success — an error screen must not delete a
+  shown image (review 2026-11-11). No partial gray upload is shown: the
+  failed pass skips `displayGrayBuffer` and the stored BW base is restored.
+- **Grayscale transport**: the reader's absolute route on UC8279-class
+  panels; otherwise any differential-gray panel keeps the pre-PR viewer's
+  plane dance (HALF_REFRESH base, 0x00 seeds) with the engine paint — no
+  grayscale regression on papermono-class boards (review 2026-11-11). Only
+  gray-less panels (or the explicit imageRendering B/W choice) fall to the
+  1-bit dither pass.
+- **`imageGrayscale`** follows the reader's own definition
+  (`imageRendering != IMAGES_DISPLAY_BW`, EpubReaderActivity.cpp:5832) — the
+  B/W choice is the only tone choice; Placeholder/Suppress are book-layout
+  choices.
+- **Paint-vs-publish** (engine, review 2026-11-11): a cache stream or
+  publish failure AFTER the rows were painted reports `Ok` on a
+  `paintToTarget` decode (the image is on screen; the next pass re-decodes
+  for the cache) and keeps `Failed` for worker jobs so they defer and
+  retry. Pinned by `ImageViewerPath.CacheStreamFailureAfterPaintReportsOk`.
 
 ### 7.4 Cache identity, directory, freshness
 
@@ -592,21 +611,26 @@ asserts equality.
   key through `hrefExt` exactly like the reader's overlong-page-href
   handling), placement, tone-policy letters. Same-file reopens and sibling
   navigation are cache hits.
-- Freshness: `spec.generation` = the file's byte size. It lives in the cache
-  NAME (`%08x`), so a replaced file with a different size gets a fresh bake;
-  the in-file identity header still validates dims. **Documented
-  limitation**: a replacement with the identical size serves the stale bake
-  until the next change — there is no app-side FAT-mtime accessor today, and
-  a HAL surface addition for a cosmetic edge loses to KISS this round. A
-  mtime-based identity is the recorded follow-up if the owner ever sees it.
+- Freshness: `spec.generation` = `viewerGeneration(FAT mtime, size)` — a
+  32-bit FNV-1a fold of BOTH the FAT modification time and the byte size
+  (amended 2026-11-11 after review: mtime alone let a same-tick replacement
+  with a different size serve the stale bake). It lives in the cache NAME
+  (`%08x`), so a replacement that changes either component gets a fresh
+  bake; the in-file identity header still validates dims. Residual
+  limitation: a rewrite keeping both the tick and the size (2 s FAT
+  granularity is the floor) reuses the bake, and two different states
+  collide with ~2^-32 odds through the fold — both recorded, both
+  negligible against the old same-tick certainty.
 - Sweep: none this round. Stale viewer bakes linger in the viewer ficache
   dir (each ≤ ~96 KB at full page). Recorded follow-up: an age- or size-based
   sweep if accumulation matters; deleting on exit would defeat the cache.
-- Scratch arena: one 192 KiB pool block sized from
-  `TtfBookRuntime::kScratchBytes` — the reader's own scratch budget, so the
-  SDK's degrade thresholds (progressive store acceptance, DC fallback,
-  power-of-two step-down) behave identically to a reader decode. Allocation
-  failure fails the render honestly (no legacy fallback on engine boards).
+- Scratch arena: a pool block sized from `TtfBookRuntime::kScratchBytes`
+  (192 KiB — the reader's own scratch budget, so the SDK's degrade
+  thresholds behave identically to a reader decode), walking down 192 →
+  96 → 48 KiB under pool fragmentation (review 2026-11-11): a smaller
+  arena only shifts the engine's own degradation ladder (pre-scale
+  step-down, DC fallback), never correctness. Only a total allocation
+  failure refuses the render.
 - Gate: no `ImageDecodeGate` claim. Rule 4's bus exists for decodes reaching
   SHARED surfaces (the book's seek+read window, the ZIP extraction cache);
   the viewer's decode touches its own source, its own cache dir, and

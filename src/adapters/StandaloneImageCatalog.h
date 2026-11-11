@@ -27,14 +27,24 @@ class StandaloneImageCatalog : public freeink::book::ZipCatalog {
   bool ready_ = false;
 };
 
-// Cache-freshness token for a standalone viewer image (design §7.4): the FAT
-// modification time (2 s granularity), falling back to the byte size when the
-// timestamp is unreadable. Fills ImageSpec::generation — a NAME-level key, so
-// a replaced file gets a fresh bake; a replacement that keeps both the tick
-// and the size serves the stale bake until the next change (documented
-// limitation; a mtime+size composite does not fit the uint32 field).
+// Cache-freshness token for a standalone viewer image (design §7.4): a FNV-1a
+// fold of the FAT modification time AND the byte size, so a replacement that
+// changes EITHER is a different cache NAME (a same-tick replacement with a
+// different size no longer serves the stale bake — review 2026-11-11). Fills
+// ImageSpec::generation, a NAME-level key. A rewrite that keeps both the tick
+// and the size still reuses the bake (2 s FAT granularity is the floor); the
+// 32-bit fold's collision odds for two different states are ~2^-32, far below
+// the old same-tick certainty.
 constexpr uint32_t viewerGeneration(const uint32_t modificationTime, const uint64_t sizeBytes) {
-  return modificationTime != 0 ? modificationTime : static_cast<uint32_t>(sizeBytes);
+  uint64_t hash = 14695981039346656037ull;
+  const uint64_t words[2] = {modificationTime, sizeBytes};
+  for (const uint64_t w : words) {
+    for (int i = 0; i < 8; ++i) {
+      hash ^= static_cast<uint8_t>(w >> (8 * i));
+      hash *= 1099511628211ull;
+    }
+  }
+  return static_cast<uint32_t>(hash >> 32);
 }
 
 }  // namespace ttfimg

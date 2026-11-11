@@ -285,8 +285,9 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   touchIdleSleep = doc["touchIdleSleep"] | (uint8_t)1 ? 1 : 0;
   // TTF image decode quality: anything non-zero counts as on (default on).
   imageDecodeQuality = doc["imageDecodeQuality"] | (uint8_t)1 ? 1 : 0;
-  // Picture detail: 0 = Sharp (DPID only), 1 = Enhanced (DPID + CLAHE).
-  pictureDetail = doc["pictureDetail"] | (uint8_t)0 ? 1 : 0;
+  // pictureDetail is a SettingsList ENUM row: the generic loop above loaded
+  // and clamped it (a persisted out-of-range value falls back to the default
+  // instead of promoting to Enhanced). No manual load here.
 
   // The old fork reused the tap/long-press keys with a different value catalog.
   // When that legacy group is present, discard its bytes and fall back to the

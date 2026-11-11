@@ -218,14 +218,27 @@ bool BmpViewerActivity::renderImageEngine(const MappedInputManager::Labels& labe
 
   // The reader's scratch budget (TtfBookRuntime::kScratchBytes): identical
   // SDK degrade thresholds (progressive store, DC fallback, JPEG pre-scale
-  // step-down) to a reader decode. Allocation failure fails the render
-  // honestly — no legacy fallback exists on engine boards.
-  const PoolBytes scratchBlock = poolMakeBytes(freeink::book::TtfBookRuntime::kScratchBytes);
+  // step-down) to a reader decode. Under pool fragmentation a smaller arena
+  // still decodes — the engine's own ladder degrades (pre-scale step-down,
+  // DC fallback) rather than failing — so the allocation walks down before
+  // the render is refused (review 2026-11-11); a refused render is then a
+  // real decode-capability failure, not an allocation artifact.
+  PoolBytes scratchBlock;
+  size_t scratchBytes = 0;
+  for (const size_t cap :
+       {freeink::book::TtfBookRuntime::kScratchBytes, freeink::book::TtfBookRuntime::kScratchBytes / 2,
+        freeink::book::TtfBookRuntime::kScratchBytes / 4}) {
+    scratchBlock = poolMakeBytes(cap);
+    if (scratchBlock) {
+      scratchBytes = cap;
+      break;
+    }
+  }
   if (!scratchBlock) {
     LOG_ERR("BMP", "OOM: image decode scratch");
     return false;
   }
-  freeink::book::Arena scratch(scratchBlock.get(), freeink::book::TtfBookRuntime::kScratchBytes);
+  freeink::book::Arena scratch(scratchBlock.get(), scratchBytes);
 
   // Placement comes from the engine's own probe — the one source of truth
   // (decodeAndCache re-probes internally; the header scan is cheap next to
@@ -255,10 +268,13 @@ bool BmpViewerActivity::renderImageEngine(const MappedInputManager::Labels& labe
   spec.h = place.h;
   spec.orientation = static_cast<uint8_t>(renderer.getOrientation());
 
-  // The reader's settings semantics verbatim (QuickPageRelayout.cpp:29).
+  // The reader's settings semantics verbatim (QuickPageRelayout.cpp:29), and
+  // the reader's imageGrayscale definition (EpubReaderActivity.cpp:5832):
+  // only the explicit B/W choice drops tone — Placeholder/Suppress are layout
+  // choices for book pages, not tone choices for a photo viewer.
   const bool qualityTone = SETTINGS.imageDecodeQuality != 0;
   const bool clahe = qualityTone && SETTINGS.pictureDetail != 0;
-  const bool imageGrayscale = SETTINGS.imageRendering == CrossPointSettings::IMAGES_DISPLAY;
+  const bool imageGrayscale = SETTINGS.imageRendering != CrossPointSettings::IMAGES_DISPLAY_BW;
 
   if (!Storage.exists(VIEWER_FICACHE_DIR) && !Storage.mkdir(VIEWER_FICACHE_DIR)) {
     // Storage-failure doctrine: the decode degrades to painting uncached,
@@ -319,70 +335,95 @@ bool BmpViewerActivity::renderImageEngine(const MappedInputManager::Labels& labe
                             display.getController() == HalDisplay::Controller::UC8279,
                             renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported());
 
-  if (!route) {
-    // Non-absolute panels (and X3): the reader's base-pass treatment — the
-    // baked tones dither into the B/W framebuffer.
+  // Quality arms. Gray transport = the reader's absolute route
+  // (ttfAbsoluteImageGray — UC8279-class), or any differential-gray panel,
+  // where the pre-PR viewer plane-danced every JPEG and the reader's own
+  // overlay transports carry image tone as well (review 2026-11-11: no
+  // grayscale regression on papermono-class boards). Without a gray
+  // transport the baked tones dither into the B/W framebuffer.
+  const bool absolute = route;
+  if (imageGrayscale && (absolute || renderer.grayscaleCapabilities().supported())) {
+    // Plane dance — the renderTtfImageGrayAbsolute order
+    // (EpubReaderActivity.cpp:5050), stored-BW discipline included.
     renderer.clearScreen();
     renderer.setRenderMode(GfxRenderer::BW);
-    bool painted = true;
-    {
+    if (absolute) {
+      // The absolute base snapshot carries the image as a Bayer dither
+      // (the reader's baseDither, QuickPageRelayout.cpp:231).
       DitherScope scope{renderer};
       renderer.setDitherImagesInBw(true);
-      painted = paintEngineImage();
+      if (!paintEngineImage()) return false;  // nothing displayed yet: fail clean
+    } else {
+      // Overlay planes expect every gray pixel black in the base
+      // (setDitherImagesInBw's contract) — no dither here.
+      if (!paintEngineImage()) return false;
     }
-    if (painted) drawHints();
-    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-    return painted;
+    drawHints();
+
+    if (absolute) {
+      if (!renderer.displayGrayscaleBase(HalDisplay::GrayscaleMode::Absolute)) {
+        LOG_ERR("BMP", "Could not start absolute image display; keeping B/W base");
+        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+        return true;
+      }
+    } else {
+      // The legacy viewer's differential base waveform.
+      renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
+    }
+    if (!renderer.storeBwBuffer()) {
+      // The plane passes overwrite the framebuffer; without the stored base
+      // they cannot be undone — keep the displayed base (reader semantics).
+      LOG_ERR("BMP", "Failed to store BW buffer; keeping B/W base");
+      renderer.setRenderMode(GfxRenderer::BW);
+      return true;
+    }
+
+    bool planesOk = true;
+    for (const auto msbPass : {false, true}) {
+      // Absolute planes seed white (the walk clears dark bits); differential
+      // planes seed black (the walk sets dark bits) — the pre-PR viewer's
+      // exact seeds.
+      renderer.clearScreen(absolute ? 0xFF : 0x00);
+      renderer.setRenderMode(msbPass ? GfxRenderer::GRAYSCALE_MSB : GfxRenderer::GRAYSCALE_LSB);
+      if (!paintEngineImage()) {
+        planesOk = false;
+        break;
+      }
+      drawHints();  // the plane upload replaces the whole frame — hints join the planes
+      if (msbPass) {
+        renderer.copyGrayscaleMsbBuffers();
+      } else {
+        renderer.copyGrayscaleLsbBuffers();
+      }
+    }
+
+    // displayGrayBuffer BEFORE setRenderMode(BW) — the arm's exact order:
+    // setRenderMode(BW) while absoluteGrayPlanes is set cancels the pass.
+    if (planesOk) renderer.displayGrayBuffer();
+    renderer.setRenderMode(GfxRenderer::BW);
+    renderer.restoreBwBuffer();
+    renderer.cleanupGrayscaleWithFrameBuffer();
+    if (!planesOk) {
+      // A plane pass failed after the base was DISPLAYED: the restored base
+      // is a usable image — keep it and report success (review 2026-11-11;
+      // the error screen must not delete a shown image).
+      LOG_ERR("BMP", "Plane pass failed; keeping displayed base");
+    }
+    return true;
   }
 
-  // Absolute arm — the renderTtfImageGrayAbsolute order
-  // (EpubReaderActivity.cpp:5050), stored-BW discipline included.
+  // No gray transport (or imageRendering B/W): 1-bit dither, single pass.
   renderer.clearScreen();
   renderer.setRenderMode(GfxRenderer::BW);
+  bool painted = true;
   {
     DitherScope scope{renderer};
     renderer.setDitherImagesInBw(true);
-    if (!paintEngineImage()) return false;  // nothing displayed yet: fail clean
+    painted = paintEngineImage();
   }
-  drawHints();
-
-  if (!renderer.displayGrayscaleBase(HalDisplay::GrayscaleMode::Absolute)) {
-    LOG_ERR("BMP", "Could not start absolute image display; keeping B/W base");
-    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-    return true;
-  }
-  if (!renderer.storeBwBuffer()) {
-    // The plane passes overwrite the framebuffer; without the stored base
-    // they cannot be undone — keep the displayed base (reader semantics).
-    LOG_ERR("BMP", "Failed to store BW buffer; keeping B/W base");
-    renderer.setRenderMode(GfxRenderer::BW);
-    return true;
-  }
-
-  bool ready = true;
-  for (const auto msbPass : {false, true}) {
-    // Seed both planes' white; the walk clears each plane's dark bits.
-    renderer.clearScreen(0xFF);
-    renderer.setRenderMode(msbPass ? GfxRenderer::GRAYSCALE_MSB : GfxRenderer::GRAYSCALE_LSB);
-    if (!paintEngineImage()) {
-      ready = false;
-      break;
-    }
-    drawHints();  // the plane upload replaces the whole frame — hints join the planes
-    if (msbPass) {
-      renderer.copyGrayscaleMsbBuffers();
-    } else {
-      renderer.copyGrayscaleLsbBuffers();
-    }
-  }
-
-  // displayGrayBuffer BEFORE setRenderMode(BW) — the arm's exact order:
-  // setRenderMode(BW) while absoluteGrayPlanes is set cancels the pass.
-  if (ready) renderer.displayGrayBuffer();
-  renderer.setRenderMode(GfxRenderer::BW);
-  renderer.restoreBwBuffer();
-  renderer.cleanupGrayscaleWithFrameBuffer();
-  return ready;
+  if (painted) drawHints();
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  return painted;
 }
 
 #endif  // CROSSPOINT_TTF_READER

@@ -60,14 +60,18 @@ TEST(Placement, MatchesLegacyFitImageFormula) {
   EXPECT_EQ(one.y, (800 - 64) / 2);
 }
 
-TEST(ViewerGeneration, MtimeWinsSizeFallsBack) {
-  EXPECT_EQ(ttfimg::viewerGeneration(0x20261111u, 12345), 0x20261111u);
-  EXPECT_EQ(ttfimg::viewerGeneration(0, 12345), 12345u);
+TEST(ViewerGeneration, FoldsMtimeAndSize) {
+  // Composite token: either component changing alone moves the cache name —
+  // a same-tick replacement with a different size is NOT the old bake.
+  EXPECT_EQ(ttfimg::viewerGeneration(0x20261111u, 12345), ttfimg::viewerGeneration(0x20261111u, 12345));
+  EXPECT_NE(ttfimg::viewerGeneration(0x20261111u, 12345), ttfimg::viewerGeneration(0x20261112u, 12345));
+  EXPECT_NE(ttfimg::viewerGeneration(0x20261111u, 12345), ttfimg::viewerGeneration(0x20261111u, 12346));
+  EXPECT_NE(ttfimg::viewerGeneration(0, 12345), ttfimg::viewerGeneration(0, 12346));
 }
 
 TEST(ViewerGeneration, MtimeChangePicksAFreshCacheName) {
-  // The generation keys the cache NAME: a replaced file (new mtime) never
-  // finds the previous bake.
+  // The generation keys the cache NAME: a replaced file (new mtime or new
+  // size) never finds the previous bake.
   ttfimg::ImageSpec a{};
   snprintf(a.href, sizeof(a.href), "/img/anchor.png");
   a.w = 48;
@@ -76,7 +80,7 @@ TEST(ViewerGeneration, MtimeChangePicksAFreshCacheName) {
   a.y = 368;
   ttfimg::ImageSpec b = a;
   a.generation = ttfimg::viewerGeneration(1000, 900);
-  b.generation = ttfimg::viewerGeneration(2000, 900);
+  b.generation = ttfimg::viewerGeneration(1000, 901);  // same tick, different size
   char pa[256];
   char pb[256];
   ASSERT_TRUE(ttfimg::cacheNameFor(a, "/v/ficache", true, false, pa, sizeof(pa)));
@@ -189,6 +193,65 @@ TEST(ImageViewerPath, StandaloneDecodePublishesCacheAndBlits) {
   expectViewerBoxInk(r, spec);
 }
 
+TEST(ImageViewerPath, CacheStreamFailureAfterPaintReportsOk) {
+  // The paint-vs-publish contract (review 2026-11-11): a cache stream that
+  // dies mid-remap after the rows were painted is a display success with no
+  // cache — the viewer must not turn a painted image into a file error.
+  auto& storage = HalStorage::getInstance();
+  storage.resetFiles();
+  const auto bytes = readFixtureFile(FIT_FIXTURES "/dark.png");
+  ASSERT_GT(bytes.size(), 32u);
+  storage.files["/img/fullcard.png"] = std::string(bytes.begin(), bytes.end());
+
+  static uint8_t scratchBuf[4 << 20];
+  freeink::book::Arena scratch(scratchBuf, sizeof(scratchBuf));
+  freeink::book::SdCardBookSource source("/img/fullcard.png");
+  ASSERT_TRUE(source.isValid());
+  ttfimg::StandaloneImageCatalog catalog;
+  ASSERT_TRUE(catalog.open(source.size()));
+  const freeink::book::ZipEntry* entry = catalog.find("/img/fullcard.png");
+  ASSERT_NE(entry, nullptr);
+  freeink::book::ImageInfo info;
+  ASSERT_EQ(freeink::book::probeImage(source, *entry, scratch, &info), freeink::book::BookStatus::Ok);
+
+  ViewerRenderer r;
+  const ttfimg::Placement place =
+      ttfimg::fitPlacement(info.width, info.height, r.getScreenWidth(), r.getScreenHeight());
+  ttfimg::ImageSpec spec{};
+  snprintf(spec.href, sizeof(spec.href), "/img/fullcard.png");
+  spec.generation = 3;
+  spec.x = place.x;
+  spec.y = place.y;
+  spec.w = place.w;
+  spec.h = place.h;
+
+  // Write-call ordering (process-global stub counters): the gray collect
+  // writes spec.h rows, then the cache stream writes the identity header +
+  // one row per remap row. Failing the SECOND cache-row write arms a
+  // MID-STREAM cache failure, after every gray row was collected.
+  struct WriteFailGuard {
+    const int grayRows;
+    explicit WriteFailGuard(const int rows) : grayRows(rows) {
+      HalFile::writeCallCount = 0;
+      HalFile::failWriteAtCall = grayRows + 2;  // gray rows + header + 1st cache row
+    }
+    ~WriteFailGuard() { HalFile::failWriteAtCall = 0; }
+  } guard{place.h};
+
+  char cachePath[256];
+  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/.crosspoint/viewer/ficache", true, false, cachePath, sizeof(cachePath)));
+  const auto res = ttfimg::decodeAndCache(spec, cachePath, source, catalog, scratch, /*epub=*/nullptr, &r,
+                                          /*qualityTone=*/true, /*caching=*/true, nullptr, nullptr,
+                                          /*paintToTarget=*/true);
+  EXPECT_EQ(res, ttfimg::DecodeResult::Ok);
+  // The placement carries the painted image...
+  expectViewerBoxInk(r, spec);
+  // ...but no cache was published and no temp debris survives.
+  EXPECT_FALSE(ttfimg::hasValidCache(spec, "/.crosspoint/viewer/ficache", true, false));
+  EXPECT_FALSE(storage.exists((std::string(cachePath) + ".t").c_str()));
+  EXPECT_FALSE(storage.exists((std::string(cachePath) + ".g").c_str()));
+}
+
 TEST(ImageViewerPath, DecodeFailureLeavesPlacementEmpty) {
   auto& storage = HalStorage::getInstance();
   storage.resetFiles();
@@ -222,7 +285,13 @@ TEST(ImageViewerPath, DecodeFailureLeavesPlacementEmpty) {
   // paints NOTHING — the caller keeps the base (design §7.3). The first
   // HalFile read fails (the probe's header scan), so no pass may paint.
   struct ReadFailGuard {
-    ReadFailGuard() { HalFile::failReadAtCall = 1; }
+    // The write/read call counters are process-global (static in the stub);
+    // an earlier test in the same binary can leave them nonzero, so the
+    // arming must be independent of run order (review 2026-11-11).
+    ReadFailGuard() {
+      HalFile::readCallCount = 0;
+      HalFile::failReadAtCall = 1;
+    }
     ~ReadFailGuard() { HalFile::failReadAtCall = 0; }
   } guard;
 
