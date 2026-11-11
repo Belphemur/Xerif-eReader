@@ -54,22 +54,27 @@ constexpr bool absoluteGrayImageRoute(const bool pageHasImages, const bool quali
 // fixed-point error diffusion); error state runs row-sequentially over
 // IMAGE-LOCAL columns — the FloydSteinberg4 invariant — so placement
 // independence and worker/foreground parity hold by construction.
-// Quantization remains nearest-of-{0, 85, 170, 255} in the mapped space —
-// thresholds move with the LUTs, none are hand-picked.
+// Quantization is nearest-of-{0, 80, 155, 255} via the midpoints
+// {40, 117, 205} (the 2026-11-10 fidelity campaign: level 2 moved off the
+// eink-image 170 — photo paper whites dithered 170/255 at ~50% duty where
+// the panel's own white would do). The diffusion is Sierra-Lite in exact
+// 1/4-level units: forward 2/4, down-behind 1/4, down 1/4 — the plane holds
+// quarter-levels, so every distributed term is an integer and per-pixel
+// mass is conserved bit-exactly (4·errVal quarter-units out per 4·e in,
+// with the consume-rounding residue rem4 carried into the forward slot).
+// Near-white paper (mapped ≥ 252) snaps to level 3 with no diffusion: the
+// white field carries no error and stays clean (no salt churn).
 struct ToneBake4 : ToneBaker {
   static constexpr int kGammaNum = 22;  // γ = kGammaNum/kGammaDen (§7)
   static constexpr int kGammaDen = 10;
   static constexpr bool kGammaEnabled = false;  // §2.2: stretch owns the range; device tune flips this
   static constexpr int kContrastNum = 13;       // 1.3 (eink-image default), pivot 128
   static constexpr int kContrastDen = 10;
-  // Exact-plane scale = 16/W: the plane holds error in 1/scale-of-a-level
-  // units, so any rational weight spreads and consumes EXACTLY (for W=4/5
-  // the unit is 1/20 level and every term errVal·k stays an integer; the
-  // 2026-08 texture campaign's 0.8 was chosen on real-art texture feel and
-  // is retained — see the reset4 corpus metrics in the design doc). Change
-  // kErrPlaneScale together with the weight only through pairs 16/W with
-  // (16·W) an integer, or the consume rounding stops being exact.
-  static constexpr int kErrPlaneScale = 20;  // weight 16/20 = 0.8
+  // Sierra-Lite plane (fidelity campaign 2026-11-10): the plane holds error
+  // in exact 1/4-level units, so every distributed term is an integer and
+  // per-pixel mass is conserved bit-exactly (forward 2/4, down-behind 1/4,
+  // down 1/4 — 4·errVal quarter-units out per 4·e consumed, with the
+  // consume-rounding residue rem4 carried into the forward slot).
   // Percentile clip (blockiness design 2026-11-09): 0.5% / 99.5%. The old
   // 1%/99% clip sat at gray ~62 on soft-shadow art, crushing every shadow
   // below it to level 0 (the "blacks too deep" soak defect) while
@@ -77,6 +82,10 @@ struct ToneBake4 : ToneBaker {
   // true black/white where the art contains them.
   static constexpr int kClipNum = 5;     // percentile clip out of kClipDen
   static constexpr int kClipDen = 1000;  // => 0.5% / 99.5%
+  // Sierra-Lite quantizer.
+  static constexpr uint8_t kLevels[4] = {0, 80, 155, 255};
+  static constexpr int kMids[3] = {40, 117, 205};  // nearest-level midpoints
+  static constexpr int kWhiteSnap = 252;           // mapped value that snaps to paper white
 
   uint8_t gammaLut[256];
   uint8_t contrastLut[256];
@@ -92,11 +101,11 @@ struct ToneBake4 : ToneBaker {
   size_t grayPathLen = 0;
   bool grayOpen = false;
   bool grayFailed = false;         // sticky write failure (grayDone refuses)
-  std::unique_ptr<int32_t[]> err;  // error plane, 1/16-level units (reset4)
+  std::unique_ptr<int32_t[]> err;  // error plane, quarter-level units
   std::unique_ptr<int32_t[]> errNext;
   const int width;
   bool reverse = false;  // serpentine: the current row scans right-to-left
-  int row = 0;           // baked row index (threshold-noise key)
+  int row = 0;           // baked row index
 
   explicit ToneBake4(const int w) : width(w) {
     for (int i = 0; i < 256; ++i) {
@@ -150,88 +159,50 @@ struct ToneBake4 : ToneBaker {
   // deterministic fixed-contrast map for a paint-only legacy pass.
   void beginLegacyFallback();
 
-  // Exact diffusion plane (reset4): slots hold error in 1/kErrPlaneScale-
-  // level units, so every term adds errVal·k with ZERO rounding — the
-  // previous plane stored levels and truncated each term separately
-  // (errVal·k·0.8/16, C trunc), so errVal ≤ 15 lost all but the k=7 head and
-  // soft gradients died before the next shelf (measured: errVal 1 → 100%
-  // lost, 5 → 40%, 16 → 0%). The weight is folded into the plane scale
-  // (mass still conserved bit-exactly).
-  int32_t diffuse(const int errVal, const int k) const { return errVal * k; }
-
-  // Zero-mean pseudo-random threshold offset (texture §2.3, kept): breaks
-  // the row-as-mega-pixel mode-locking behind period-2 banding. At the
-  // blockiness bake's 0.8 weight the noise is what keeps constant-field
-  // error accumulation from igniting dropout specks and gradient rows from
-  // locking (host-probed: flat-40 dropout 6.2% -> 0%, gradient row delta
-  // 13.2 -> 3.3). Deterministic pure function of (x, row) — worker/
-  // foreground parity holds; never enters errVal, so tone stays true.
-  static constexpr int kMaskAmp = 8;  // offset range −8..+7 (4-bit hash)
-  // Per-instance active amplitude (defaults to kMaskAmp): the serpentine
-  // kernel-mirroring suite bakes with noise 0. IMPORTANT: amp 0 must give a
-  // TRUE zero offset — the bare hash term is keyed on absolute x (0..15),
-  // which is not mirror-symmetric and not zero-mean, so falling through to
-  // it would (a) bias the quantizer and (b) break exact mirror pins (caught
-  // by the reset4 exact plane: fwd x=k vs rev x=w−1−k loaded different
-  // offsets and diverged at threshold-crossing columns).
-  int noiseAmp = kMaskAmp;
-
   // x is image-local (0-based). `reverseScan` selects the mirrored kernel:
   // a serpentine row is VISITED in its scan direction, so the horizontal
-  // term always lands on the next-visited pixel (7/20 to x+1 ascending,
+  // term always lands on the next-visited pixel (2/4 to x+1 ascending,
   // to x−1 descending). Returns the quantized 4-level tone.
   // Mapped tone of one source pixel (the LUT chain the bake quantizes).
   int mapv(const uint8_t gray) const { return adaptive ? mapLut[gray] : contrastLut[gammaLut[gray]]; }
 
   uint8_t toneDir(const int x, const int gray, const bool reverseScan) {
-    // Serpentine Floyd–Steinberg over the mapped tone (blockiness design
-    // 2026-11-09): the texture bake's flat-run snap and stroke anchor are
-    // REMOVED — they froze real-art gradients into plateaus and eroded dark
-    // fields into solids (the 2026-11-09 soak regression). The quantizer
-    // decision keeps the ±8 threshold noise (see kMaskAmp).
     const int mv = mapv(static_cast<uint8_t>(gray));
-    // Consume the accumulated plane exactly: round-to-nearest for the
-    // quantizer input, leave the untouched residue in the slot (mass is
-    // conserved bit-exactly — later emissions keep re-diffusing it).
-    const int e16 = err[x + 1];
-    const int e =
-        e16 >= 0 ? (e16 + kErrPlaneScale / 2) / kErrPlaneScale : -(((-e16) + kErrPlaneScale / 2) / kErrPlaneScale);
-    err[x + 1] = e16 - kErrPlaneScale * e;
-    const int v = mv + e;
-    const int noise = [&] {
-      if (noiseAmp == 0) return 0;
-      uint32_t h = (static_cast<uint32_t>(x) + 1) * 374761393u + (static_cast<uint32_t>(row) + 1) * 668265263u;
-      h = (h ^ (h >> 13)) * 1274126177u;
-      return static_cast<int>((h >> 17) & 15) - noiseAmp;
-    }();
-    const int veff = v + noise;
-    int t = (veff + 42) / 85;  // nearest of {0, 85, 170, 255} in the mapped space
-    if (t < 0) t = 0;
-    if (t > 3) t = 3;
-    // The noise never enters errVal: the diffused error tracks the true
-    // mapped value, so emitted tone stays unbiased.
-    const int errVal = v - t * 85;
-    return emitDir(x, errVal, reverseScan, static_cast<uint8_t>(t));
-  }
-  // Diffuse errVal through the serpentine kernel and return the level.
-  uint8_t emitDir(const int x, const int errVal, const bool reverseScan, const uint8_t t) {
-    if (!reverseScan) {
-      // Ascending visit: 7 right, then 3 below-left, 5 below, 1 below-right.
-      if (x + 1 < width) err[x + 2] += diffuse(errVal, 7);
-      errNext[x] += diffuse(errVal, 3);
-      errNext[x + 1] += diffuse(errVal, 5);
-      errNext[x + 2] += diffuse(errVal, 1);
-    } else {
-      // Descending visit: 7 left, then 3 below-right, 5 below, 1 below-left.
-      if (x > 0) err[x] += diffuse(errVal, 7);
-      errNext[x + 2] += diffuse(errVal, 3);
-      errNext[x + 1] += diffuse(errVal, 5);
-      errNext[x] += diffuse(errVal, 1);
+    // White-paper snap: near-pure paper emits level 3, zeroes the slot and
+    // diffuses nothing — the white field carries no error and stays clean
+    // (no salt churn over the page).
+    if (mv >= kWhiteSnap) {
+      err[x + 1] = 0;
+      return 3;
     }
-    return t;
-  }
-  uint8_t diffuseDir(const int x, const int errVal, const bool reverseScan) {
-    return emitDir(x, errVal, reverseScan, 0);
+    // Consume the slot exactly: e4 is quarter-levels; e the rounded level,
+    // rem4 the exact rounding residue (carried into the forward slot below
+    // — nothing of the plane is ever dropped).
+    const int e4 = err[x + 1];
+    const int e = e4 >= 0 ? (e4 + 2) >> 2 : -((2 - e4) >> 2);
+    err[x + 1] = 0;
+    const int rem4 = e4 - (e << 2);
+    const int v = mv + e;
+    int t = 3;
+    if (v < kMids[0])
+      t = 0;
+    else if (v < kMids[1])
+      t = 1;
+    else if (v < kMids[2])
+      t = 2;
+    const int errVal = v - kLevels[t];
+    // Serpentine Sierra-Lite, quarter-level units: forward 2/4 (+ the
+    // consume residue), down-behind 1/4, down 1/4.
+    if (!reverseScan) {
+      if (x + 1 < width) err[x + 2] += (errVal << 1) + rem4;
+      errNext[x] += errVal;  // down-behind
+      errNext[x + 1] += errVal;
+    } else {
+      if (x > 0) err[x] += (errVal << 1) + rem4;
+      errNext[x + 2] += errVal;  // down-behind (to the right)
+      errNext[x + 1] += errVal;
+    }
+    return static_cast<uint8_t>(t);
   }
   // ToneBaker's forward kernel — kept for ascending-x callers and the tests;
   // the quality decodes use toneRow().
@@ -295,9 +266,29 @@ struct FloydSteinberg4 {
   }
 };
 
-// Streaming .pxc writer (same on-disk format as the shared PixelCache: u16
-// width, u16 height, then 2-bit rows, 4 pixels per byte, MSB first). Rows
-// arrive in raster order; abort() drops the partial file on any failure path.
+// Cache identity (2026-11-10 fidelity campaign): the bake-revision letter
+// AND the identity-hash top 32 bits live INSIDE the file, not only in the
+// filename — a file found under a matching name whose content cannot match
+// the key (stale payload from an older bake, a torn write that survived
+// finalize, a 64-bit hash collision across generations) is rejected at open
+// and regenerated. Layout: magic 'C','P', revision letter, u32 hash32 (LE),
+// u16 width, u16 height, then the 2-bit rows.
+struct CacheIdentity {
+  char letter = 0;      // bake revision letter (the filename's i<letter>)
+  uint32_t hash32 = 0;  // top 32 bits of the FNV identity hash
+};
+constexpr uint8_t kCacheMagic0 = 'C';
+constexpr uint8_t kCacheMagic1 = 'P';
+constexpr size_t kCacheHeaderBytes = 11;
+
+// The filename's identity components, shared with the in-file header.
+uint64_t cacheHash64(const ImageSpec& spec);
+char cacheRevisionLetter(bool qualityTone, bool clahe);
+CacheIdentity cacheIdentity(const ImageSpec& spec, bool qualityTone, bool clahe);
+
+// Streaming .pxc writer (on-disk format: the 11-byte CacheIdentity header
+// above, then 2-bit rows, 4 pixels per byte, MSB first). Rows arrive in
+// raster order; abort() drops the partial file on any failure path.
 struct ToneCacheWriter {
   HalFile file;
   char path[160] = {};
@@ -307,7 +298,7 @@ struct ToneCacheWriter {
   int writtenRows = 0;
   bool ok = false;
 
-  bool begin(const char* p, int w, int h);
+  bool begin(const char* p, int w, int h, const CacheIdentity& id);
   // toneValues carries width quantized tones (0..3), image-local columns.
   bool writeRow(const uint8_t* toneValues);
   bool finalize();
@@ -320,14 +311,72 @@ struct ToneCacheWriter {
 // live until the book cache sweep (epub/<hash> clearCache) removes it.
 bool cacheNameFor(const ImageSpec& spec, const char* dir, bool qualityTone, bool clahe, char* out, size_t cap);
 
-// Cache lookup: header dims must match the placement (±1, the same bounded
-// tolerance ImageBlock uses) and the file must cover the full payload.
+// Cache lookup: the in-file identity header (magic + revision letter + hash)
+// must match, the header dims must match the placement (±1, the same bounded
+// tolerance ImageBlock uses) and the file must cover the full payload. A file
+// that EXISTS but fails the identity/dims check is removed (regenerated by
+// the next decode).
 bool hasValidCache(const ImageSpec& spec, const char* dir, bool qualityTone, bool clahe);
 
-// Header check shared by hasValidCache and the paint-side blit: dims within
-// ±1 of the placement and a payload that covers every row.
-bool readValidCacheHeader(HalFile& cacheFile, int expectedWidth, int expectedHeight, uint16_t& cachedWidth,
-                          uint16_t& cachedHeight);
+// Halo-free clamped dark-stroke sharpen core (the owner's
+// sharpenRowHaloFree, fidelity campaign 2026-11-10): one row triple in, one
+// row out, pure integer. A 3×3 tent blur (separable (1,2,1)/4 ⊗ (1,2,1)/4,
+// >>4) gives the high-pass detail; a ±3 coring deadzone leaves smooth
+// gradients untouched; the detail is restored asymmetrically (dark strokes
+// at strength 1.0, bright side at 0.375) and the output is strictly clamped
+// to the original 3×3 [min,max] — zero overshoot, so no halos. Border rows
+// replicate: pass the same pointer for prev/next at the frame edges.
+constexpr int kSharpenDarkQ4 = 16;  // dark-stroke gain, Q4 (16/16 = 1.0)
+constexpr int kSharpenLightQ4 = 6;  // bright-side gain, Q4 (6/16 = 0.375)
+constexpr int kSharpenCoring = 3;   // |detail| deadzone
+inline void sharpenRowHaloFree(const uint8_t* prev, const uint8_t* self, const uint8_t* next, const int w,
+                               uint8_t* out) {
+  for (int x = 0; x < w; ++x) {
+    const int xl = x > 0 ? x - 1 : 0;
+    const int xr = x < w - 1 ? x + 1 : w - 1;
+    const int orig = self[x];
+    int outv = orig;
+    // 3×3 tent, (1,2,1) ⊗ (1,2,1) / 16 — exact integer weights.
+    const int h0 = prev[xl] + 2 * prev[x] + prev[xr];
+    const int h1 = self[xl] + 2 * self[x] + self[xr];
+    const int h2 = next[xl] + 2 * next[x] + next[xr];
+    const int detail = orig - ((h0 + 2 * h1 + h2) >> 4);
+    if (detail < -kSharpenCoring || detail > kSharpenCoring) {
+      const int kQ4 = detail < 0 ? kSharpenDarkQ4 : kSharpenLightQ4;
+      outv = orig + ((detail * kQ4) >> 4);
+      // Strict local clamp against the ORIGINAL 3×3 neighborhood.
+      int mn = 255;
+      int mx = 0;
+      for (const uint8_t* r : {prev, self, next}) {
+        const int a = r[xl];
+        const int b = r[x];
+        const int c = r[xr];
+        if (a < mn) mn = a;
+        if (a > mx) mx = a;
+        if (b < mn) mn = b;
+        if (b > mx) mx = b;
+        if (c < mn) mn = c;
+        if (c > mx) mx = c;
+      }
+      if (outv < mn) outv = mn;
+      if (outv > mx) outv = mx;
+    }
+    out[x] = static_cast<uint8_t>(outv);
+  }
+}
+
+// Gate: genuine downscales only — at 1:1 and upscale the tent bleeds ink
+// into flat margins (the tentPreblurOk finding). Same shape as the old
+// tentPreblurOk, either axis: a fit on one axis with a >1.25x squeeze on
+// the other is still a downscale decode.
+constexpr bool sharpenOk(const int srcW, const int srcH, const int dstW, const int dstH) {
+  return dstW > 0 && dstH > 0 && (srcW * 4 > dstW * 5 || srcH * 4 > dstH * 5);
+}
+
+// Header check shared by hasValidCache and the paint-side blit: the in-file
+// identity matches, dims within ±1 of the placement, payload covers every row.
+bool readValidCacheHeader(HalFile& cacheFile, int expectedWidth, int expectedHeight, const CacheIdentity& id,
+                          uint16_t& cachedWidth, uint16_t& cachedHeight);
 
 }  // namespace ttfimg
 

@@ -71,6 +71,12 @@ class DpidScaler {
     // one srcW row buffer inside the scratch block; the degraded (no
     // block) ladder rung still streams the fractional box.
     bool nearest = false;
+    // Caller override (2026-11-10 fidelity campaign): suppress the nearest
+    // small class and resample with the fractional box instead. Set for a
+    // progressive DC-fallback decode — an 1/8-scale thumbnail upscaled by
+    // nearest-center picks is exactly the Lego-block defect. Such decodes
+    // are degraded (never cached) — the override costs nothing else.
+    bool bilinear = false;
   };
 
   DpidScaler() = default;

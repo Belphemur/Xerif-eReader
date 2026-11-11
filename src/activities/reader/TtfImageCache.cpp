@@ -96,8 +96,16 @@ void ToneBake4::beginRemap() {
     const uint32_t loTarget = n * kClipNum / kClipDen > 0 ? n * kClipNum / kClipDen : 1;
     const uint32_t hiTarget = n * (kClipDen - kClipNum) / kClipDen;
     uint32_t cum = 0;
+    // Paper guard (fidelity campaign 2026-11-10): a white-heavy page whose
+    // content is under the 0.5% dark-anchor target reaches that target
+    // INSIDE the paper bins (250..255) — the stretch then maps the paper
+    // itself toward black. With ≥5% real content, locate the dark anchor
+    // below the paper bins so the page keeps its dark-point stretch.
+    uint32_t nonPaper = n;
+    for (int v = 250; v < 256; ++v) nonPaper -= hist[v];
+    const int loLimit = nonPaper >= n / 20 ? 250 : 256;
     lo = 255;
-    for (int v = 0; v < 256; ++v) {
+    for (int v = 0; v < loLimit; ++v) {
       cum += hist[v];
       if (cum >= loTarget) {
         lo = v;
@@ -155,7 +163,7 @@ void ToneBake4::beginRemap() {
   row = 0;
 }
 
-bool ToneCacheWriter::begin(const char* p, const int w, const int h) {
+bool ToneCacheWriter::begin(const char* p, const int w, const int h, const CacheIdentity& id) {
   snprintf(path, sizeof(path), "%s", p);
   width = w;
   height = h;
@@ -167,9 +175,18 @@ bool ToneCacheWriter::begin(const char* p, const int w, const int h) {
     LOG_ERR("TIMGE", "Cache open failed: %s", path);
     return false;
   }
+  // In-file identity header (see CacheIdentity): magic + bake revision
+  // letter + identity-hash top 32 bits, then the dims the payload covers.
+  uint8_t hdr[kCacheHeaderBytes];
+  hdr[0] = kCacheMagic0;
+  hdr[1] = kCacheMagic1;
+  hdr[2] = static_cast<uint8_t>(id.letter);
+  memcpy(hdr + 3, &id.hash32, sizeof(id.hash32));
   const uint16_t w16 = static_cast<uint16_t>(w);
   const uint16_t h16 = static_cast<uint16_t>(h);
-  if (file.write(&w16, 2) != 2 || file.write(&h16, 2) != 2) {
+  memcpy(hdr + 7, &w16, sizeof(w16));
+  memcpy(hdr + 9, &h16, sizeof(h16));
+  if (file.write(hdr, sizeof(hdr)) != static_cast<int>(sizeof(hdr))) {
     abort();
     return false;
   }
@@ -224,15 +241,53 @@ void ToneCacheWriter::abort() {
   ok = false;
 }
 
-bool readValidCacheHeader(HalFile& cacheFile, const int expectedWidth, const int expectedHeight, uint16_t& cachedWidth,
-                          uint16_t& cachedHeight) {
-  if (cacheFile.read(&cachedWidth, 2) != 2 || cacheFile.read(&cachedHeight, 2) != 2) return false;
+bool readValidCacheHeader(HalFile& cacheFile, const int expectedWidth, const int expectedHeight,
+                          const CacheIdentity& id, uint16_t& cachedWidth, uint16_t& cachedHeight) {
+  uint8_t hdr[kCacheHeaderBytes];
+  if (cacheFile.read(hdr, sizeof(hdr)) != static_cast<int>(sizeof(hdr))) return false;
+  if (hdr[0] != kCacheMagic0 || hdr[1] != kCacheMagic1) return false;
+  if (static_cast<char>(hdr[2]) != id.letter) return false;
+  uint32_t hash32 = 0;
+  memcpy(&hash32, hdr + 3, sizeof(hash32));  // little-endian target, written raw
+  if (hash32 != id.hash32) return false;
+  uint16_t w = 0, h = 0;
+  memcpy(&w, hdr + 7, sizeof(w));
+  memcpy(&h, hdr + 9, sizeof(h));
+  cachedWidth = w;
+  cachedHeight = h;
   const int widthDiff = abs(cachedWidth - expectedWidth);
   const int heightDiff = abs(cachedHeight - expectedHeight);
   if (widthDiff > 1 || heightDiff > 1) return false;
   const size_t bytesPerRow = (cachedWidth + 3) / 4;
-  const size_t expectedSize = 4 + bytesPerRow * cachedHeight;
+  const size_t expectedSize = kCacheHeaderBytes + bytesPerRow * cachedHeight;
   return cacheFile.size() >= expectedSize;
+}
+
+uint64_t cacheHash64(const ImageSpec& spec) {
+  // Identity: generation + href + placement. hrefExt (an overlong Page
+  // href, paint-side only) IS the href for the identity.
+  const char* const href = (spec.hrefExt != nullptr && spec.hrefExt[0] != '\0') ? spec.hrefExt : spec.href;
+  uint64_t hash = 14695981039346656037ull;
+  for (const char* p = href; *p != '\0'; ++p) {
+    hash ^= static_cast<uint8_t>(*p);
+    hash *= 1099511628211ull;
+  }
+  const uint32_t fields[4] = {static_cast<uint32_t>(spec.x), static_cast<uint32_t>(spec.y),
+                              static_cast<uint32_t>(spec.w), static_cast<uint32_t>(spec.h)};
+  for (const uint32_t v : fields) {
+    hash ^= static_cast<uint64_t>(v);
+    hash *= 1099511628211ull;
+  }
+  return hash;
+}
+
+char cacheRevisionLetter(const bool qualityTone, const bool clahe) { return qualityTone ? (clahe ? 'p' : 'o') : 'l'; }
+
+CacheIdentity cacheIdentity(const ImageSpec& spec, const bool qualityTone, const bool clahe) {
+  CacheIdentity id;
+  id.letter = cacheRevisionLetter(qualityTone, clahe);
+  id.hash32 = static_cast<uint32_t>(cacheHash64(spec) >> 32);
+  return id;
 }
 
 bool cacheNameFor(const ImageSpec& spec, const char* dir, const bool qualityTone, const bool clahe, char* out,
@@ -252,32 +307,19 @@ bool cacheNameFor(const ImageSpec& spec, const char* dir, const bool qualityTone
   // 'v' died with it: the pre-blockiness DPID-texture bake reused it) and
   // 'z' (Enhanced; 'x' only ever shipped to test builds) invalidate every
   // cache written before the small-range guard + nearest/CLAHE emission fix
-  // — review round 2026-11-10; 'm' (Sharp; 'v' died with it: the
-  // pre-blockiness DPID-texture bake reused it) and 'n' (Enhanced) are the
+  // — review round 2026-11-10; 'm' (Sharp) and 'n' (Enhanced) are the
   // pipeline rework — streaming pass-2 removed, tent pre-blur removed,
   // exact-residue FS diffusion at weight 1.0, no-op-stretch skip, full-
-  // fidelity progressive decode (reset4, 2026-11-10): every stage that
-  // feeds the bake changed, so nothing older can be reused.
+  // fidelity progressive decode (reset4, 2026-11-10). 'o' (Sharp) and 'p'
+  // (Enhanced) are the 2026-11-10 fidelity campaign — halo-free sharpen,
+  // Sierra-Lite quantizer, decoder-trap fixes, and the in-file identity
+  // header (11-byte CacheIdentity header replaces the bare dims word).
 
-  // Identity: generation + href + placement (+ the tone policy, so the
-  // quality revert switch never mixes bakes in one file). hrefExt (an
-  // overlong Page href, paint-side only) IS the href for the identity.
-  const char* const href = (spec.hrefExt != nullptr && spec.hrefExt[0] != '\0') ? spec.hrefExt : spec.href;
-  uint64_t hash = 14695981039346656037ull;
-  for (const char* p = href; *p != '\0'; ++p) {
-    hash ^= static_cast<uint8_t>(*p);
-    hash *= 1099511628211ull;
-  }
-  const uint32_t fields[4] = {static_cast<uint32_t>(spec.x), static_cast<uint32_t>(spec.y),
-                              static_cast<uint32_t>(spec.w), static_cast<uint32_t>(spec.h)};
-  for (const uint32_t v : fields) {
-    hash ^= static_cast<uint64_t>(v);
-    hash *= 1099511628211ull;
-  }
   // Full 64-bit hash in the name: a truncated identity would let two records
   // of the same dimensions and generation share one file, and the header
   // check (dims only) would paint one image's pixels under the other's key.
-  const int n = snprintf(out, cap, "%s/i%c%08x-%016llx.pxc", dir, qualityTone ? (clahe ? 'n' : 'm') : 'l',
+  const uint64_t hash = cacheHash64(spec);
+  const int n = snprintf(out, cap, "%s/i%c%08x-%016llx.pxc", dir, cacheRevisionLetter(qualityTone, clahe),
                          static_cast<unsigned>(spec.generation), static_cast<unsigned long long>(hash));
   return n > 0 && static_cast<size_t>(n) < cap;
 }
@@ -289,7 +331,16 @@ bool hasValidCache(const ImageSpec& spec, const char* dir, const bool qualityTon
   if (!Storage.openFileForRead("TIMGE", path, cacheFile)) return false;
   uint16_t cachedWidth = 0;
   uint16_t cachedHeight = 0;
-  return readValidCacheHeader(cacheFile, spec.w, spec.h, cachedWidth, cachedHeight);
+  const bool valid = readValidCacheHeader(cacheFile, spec.w, spec.h, cacheIdentity(spec, qualityTone, clahe),
+                                          cachedWidth, cachedHeight);
+  cacheFile.close();  // FAT refuses remove on an open handle
+  if (!valid) {
+    // A file under a live name whose content cannot match the key (older
+    // bake, torn write): drop it so the next decode regenerates instead of
+    // re-failing the open (defense-in-depth header, 2026-11-10).
+    Storage.remove(path);
+  }
+  return valid;
 }
 
 }  // namespace ttfimg

@@ -119,9 +119,10 @@ DpidScaler::Plan DpidScaler::plan(const Plan& dimsIn) {
     p.nearest = false;
   } else if (p.dstW >= p.srcW && p.dstH >= p.srcH) {
     // Small class: no box/pass-2 averaging — nearest-center picks keep
-    // line art crisp at ornament scale-ups (blockiness design 2026-11-09).
+    // line art crisp at ornament scale-ups (blockiness design 2026-11-09),
+    // unless the caller forced the bilinear class (DC-fallback decode).
     p.detail = false;
-    p.nearest = true;
+    p.nearest = !p.bilinear;
   }
   return p;
 }

@@ -43,8 +43,8 @@ DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, size_t si
                            GfxRenderer* legacyPaint, bool (*abortPoll)(void*), void* abortCtx, bool clahe,
                            bool* degradedOut);
 DecodeResult remapGrayToCache(const ImageSpec& spec, ToneBake4& bake, const char* writePath, bool caching,
-                              GfxRenderer* paint, bool paintToTarget, bool (*abortPoll)(void*), void* abortCtx,
-                              bool* cacheStreamOk);
+                              const CacheIdentity& cacheId, GfxRenderer* paint, bool paintToTarget,
+                              bool (*abortPoll)(void*), void* abortCtx, bool* cacheStreamOk);
 }  // namespace ttfimg
 
 uint32_t g_fakeMillis = 0;
@@ -180,7 +180,8 @@ void bmpDecodeRemapPaint(FakeRenderer& r, const ttfimg::ImageSpec& spec, const s
                                          false, nullptr);
   ASSERT_EQ(res, ttfimg::DecodeResult::Ok);
   ASSERT_TRUE(bake.grayDone());
-  ASSERT_EQ(ttfimg::remapGrayToCache(spec, bake, "/t/paint_case.pxc", /*caching=*/false, &r,
+  ASSERT_EQ(ttfimg::remapGrayToCache(spec, bake, "/t/paint_case.pxc", /*caching=*/false,
+                                     ttfimg::cacheIdentity(spec, true, false), &r,
                                      /*paintToTarget=*/true, nullptr, nullptr, nullptr),
             ttfimg::DecodeResult::Ok);
 }
@@ -226,7 +227,7 @@ TEST(ImageFitBlit, BlitCoversBoxBelowThePhysicalPanelHeight) {
   ttfimg::ToneCacheWriter writer;
   char path[256];
   ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, false, path, sizeof(path)));
-  ASSERT_TRUE(writer.begin(path, spec.w, spec.h));
+  ASSERT_TRUE(writer.begin(path, spec.w, spec.h, ttfimg::cacheIdentity(spec, true, false)));
   std::vector<uint8_t> tones(static_cast<size_t>(spec.w), 0);  // all-black rows
   for (int i = 0; i < spec.h; ++i) ASSERT_TRUE(writer.writeRow(tones.data()));
   ASSERT_TRUE(writer.finalize());
@@ -452,8 +453,11 @@ TEST(ImageFitSdkProgressiveFull, PollHookAbortsBeforeAnyRow) {
       source, book.zip(), "OEBPS/images/prog.jpg", 454, 681, scratch, AbortCapture::onDims, &cap, AbortCapture::onRow,
       &cap, AbortCapture::onPoll, &cap);
   ASSERT_EQ(st, freeink::book::BookStatus::Ok);  // Stopped maps to a clean stop
-  EXPECT_EQ(cap.dimW, 800);
-  EXPECT_EQ(cap.dimH, 1200);
+  // The dims report is deferred to the first emitted row (the single-report
+  // fallback contract, 2026-11-10): an abort before any row reports NO
+  // dims at all.
+  EXPECT_EQ(cap.dimW, 0);
+  EXPECT_EQ(cap.dimH, 0);
   EXPECT_EQ(cap.rows, 0) << "the abort poll fired AFTER rows streamed";
 }
 
@@ -685,8 +689,9 @@ TEST(AdaptiveBake, GrayTempStreamsEveryRowByteExact) {
   }
   // The temp is consumed by the remap pass: no leftover .g after remap.
   const ttfimg::ImageSpec spec = makeSpec(0, 0, 6, 5);
-  ttfimg::remapGrayToCache(spec, bake, "/t/bake_stream.pxc", /*caching=*/false, nullptr, /*paintToTarget=*/false,
-                           nullptr, nullptr, nullptr);
+  ttfimg::remapGrayToCache(spec, bake, "/t/bake_stream.pxc", /*caching=*/false,
+                           ttfimg::cacheIdentity(spec, true, false), nullptr, /*paintToTarget=*/false, nullptr, nullptr,
+                           nullptr);
   EXPECT_FALSE(storage.exists("/t/bake_stream.g"));
 }
 
@@ -711,8 +716,8 @@ TEST(AdaptiveBake, TwoPhaseCacheIsDeterministicAcrossRuns) {
                                     false, nullptr),
               ttfimg::DecodeResult::Ok);
     ASSERT_TRUE(bake.grayDone());
-    ASSERT_EQ(ttfimg::remapGrayToCache(spec, bake, cache, /*caching=*/true, nullptr, /*paintToTarget=*/false, nullptr,
-                                       nullptr, nullptr),
+    ASSERT_EQ(ttfimg::remapGrayToCache(spec, bake, cache, /*caching=*/true, ttfimg::cacheIdentity(spec, true, false),
+                                       nullptr, /*paintToTarget=*/false, nullptr, nullptr, nullptr),
               ttfimg::DecodeResult::Ok);
   }
   EXPECT_EQ(storage.files["/t/parity0.pxc"], storage.files["/t/parity1.pxc"]);
@@ -1059,4 +1064,164 @@ TEST(ImageBudgetGate, BudgetDecisionIsAConstantExpression) {
                 "small-board floor short");
   static_assert(!ttfimg::psramBudgetOk(0, 0), "no PSRAM defers");
   SUCCEED();
+}
+
+// ── halo-free dark-stroke sharpen (fidelity campaign 2026-11-10) ────────────
+// The pure row core is pinned directly; the streaming wrapper (ring, pool
+// block, flush) is exercised by every decode-path test above.
+
+namespace {
+
+// A synthetic decoded 1.5px line: a vertical stroke spread by the box downscale
+// into a dark center column + a light shoulder column, on a white field.
+struct LineField {
+  static constexpr int kW = 16;
+  std::vector<uint8_t> a, b, c;  // prev/self/next rows
+  explicit LineField(uint8_t center = 120, uint8_t shoulder = 200) : a(kW, 255), b(kW, 255), c(kW, 255) {
+    for (const auto r : {&a, &b, &c}) {
+      (*r)[7] = center;
+      (*r)[8] = shoulder;
+    }
+  }
+  std::vector<uint8_t> sharpened() {
+    std::vector<uint8_t> out(kW);
+    ttfimg::sharpenRowHaloFree(a.data(), b.data(), c.data(), kW, out.data());
+    return out;
+  }
+};
+
+}  // namespace
+
+TEST(Sharpen, DarkStrokeRecoversItsShoulder) {
+  // The line's dark center stays at the local minimum (the clamp forbids
+  // inventing ink); the light shoulder — the box spread — is driven back
+  // toward the field, narrowing the stroke.
+  LineField f;
+  const auto out = f.sharpened();
+  EXPECT_EQ(out[7], 120);  // the stroke's own darkest value is preserved
+  EXPECT_GT(out[8], 200);  // the shoulder brightens (toward the field)
+  EXPECT_EQ(out[0], 255);  // the far field is untouched
+}
+
+TEST(Sharpen, ZeroHaloOutsideADarkSquare) {
+  // Dark square on a light 235 field: the light-side gain WANTS to overshoot
+  // the field beside the square's edge (the halo), the strict 3×3 clamp
+  // forbids it — no pixel outside the square exceeds the field value.
+  const int w = 24;
+  std::vector<uint8_t> prev(w, 235), self(w, 235), next(w, 235);
+  for (int x = 8; x < 16; ++x) {  // the square's top edge row (self)
+    prev[x] = 235;
+    self[x] = 30;
+    next[x] = 30;
+  }
+  std::vector<uint8_t> out(w);
+  ttfimg::sharpenRowHaloFree(prev.data(), self.data(), next.data(), w, out.data());
+  for (int x = 0; x < w; ++x) {
+    if (x >= 8 && x < 16) continue;  // inside the square
+    EXPECT_LE(out[x], 235) << "halo above the field at column " << x;
+  }
+  // And the square's edge actually sharpened (the clamp had work to do):
+  EXPECT_LE(out[7], 235);
+}
+
+TEST(Sharpen, SmoothGradientIsByteIdentical) {
+  // Coring: a gradient with per-pixel slope 2 has |detail| ≤ 3 everywhere
+  // (the tent reproduces linear functions exactly in the interior) — the
+  // rows pass through untouched.
+  const int w = 48;
+  std::vector<uint8_t> prev(w), self(w), next(w);
+  for (int x = 0; x < w; ++x) {
+    prev[x] = static_cast<uint8_t>(100 + 2 * x);
+    self[x] = static_cast<uint8_t>(100 + 2 * x);
+    next[x] = static_cast<uint8_t>(100 + 2 * x);
+  }
+  std::vector<uint8_t> out(w);
+  ttfimg::sharpenRowHaloFree(prev.data(), self.data(), next.data(), w, out.data());
+  EXPECT_EQ(0, memcmp(out.data(), self.data(), static_cast<size_t>(w)));
+}
+
+TEST(Sharpen, GateCoversDownscalesOnly) {
+  // Downscale (>1.25x on either axis) sharpens; 1:1, upscale (the Insert
+  // page) and sub-threshold squeezes do not.
+  EXPECT_TRUE(ttfimg::sharpenOk(934, 1400, 454, 680));  // the 00005-class page
+  EXPECT_TRUE(ttfimg::sharpenOk(965, 1400, 454, 658));  // the 00006-class page
+  EXPECT_TRUE(ttfimg::sharpenOk(300, 100, 100, 160));   // single-axis squeeze
+  EXPECT_FALSE(ttfimg::sharpenOk(100, 150, 100, 150));  // 1:1
+  EXPECT_FALSE(ttfimg::sharpenOk(100, 150, 240, 160));  // upscale (Insert)
+  EXPECT_FALSE(ttfimg::sharpenOk(250, 150, 200, 120));  // exactly 1.25x: not > 1.25
+  EXPECT_FALSE(ttfimg::sharpenOk(0, 0, 100, 100));      // degenerate
+}
+
+// ── in-file cache identity header (fidelity campaign 2026-11-10) ────────────
+
+TEST(CacheIdentityHeader, WrongInFileLetterIsRejectedAndDropped) {
+  // A .pxc whose IN-FILE revision letter does not match the requested bake
+  // must not paint and must be dropped for regeneration — the filename
+  // alone is not trusted (defense-in-depth, 0b).
+  auto& storage = HalStorage::getInstance();
+  storage.files.clear();
+  const auto spec = makeSpec(3, 0, 16, 8);
+  ttfimg::ToneCacheWriter writer;
+  char path[256];
+  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, false, path, sizeof(path)));
+  ASSERT_TRUE(writer.begin(path, 16, 8, ttfimg::cacheIdentity(spec, true, false)));
+  uint8_t row[16] = {};
+  for (int i = 0; i < 8; ++i) ASSERT_TRUE(writer.writeRow(row));
+  ASSERT_TRUE(writer.finalize());
+  ASSERT_TRUE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true, false));  // sanity: matching
+
+  // Corrupt the letter byte (offset 2): a stale-bake payload under a live name.
+  std::string& data = storage.files[path];
+  data[2] = 'm';  // an older bake's letter
+  EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true, false));
+  EXPECT_EQ(storage.files.count(path), 0u) << "the stale payload was kept";
+}
+
+TEST(CacheIdentityHeader, WrongInFileHashIsRejected) {
+  auto& storage = HalStorage::getInstance();
+  storage.files.clear();
+  const auto spec = makeSpec(4, 0, 16, 8);
+  ttfimg::ToneCacheWriter writer;
+  char path[256];
+  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, false, path, sizeof(path)));
+  ASSERT_TRUE(writer.begin(path, 16, 8, ttfimg::cacheIdentity(spec, true, false)));
+  uint8_t row[16] = {};
+  for (int i = 0; i < 8; ++i) ASSERT_TRUE(writer.writeRow(row));
+  ASSERT_TRUE(writer.finalize());
+
+  std::string& data = storage.files[path];
+  data[3] ^= 0xFF;  // flip a hash32 byte: different identity, same name
+  EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true, false));
+}
+
+TEST(CacheIdentityHeader, TruncatedHeaderIsRejected) {
+  auto& storage = HalStorage::getInstance();
+  storage.files.clear();
+  ttfimg::ToneCacheWriter writer;
+  ASSERT_TRUE(writer.begin("/t/short.pxc", 16, 8, ttfimg::CacheIdentity{'o', 0}));
+  uint8_t row[16] = {};
+  for (int i = 0; i < 8; ++i) ASSERT_TRUE(writer.writeRow(row));
+  ASSERT_TRUE(writer.finalize());
+  std::string& data = storage.files["/t/short.pxc"];
+  data.resize(6);  // shorter than the 11-byte identity header
+  HalFile f;
+  ASSERT_TRUE(storage.openFileForRead("T", "/t/short.pxc", f));
+  uint16_t w = 0, h = 0;
+  EXPECT_FALSE(ttfimg::readValidCacheHeader(f, 16, 8, ttfimg::CacheIdentity{'o', 0}, w, h));
+}
+
+TEST(CacheIdentityHeader, PolicyLetterMismatchBetweenFileAndKey) {
+  // A cache written for Sharp ('o') must not load under the Enhanced ('p')
+  // key even if the file landed under the right name.
+  auto& storage = HalStorage::getInstance();
+  storage.files.clear();
+  const auto spec = makeSpec(5, 0, 16, 8);
+  ttfimg::ToneCacheWriter writer;
+  char path[256];
+  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, false, path, sizeof(path)));
+  ASSERT_TRUE(writer.begin(path, 16, 8, ttfimg::cacheIdentity(spec, true, false)));
+  uint8_t row[16] = {};
+  for (int i = 0; i < 8; ++i) ASSERT_TRUE(writer.writeRow(row));
+  ASSERT_TRUE(writer.finalize());
+  EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true, true));  // Enhanced key
 }

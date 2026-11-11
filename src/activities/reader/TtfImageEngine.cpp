@@ -282,22 +282,36 @@ void paintToneRow(GfxRenderer& paint, const ImageSpec& spec, int rowIdx, const u
 struct DpidCtx {
   ttfimg::DpidScaler scaler;
   PoolBytes block;
+  PoolBytes sharpenBlock;
   GrayCollectCtx* gray = nullptr;  // existing collect/abort state
   const ttfimg::ImageSpec* spec = nullptr;
-  bool clahe = false;     // pictureDetail == Enhanced
-  bool attached = false;  // dims hook ran; begin() succeeded
+  const freeink::book::ImageInfo* info = nullptr;  // probe result (progressive frame dims)
+  bool clahe = false;                              // pictureDetail == Enhanced
+  bool attached = false;                           // dims hook ran; begin() succeeded
   // True when the decode's ladder stepped down from the requested rung —
   // DPID detail or CLAHE dropped after the scratch allocation failed.
   // A degraded bake must never be published under the requested quality's
   // cache name (review 2026-11-10) — the engine skips the publish and the
   // next pass re-decodes.
   bool degraded = false;
+  // A progressive stream that fell back to the DC-only first scan reports
+  // 1/8-scale dims: the decode is a thumbnail — bilinear class, never
+  // cached (fidelity campaign 2026-11-10).
+  bool dcFallback = false;
   // BMP random-access provider state
   BmpSource* bmp = nullptr;
   uint8_t* bits = nullptr;  // BmpSource bit scratch (rowBytes)
   // Storage-failure fallback sink (BMP): degenerate map + direct paint.
   GfxRenderer* legacyPaint = nullptr;
   uint8_t* toneRow = nullptr;  // [dstW], owned by the caller
+  // Halo-free sharpen state (fidelity campaign 2026-11-10) — see sharpenOk.
+  struct SharpenCtx {
+    uint8_t* ring[3] = {nullptr, nullptr, nullptr};  // original rows
+    uint8_t* out = nullptr;                          // emitted row scratch
+    int w = 0;
+    int rowsSeen = 0;
+    bool active = false;
+  } sharpen;
 };
 
 bool dpidPollFn(void* user) {
@@ -309,29 +323,73 @@ bool dpidPollFn(void* user) {
   return false;
 }
 
-// Destination-row sink: collect mode feeds bake->collectRow (histogram +
-// gray temp, remap owns the bake); the BMP legacyPaint fallback bakes with
-// the caller's degenerate map and paints each row directly.
-bool dpidEmitFn(void* user, const int rowIdx, const uint8_t* dstRow) {
-  auto* c = static_cast<DpidCtx*>(user);
-  GrayCollectCtx* g = c->gray;
+// Halo-free clamped dark-stroke sharpen (owner spec, fidelity campaign
+// 2026-11-10), slotted after the scaler's emit walk and before the bake's
+// collectRow. The pure per-row core is sharpenRowHaloFree (TtfImageCache.h);
+// this wrapper streams rows through a 3-row original ring + one output row
+// (4 × spec.w ≈ 1.8 KB worst case) carved from its own small pool block: an
+// allocation failure degrades to un-sharpened, never a decode failure.
+// Stateless per row triple — serpentine order does not apply.
+
+// The destination-row sinks once a row is FINAL (the sharpen may delay it
+// by one row): collect (gray temp + histogram) or the BMP legacy paint.
+bool emitFinalRow(DpidCtx& c, const int rowIdx, const uint8_t* row) {
+  GrayCollectCtx* g = c.gray;
   if (g->aborted) return false;
   if (g->abortPoll != nullptr && g->abortPoll(g->abortCtx)) {
     g->aborted = true;
     return false;
   }
   if (g->bake == nullptr) return false;
-  if (c->legacyPaint != nullptr) {
-    g->bake->toneRow(dstRow, c->toneRow);
-    paintToneRow(*c->legacyPaint, *c->spec, rowIdx, c->toneRow, c->spec->w);
+  if (c.legacyPaint != nullptr) {
+    g->bake->toneRow(row, c.toneRow);
+    paintToneRow(*c.legacyPaint, *c.spec, rowIdx, c.toneRow, c.spec->w);
     return true;
   }
   if (g->bake->grayWriteFailed()) {
     g->collectFailed = true;
     return false;
   }
-  g->bake->collectRow(dstRow);
+  g->bake->collectRow(row);
   return true;
+}
+
+// Emits ring row m (borders replicate) through sharpenRowHaloFree, then
+// hands the row to the sinks.
+bool sharpenEmitRow(DpidCtx& c, const int m) {
+  DpidCtx::SharpenCtx& s = c.sharpen;
+  const int prevIdx = m > 0 ? m - 1 : m;               // top border
+  const int nextIdx = m + 1 < s.rowsSeen ? m + 1 : m;  // bottom border
+  sharpenRowHaloFree(s.ring[prevIdx % 3], s.ring[m % 3], s.ring[nextIdx % 3], s.w, s.out);
+  return emitFinalRow(c, m, s.out);
+}
+
+bool sharpenFeed(DpidCtx& c, const int rowIdx, const uint8_t* row) {
+  DpidCtx::SharpenCtx& s = c.sharpen;
+  if (rowIdx != s.rowsSeen) {
+    // Rows out of raster order: the filter cannot stream — pass through
+    // un-sharpened (a degrade, never a failure).
+    s.active = false;
+    return emitFinalRow(c, rowIdx, row);
+  }
+  memcpy(s.ring[s.rowsSeen % 3], row, static_cast<size_t>(s.w));
+  ++s.rowsSeen;
+  if (s.rowsSeen < 2) return true;  // row 0 waits for its bottom neighbour
+  return sharpenEmitRow(c, s.rowsSeen - 2);
+}
+
+// Flushes the last delayed row (bottom border replicates). Safe on an
+// inactive/empty sharpen state; returns the sink result.
+bool sharpenFlush(DpidCtx& c) {
+  DpidCtx::SharpenCtx& s = c.sharpen;
+  if (!s.active || s.rowsSeen == 0) return true;
+  return sharpenEmitRow(c, s.rowsSeen - 1);
+}
+
+bool dpidEmitFn(void* user, const int rowIdx, const uint8_t* dstRow) {
+  auto* c = static_cast<DpidCtx*>(user);
+  if (c->sharpen.active) return sharpenFeed(*c, rowIdx, dstRow);
+  return emitFinalRow(*c, rowIdx, dstRow);
 }
 
 // BMP provider: reads the requested source row out of the resident PSRAM
@@ -349,7 +407,7 @@ bool dpidBmpRowFn(void* user, const int srcY, uint8_t* out) {
 // fails the decode; nothing has been written yet).
 bool attachScaler(DpidCtx& c, const int srcW, const int srcH, const int dstW, const int dstH, const bool clahe,
                   const bool randomAccess) {
-  DpidScaler::Plan p{srcW, srcH, dstW, dstH, clahe, true, randomAccess};
+  DpidScaler::Plan p{srcW, srcH, dstW, dstH, clahe, true, randomAccess, false, c.dcFallback};
   size_t need = DpidScaler::scratchBytes(p);
   c.block = poolMakeBytes(need);
   if (!c.block) {
@@ -391,10 +449,28 @@ bool attachScaler(DpidCtx& c, const int srcW, const int srcH, const int dstW, co
     // class's own nearest/1:1 classing is design, not degradation — and
     // neither is reset4's streaming policy (pass 2 never runs on streamed
     // rows), so the intent plan carries it too.
-    DpidScaler::Plan intent = DpidScaler::plan(DpidScaler::Plan{srcW, srcH, dstW, dstH, clahe, true, randomAccess});
+    DpidScaler::Plan intent =
+        DpidScaler::plan(DpidScaler::Plan{srcW, srcH, dstW, dstH, clahe, true, randomAccess, false, c.dcFallback});
     if (!randomAccess) intent.detail = false;  // reset4 streaming policy, not a degradation
     const DpidScaler::Plan placed = c.scaler.placedPlan();
     c.degraded = placed.detail != intent.detail || placed.clahe != intent.clahe;
+  }
+  // Halo-free sharpen (fidelity campaign 2026-11-10): downscale decodes
+  // only. The ring + output row come from their own small pool block; a
+  // failed allocation degrades to un-sharpened (never a decode failure).
+  c.sharpen.active = false;
+  c.sharpenBlock.reset();
+  if (okBegin && sharpenOk(srcW, srcH, dstW, dstH)) {
+    c.sharpenBlock = poolMakeBytes(4 * static_cast<size_t>(dstW));
+    if (c.sharpenBlock) {
+      c.sharpen.ring[0] = c.sharpenBlock.get();
+      c.sharpen.ring[1] = c.sharpenBlock.get() + dstW;
+      c.sharpen.ring[2] = c.sharpenBlock.get() + 2 * dstW;
+      c.sharpen.out = c.sharpenBlock.get() + 3 * dstW;
+      c.sharpen.w = dstW;
+      c.sharpen.rowsSeen = 0;
+      c.sharpen.active = true;
+    }
   }
   return okBegin;
 }
@@ -420,7 +496,19 @@ bool dpidRowFn(void* user, const uint16_t y, const uint8_t* gray, const uint16_t
 // the JPEG power-of-two pre-scale (which sets srcW/srcH) is already known.
 bool dpidDimsFn(void* user, const uint16_t srcW, const uint16_t srcH) {
   auto* c = static_cast<DpidCtx*>(user);
+  // A progressive stream whose full decode fell back to the DC-only first
+  // scan reports 1/8-scale dims (blocksW x blocksH < the probe's frame
+  // width). Such a decode is a thumbnail: bilinear class, and degraded —
+  // never published under the requested quality's cache name (a cached
+  // DC-thumbnail would permanently block the real page — fidelity
+  // campaign 2026-11-10).
+  c->dcFallback = c->info != nullptr && c->info->progressive && srcW < c->info->width;
   c->attached = attachScaler(*c, srcW, srcH, c->spec->w, c->spec->h, c->clahe, false);
+  if (c->attached && c->dcFallback) {
+    LOG_WRN("TIMGE", "DC fallback decode %ux%u < frame %u, ncomp %u - bilinear, uncached: %s", srcW, srcH,
+            c->info->width, static_cast<unsigned>(c->info->jpegComponents), c->spec->href);
+    c->degraded = true;
+  }
   return c->attached;
 }
 
@@ -498,6 +586,10 @@ DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const siz
     if (sinkCtx.aborted) return DecodeResult::Busy;
     return DecodeResult::Failed;  // row-read/emit failure: never cache garbage rows
   }
+  if (!sharpenFlush(dpid)) {
+    if (sinkCtx.aborted) return DecodeResult::Busy;
+    return DecodeResult::Failed;
+  }
   if (sinkCtx.aborted) return DecodeResult::Busy;
   if (sinkCtx.collectFailed) return DecodeResult::Failed;  // engine legacy-passes
   return DecodeResult::Ok;
@@ -511,7 +603,8 @@ bool blitFromCache(GfxRenderer& renderer, const ImageSpec& spec, const char* dir
   if (!Storage.openFileForRead("TIMGE", path, cacheFile)) return false;
   uint16_t cachedWidth = 0;
   uint16_t cachedHeight = 0;
-  if (!readValidCacheHeader(cacheFile, spec.w, spec.h, cachedWidth, cachedHeight)) {
+  if (!readValidCacheHeader(cacheFile, spec.w, spec.h, cacheIdentity(spec, qualityTone, clahe), cachedWidth,
+                            cachedHeight)) {
     LOG_ERR("TIMGE", "Invalid image cache: %s", path);
     return false;
   }
@@ -609,8 +702,8 @@ bool legacyPaintFn(void* user, const uint16_t rowIdx, const uint8_t* grayRow, co
 // finalized end — a degraded stream paints every row but produces no cache,
 // so the caller must not publish (and reports success: the image displayed).
 DecodeResult remapGrayToCache(const ImageSpec& spec, ttfimg::ToneBake4& bake, const char* writePath, const bool caching,
-                              GfxRenderer* paint, const bool paintToTarget, bool (*abortPoll)(void* ctx),
-                              void* abortCtx, bool* cacheStreamOk) {
+                              const ttfimg::CacheIdentity& cacheId, GfxRenderer* paint, const bool paintToTarget,
+                              bool (*abortPoll)(void* ctx), void* abortCtx, bool* cacheStreamOk) {
   if (cacheStreamOk != nullptr) *cacheStreamOk = false;
   uint8_t toneRowStack[256];
   uint8_t* toneRow = toneRowStack;
@@ -633,7 +726,7 @@ DecodeResult remapGrayToCache(const ImageSpec& spec, ttfimg::ToneBake4& bake, co
   bake.beginRemap();
 
   ToneCacheWriter writer;
-  bool writerActive = caching && writer.begin(writePath, spec.w, spec.h);
+  bool writerActive = caching && writer.begin(writePath, spec.w, spec.h, cacheId);
   if (caching && !writerActive) {
     // Storage failure on the cache stream is not a decode failure: keep
     // painting the rows and skip the cache (the next pass re-decodes).
@@ -803,6 +896,7 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
       DpidCtx dpid;
       dpid.gray = &ctx;
       dpid.spec = &spec;
+      dpid.info = &info;
       dpid.clahe = clahe;
       const BookStatus st = freeink::book::ImageRenderer::renderSourceRows(
           source, zip, href, static_cast<uint16_t>(spec.w), static_cast<uint16_t>(spec.h), scratch, &dpidDimsFn, &dpid,
@@ -822,6 +916,9 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
       // dpidRowFn/emit stop on abort; finish() applies pass 2 + CLAHE and
       // streams the destination rows through dpidEmitFn.
       const bool finished = dpid.scaler.finish();
+      // The sharpen's one-row delay holds the last destination row: flush
+      // it through the same sinks before the temp is consumed.
+      const bool flushed = sharpenFlush(dpid);
       if (ctx.aborted) {
         bake.grayDiscard();
         return DecodeResult::Busy;
@@ -837,7 +934,7 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
         return legacyPaintPass(spec, info.kind, source, zip, scratch, epub, nullptr, 0, bake, paint, paintToTarget,
                                abortPoll, abortCtx, clahe);
       }
-      if (!finished) {
+      if (!finished || !flushed) {
         bake.grayDiscard();
         return DecodeResult::Failed;
       }
@@ -852,8 +949,9 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
         // intent's dimension rule, so a huge streaming source keeps
         // caching under its deterministic bake identity.
         if (dpid.degraded && publishing) LOG_INF("TIMGE", "DPID degraded rung - painting uncached: %s", spec.href);
-        const DecodeResult remap = remapGrayToCache(spec, bake, writePath, caching && !dpid.degraded, paint,
-                                                    paintToTarget, abortPoll, abortCtx, &cacheStreamOk);
+        const DecodeResult remap =
+            remapGrayToCache(spec, bake, writePath, caching && !dpid.degraded, cacheIdentity(spec, qualityTone, clahe),
+                             paint, paintToTarget, abortPoll, abortCtx, &cacheStreamOk);
         if (remap == DecodeResult::Busy) return remap;  // foreground takeover: stay out of the way
         if (remap != DecodeResult::Ok) {
           // Phase-2 storage failure (gray re-open/read): still paint — the
@@ -961,6 +1059,7 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
       if (decoded && collecting && dpid.attached) {
         // Pass 2 + optional CLAHE + the emit walk into the bake's collect.
         decoded = dpid.scaler.finish();
+        if (decoded && !sharpenFlush(dpid)) decoded = false;
         if (!decoded && sinkCtx.aborted) aborted = true;
       }
       if (sinkCtx.aborted) aborted = true;
@@ -992,8 +1091,9 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
       // rows always paint and the temp is consumed; the skip-publish below
       // stands.
       if (planDegraded && publishing) LOG_INF("TIMGE", "DPID degraded rung - painting uncached: %s", spec.href);
-      const DecodeResult remap = remapGrayToCache(spec, bake, writePath, publishing && !planDegraded, paint,
-                                                  paintToTarget, abortPoll, abortCtx, &cacheStreamOk);
+      const DecodeResult remap =
+          remapGrayToCache(spec, bake, writePath, publishing && !planDegraded, cacheIdentity(spec, qualityTone, clahe),
+                           paint, paintToTarget, abortPoll, abortCtx, &cacheStreamOk);
       if (remap == DecodeResult::Busy) return remap;  // foreground takeover: stay out of the way
       if (remap != DecodeResult::Ok) {
         // Phase-2 storage failure (gray re-open/read): still paint.
