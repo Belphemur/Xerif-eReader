@@ -175,7 +175,10 @@ TEST(HomeButtonValues, UpstreamAndForkIndicesAreStable) {
   // CreateClipping appends after every pre-existing value: saved settings.json
   // indices keep their meaning, only Count moves.
   EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::CreateClipping), 14);
-  EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::Count), 15);
+  // FileBrowser (upstream #4460) appends after CreateClipping: saved
+  // settings.json indices keep their meaning, only Count moves.
+  EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::FileBrowser), 15);
+  EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::Count), 16);
 }
 
 }  // namespace

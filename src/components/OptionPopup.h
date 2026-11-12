@@ -148,7 +148,8 @@ class OptionPopup {
       // Swipe pages the viewport by the render cap; the next render's clamp
       // corrects it if the panel actually fits fewer rows (as #4460 does).
       const int rows = static_cast<int>(MaxVisibleOptions);
-      if (scrollTo(scrollTop_.load(std::memory_order_acquire) + (swipe == MappedInputManager::SwipeDir::Up ? rows : -rows)))
+      if (scrollTo(scrollTop_.load(std::memory_order_acquire) +
+                   (swipe == MappedInputManager::SwipeDir::Up ? rows : -rows)))
         requestUpdate();
       return true;
     }
