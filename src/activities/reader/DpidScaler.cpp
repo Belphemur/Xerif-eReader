@@ -402,13 +402,22 @@ void DpidScaler::pass2Row(const int m) {
     uint64_t a = 0, fSum = 0;
     const int64_t e0q = edgeQ16(x, p_.srcW, p_.dstW);
     const int64_t e1q = edgeQ16(x + 1, p_.srcW, p_.dstW);
+    // Only source columns whose [px0, px1) intersects [e0q, e1q) contribute
+    // (every other visit computes cov == 0): px ∈ [e0q>>16, (e1q-1)>>16].
+    // Same accumulated terms in the same order — bit-identical, without the
+    // ~srcW/dstW× full-width walk the design doc measured at 0.33%
+    // contributing iterations (2026-11-09-ttf-image-dpid-clahe.md).
+    int pxFirst = static_cast<int>(e0q >> 16);
+    int pxLast = static_cast<int>((e1q - 1) >> 16);
+    if (pxFirst < 0) pxFirst = 0;
+    if (pxLast >= p_.srcW) pxLast = p_.srcW - 1;
     if (bandRows >= 0) {
       // Pre-fetched band: identical terms to the cover()/cover() walk, so
       // the uint64 sums stay bit-identical (visit order doesn't round).
       for (int b = 0; b < bandRows; ++b) {
         const uint8_t* srow = p2band_ + static_cast<size_t>(b) * p_.srcW;
         const uint64_t wy = p2wy_[b];
-        for (int px = 0; px < p_.srcW; ++px) {
+        for (int px = pxFirst; px <= pxLast; ++px) {
           const int64_t px0 = static_cast<int64_t>(px) * kQ16;
           const int64_t px1 = px0 + kQ16;
           const int64_t plo = px0 > e0q ? px0 : e0q;
@@ -434,7 +443,7 @@ void DpidScaler::pass2Row(const int m) {
         const uint64_t wy = static_cast<uint64_t>(yhi > ylo ? yhi - ylo : 0);
         if (wy == 0) continue;
         const uint8_t* srow = readRow(sy);
-        for (int px = 0; px < p_.srcW; ++px) {
+        for (int px = pxFirst; px <= pxLast; ++px) {
           const int64_t px0 = static_cast<int64_t>(px) * kQ16;
           const int64_t px1 = px0 + kQ16;
           const int64_t plo = px0 > e0q ? px0 : e0q;

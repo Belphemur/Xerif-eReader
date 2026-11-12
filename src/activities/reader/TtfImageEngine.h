@@ -62,6 +62,47 @@ struct ImageSpec {
   uint8_t deferrals = 0;    // heap/PSRAM gate retries before the job drops
 };
 
+// Centered aspect-preserving fit of a source image into a screen, the ONE
+// integer placement derivation (design 2026-11-08-ttf-image-contrast-and-fit.md
+// §7.2): the reader's page placements come from layout, the image viewer's
+// come from here. The expression sequence replicates the legacy viewer's
+// fitImage verbatim — float min of the two fit ratios and 1.0 (never
+// upscales), truncating scale, 1-clamps, screen clamps (belt-and-braces
+// against float rounding at the ratio boundary), centered origin.
+// srcW/srcH must be positive; non-positive input returns a 1x1 top-left
+// placement instead of the float-UB the raw formula would hit.
+struct Placement {
+  int16_t x = 0;
+  int16_t y = 0;
+  int16_t w = 0;
+  int16_t h = 0;
+};
+
+inline Placement fitPlacement(const int srcW, const int srcH, const int screenW, const int screenH) {
+  if (srcW <= 0 || srcH <= 0 || screenW <= 0 || screenH <= 0) {
+    Placement degenerate;
+    degenerate.w = 1;
+    degenerate.h = 1;
+    return degenerate;
+  }
+  const float scaleW = static_cast<float>(screenW) / static_cast<float>(srcW);
+  const float scaleH = static_cast<float>(screenH) / static_cast<float>(srcH);
+  float scale = scaleW < scaleH ? scaleW : scaleH;
+  if (scale > 1.0f) scale = 1.0f;
+  int w = static_cast<int>(static_cast<float>(srcW) * scale);
+  int h = static_cast<int>(static_cast<float>(srcH) * scale);
+  if (w < 1) w = 1;
+  if (w > screenW) w = screenW;
+  if (h < 1) h = 1;
+  if (h > screenH) h = screenH;
+  Placement p;
+  p.x = static_cast<int16_t>((screenW - w) / 2);
+  p.y = static_cast<int16_t>((screenH - h) / 2);
+  p.w = static_cast<int16_t>(w);
+  p.h = static_cast<int16_t>(h);
+  return p;
+}
+
 #if defined(CROSSPOINT_TTF_READER)
 
 // Flat tone-cache name (inside the book's ficache dir, one SdCardCacheStorage

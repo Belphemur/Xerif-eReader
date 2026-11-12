@@ -20,6 +20,7 @@ bool HalFile::testFailSync = false;
 int HalFile::failWriteAtCall = 0;
 int HalFile::writeCallCount = 0;
 int HalFile::failReadAtCall = 0;
+uint32_t HalFile::s_modificationTime = 0;
 int HalFile::readCallCount = 0;
 int HalStorage::failOpenForWriteAtCall = 0;
 int HalStorage::openForWriteCallCount = 0;

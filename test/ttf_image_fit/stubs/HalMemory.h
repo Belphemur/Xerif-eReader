@@ -25,4 +25,7 @@ inline HeapStats getPsramHeap() { return psramStats(); }
 inline void setPsramHeapStats(const HeapStats& stats) { psramStats() = stats; }
 
 inline HeapStats getInternalHeap() { return {64u * 1024 * 1024, 64u * 1024 * 1024, 0, 32u * 1024 * 1024}; }
+// The legacy converters' heap gates (Png/JpegToFramebufferConverter) read the
+// default heap; same generous stats so the probe/decodes pass on host.
+inline HeapStats getDefaultHeap() { return {32u * 1024 * 1024, 32u * 1024 * 1024, 0, 8u * 1024 * 1024}; }
 }  // namespace HalMemory

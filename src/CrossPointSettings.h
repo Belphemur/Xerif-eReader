@@ -479,8 +479,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // 2026-11-09-ttf-image-dpid-clahe.md §Contract 4). 0 = "Sharp": the DPID
   // detail-preserving resize only (the default — conservative). 1 =
   // "Enhanced": adds the CLAHE local-contrast pass after the resize. DPID
-  // is always on; the setting gates only CLAHE. JSON-only like
-  // imageDecodeQuality until the owner adds the menu row.
+  // is always on; the setting gates only CLAHE. SettingsList ENUM row —
+  // loaded and clamped by the generic loop.
   uint8_t pictureDetail = 0;
   // Tilt-based page turning (X3 only — requires QMI8658 IMU)
   uint8_t tiltPageTurn = TILT_OFF;
