@@ -2,22 +2,22 @@
 
 // TtfImageCache — host-testable core of the TTF image engine: the tone-cache
 // identity (cacheNameFor), validity check (hasValidCache), the streaming 2-bit
-// .pxc writer (ToneCacheWriter) and the Floyd–Steinberg 4-level bake. Only
-// depends on HalStorage/Logging, so the host suite exercises the exact code
-// the device runs (design docs/design/2026-11-07-ttf-image-engine.md §5.4).
-// The decode paths (SDK row render, converters, BMP row decoder) stay in
+// .pxc writer (ToneCacheWriter) and the tone bake. Only depends on
+// HalStorage/Logging, so the host suite exercises the exact code the device
+// runs (design docs/design/2026-11-07-ttf-image-engine.md §5.4). The decode
+// paths (SDK row render, converters, BMP row decoder) stay in
 // TtfImageEngine.cpp — they pull the render stack.
 
-#include <cmath>
-#include <cstdlib>
+#include <BitmapHelpers.h>  // the legacy AtkinsonDitherer (shared quantizer/diffusion)
+
 #include <cstring>
-#include <memory>
-#include <new>
 
 #include "Epub/converters/DitherUtils.h"
 #include "TtfImageEngine.h"
 
 #if defined(CROSSPOINT_TTF_READER)
+
+class GfxRenderer;  // paint target (pointer only — the render stack stays in TtfImageEngine.cpp)
 
 namespace ttfimg {
 
@@ -30,307 +30,52 @@ constexpr bool absoluteGrayImageRoute(const bool pageHasImages, const bool quali
   return pageHasImages && qualityTone && !deviceIsX3 && controllerUc8279 && absoluteSupported;
 }
 
-// Floyd–Steinberg error diffusion into the 4-level tone (§5.6). Error state
-// runs row-sequentially over IMAGE-LOCAL columns — never absolute panel
-// coordinates — so a completed .pxc encodes the image's tone alone and the
-// placement lives only in the cache identity (parity across worker and
-// foreground decodes, and across placements, follows from this).
-// ToneBake4 (design 2026-11-08 §5.2 + §2 adaptive bake): the quality path's
-// 4-level tone bake — per-image adaptive stretch, optional gamma stage,
-// exact Floyd–Steinberg diffusion and serpentine scanning.
-// Two phases (design §2.1, amendment 2):
-//   1. beginCollect(path) + collectRow(gray) per destination row, in raster
-//      order — a 256-bin u32 histogram accumulates while the raw
-//      8-bit gray rows append to the caller's .g temp; no tone is emitted.
-//   2. beginRemap() derives the map from the histogram (percentile clip
-//      1%/99% stretched to [0,255]; degenerate histograms fall back to the
-//      fixed contrast 1.3; the gamma stage defaults OFF — identity), resets
-//      the error state, and toneRow() bakes from the .g rows as before.
-// The gamma 2.2 + contrast 1.3 constants stay as the fallback/A-B reference
-// (the eink-image recipe is 1-bit-oriented: its brightening exists to push
-// tones toward a 1-bit dither threshold and collapses midtones on a 4-level
-// panel — the washed-out soak defect). The LUTs are built once (the doc's
-// "no runtime float" is the per-pixel path: pure integer LUT lookups and
-// fixed-point error diffusion); error state runs row-sequentially over
-// IMAGE-LOCAL columns — the FloydSteinberg4 invariant — so placement
-// independence and worker/foreground parity hold by construction.
-// Quantization is nearest-of-{0, 48, 112, 255} via the midpoints
-// {28, 78, 182} (iteration-3 owner audit 2026-11-11: calibrated to the X4
-// Pro UC8279 reflectance derived from the legacy BitmapHelpers path's
-// err targets {15, 35, 90, 210} × 255/210 — physical level 2 sits near
-// ~112, not 155, so midtone art maps onto the panel's own tones).
-// Near-white paper (mapped ≥ 240, the KCC-standard white-point clip) snaps
-// to level 3 with no diffusion: 8×8 DCT ringing (240..251) around black
-// text on white paper can no longer accumulate into dark dots.
-// The diffusion is the edge-aware hybrid (design 2026-11-11 amendment 7) in
-// exact 1/8-level units across the same six neighbors: smooth regions and
-// gentle gradients (edgeMag <= kEdgeSmooth) diffuse 8/8 — mass-conserving,
-// so subtle shading ramps reach the panel's lightest levels instead of
-// parking in the pure-Atkinson dead zone; moderate transitions keep 7/8;
-// sharp edges and strokes (edgeMag >= kEdgeSharp) drop to 6/8 Atkinson so
-// overshoot is damped at contours; a cross-cliff barrier (dxFwd >=
-// kEdgeBarrier) refuses the forward taps entirely so high-contrast strokes
-// never bleed error onto adjacent paper. The wider six-tap neighbor set
-// still kills the checkerboard worms and edge blobs the 100% Sierra-Lite
-// plane produced on flat midtones, and 1/8 shift-only terms keep the integer
-// plane exact.
+// ToneBake4 (design 2026-11-08 §5.2; legacy-BMP parity amendment 9): the
+// quality path's 4-level tone bake is the EXACT pixel transfer of the legacy
+// engine's AtkinsonDitherer (lib/GfxRenderer/BitmapHelpers.h,
+// originalThresholds=false) — the bake the owner approved on the X4 Pro for
+// baseline EPUB illustrations (calm woven shading, clean paper highlights,
+// crisp anti-aliased type):
+//   - identity 0..255 luma — no histogram, no percentile stretch, no
+//     gamma/contrast LUT (the legacy USE_BRIGHTNESS=false contract),
+//   - cutoffs {30, 55, 150} and error targets {15, 35, 90, 210} (target 210
+//     keeps highlight headroom, so paper tapers to clean white without a
+//     harsh snap or highlight speckle),
+//   - deterministic left-to-right 6/8 Atkinson diffusion — (adjusted −
+//     target) >> 3 into right, right+1, below-left, below, below-right and
+//     two rows down — over three int16 error rows of width+4, zero noise,
+//     zero serpentine.
+// The math is SHARED, not re-implemented (DRY): the bake embeds the legacy
+// ditherer class itself, and the parity pin test bakes synthetic reference
+// pages through both and asserts byte-identical 2-bit output. Single-pass by
+// construction: no whole-image statistics precede row 0, so the decode
+// streams destination rows straight through toneRow into the cache writer
+// and the paint (amendment 9 — the .g SD temp and the percentile two-phase
+// bake of the pre-parity iterations are gone). Error state still runs
+// row-sequentially over IMAGE-LOCAL columns, so a completed .pxc encodes the
+// image's tone alone and worker/foreground/placement parity holds by
+// construction.
 struct ToneBake4 : ToneBaker {
-  static constexpr int kGammaNum = 22;  // γ = kGammaNum/kGammaDen (§7)
-  static constexpr int kGammaDen = 10;
-  static constexpr bool kGammaEnabled = false;  // §2.2: stretch owns the range; device tune flips this
-  static constexpr int kContrastNum = 13;       // 1.3 (eink-image default), pivot 128
-  static constexpr int kContrastDen = 10;
-  // Atkinson plane (iteration-3 owner audit 2026-11-11): the plane holds
-  // error in exact 1/8-level units, so every distributed term is an integer
-  // (six neighbors at 1/8 each — 6/8 of the pixel's error spreads, 2/8 is
-  // absorbed; that absorption is what breaks the checkerboard worms).
-  // Two-slot right margin (xi = x + 2): the forward-2 term at the last
-  // column lands exactly on index w+3 — no per-pixel bounds checks.
-  // Percentile clip (blockiness design 2026-11-09): 0.5% / 99.5%. The old
-  // 1%/99% clip sat at gray ~62 on soft-shadow art, crushing every shadow
-  // below it to level 0 (the "blacks too deep" soak defect) while
-  // stretching the rest; 0.5% keeps midtone structure and still reaches
-  // true black/white where the art contains them.
-  static constexpr int kClipNum = 5;     // percentile clip out of kClipDen
-  static constexpr int kClipDen = 1000;  // => 0.5% / 99.5%
-  // Atkinson quantizer (X4 Pro panel-calibrated levels, white snap 240).
-  static constexpr uint8_t kLevels[4] = {0, 48, 112, 255};
-  static constexpr int kMids[3] = {28, 78, 182};  // nearest-level midpoints
-  static constexpr int kWhiteSnap = 240;          // mapped value that snaps to paper white
-  // Edge-aware hybrid gates (amendment 7): symmetric local gradient of the
-  // mapped value — max(|mv−nextMv|, |mv−prevMv|, |mv−upMv|) — picks the
-  // diffusion strength: <= 20 smooth (8/8), 21..55 mid (7/8), >= 56 sharp
-  // (6/8 Atkinson). dxFwd >= kEdgeBarrier additionally blocks the forward
-  // taps so ink-to-paper cliffs do not bleed error across the contour.
-  static constexpr int kEdgeSmooth = 20;
-  static constexpr int kEdgeSharp = 56;
-  static constexpr int kEdgeBarrier = 80;
-  // Small deterministic threshold dither ONLY in smooth regions: with 8/8
-  // mass conservation a noiseless synthetic vertical gradient can mode-lock
-  // into row-periodic patterns (the texture design's original defect).
-  // Suppressed at edges (edgeMag >= kEdgeSharp) so strokes/text carry zero
-  // threshold jitter; the jitter never enters errVal — the emitted tone
-  // stays unbiased and worker/foreground parity holds (pure (x,row) hash).
-  static constexpr int kSmoothNoiseAmp = 4;  // range -amp..amp-1
-
-  uint8_t gammaLut[256];
-  uint8_t contrastLut[256];
-  uint8_t mapLut[256];    // adaptive phase-2 map (stretch ⊙ gamma)
-  bool adaptive = false;  // toneRow uses mapLut once beginRemap() ran
-  // u32 bins: percentile targets are n·1%/n·99% of the FULL pixel count, so a
-  // bin must hold the whole image (a flat full-page fill would saturate u16
-  // and leave hi at 255 — the range expansion this bake exists to fix).
-  uint32_t hist[256];
-  uint32_t histCount = 0;
-  HalFile grayFile;  // phase-1 gray temp (see beginCollect)
-  char grayPathBuf[280] = {};
-  size_t grayPathLen = 0;
-  bool grayOpen = false;
-  bool grayFailed = false;         // sticky write failure (grayDone refuses)
-  std::unique_ptr<int32_t[]> err;  // error plane, eighth-level units
-  std::unique_ptr<int32_t[]> errNext;
-  std::unique_ptr<int32_t[]> errNext2;
-  // Causal vertical edge context (amendment 7): the mapped value of each
-  // column of the previous baked row — the third gradient term (dyUp) and
-  // the row-0 mirror invariant's reason dyUp vanishes there. One byte per
-  // column, written once per visited pixel, read on the next row.
-  std::unique_ptr<uint8_t[]> prevRowMv;
-  bool hasPrevRow = false;
-  int noiseAmp = kSmoothNoiseAmp;  // 0 = no threshold dither (mirror pins)
-  const int width;
-  bool reverse = false;  // serpentine: the current row scans right-to-left
-  int row = 0;           // baked row index
-
-  // The LUTs depend only on the constexpr gamma/contrast constants, but the
-  // gamma pass is soft-float (powf) — build both tables once and memcpy them
-  // per bake instead of 256 powf calls on every decode (amendment 7).
-  struct StaticLuts {
-    uint8_t gamma[256];
-    uint8_t contrast[256];
-    StaticLuts() {
-      for (int i = 0; i < 256; ++i) {
-        // eink-image's gamma pass: out = round(255 * (i/255)^(1/γ)).
-        const float corrected = powf(static_cast<float>(i) / 255.0f, static_cast<float>(kGammaDen) / kGammaNum);
-        int g = static_cast<int>(corrected * 255.0f + 0.5f);
-        if (g < 0) g = 0;
-        if (g > 255) g = 255;
-        gamma[i] = static_cast<uint8_t>(g);
-      }
-      for (int i = 0; i < 256; ++i) {
-        // eink-image's contrast pass as exact integers:
-        // ((v/255 − 1/2)·13/10 + 1/2)·255 = (26·v − 765)/20 — pivot 128
-        // fixed, endpoints clamp to 0/255.
-        int c = (26 * i - 765) / 20;
-        if (c < 0) c = 0;
-        if (c > 255) c = 255;
-        contrast[i] = static_cast<uint8_t>(c);
-      }
-    }
-  };
-  static const StaticLuts& luts() {
-    static const StaticLuts built;  // threadsafe init; build-time constants
-    return built;
-  }
-
-  explicit ToneBake4(const int w) : width(w) {
-    memcpy(gammaLut, luts().gamma, sizeof(gammaLut));
-    memcpy(contrastLut, luts().contrast, sizeof(contrastLut));
-    if (w > 0) {
-      err.reset(new (std::nothrow) int32_t[w + 4]);
-      errNext.reset(new (std::nothrow) int32_t[w + 4]);
-      errNext2.reset(new (std::nothrow) int32_t[w + 4]);
-      prevRowMv.reset(new (std::nothrow) uint8_t[w]);
-      if (err && errNext && errNext2) {
-        memset(err.get(), 0, (w + 4) * sizeof(int32_t));
-        memset(errNext.get(), 0, (w + 4) * sizeof(int32_t));
-        memset(errNext2.get(), 0, (w + 4) * sizeof(int32_t));
-      }
-      if (prevRowMv) memset(prevRowMv.get(), 0, static_cast<size_t>(w));
-    }
-    memset(hist, 0, sizeof(hist));
-    memset(mapLut, 0, sizeof(mapLut));  // valid only after beginRemap()
-  }
-  bool ok() const {
-    return err != nullptr && errNext != nullptr && errNext2 != nullptr && (width <= 0 || prevRowMv != nullptr);
-  }
-
-  // ── adaptive two-phase API (§2.1) ───────────────────────────────────────
-  // The gray temp is a raw row-major 8-bit stream (no header: the caller
-  // knows w×h from the spec). The bake owns the file handle between
-  // beginCollect and grayDone so every decoder routes through one writer.
-  bool beginCollect(const char* grayPath);
-  void collectRow(const uint8_t* gray) override;
-  // Closes the temp. false on a write/close failure — the caller drops the
-  // file and fails the decode; nothing valid can be produced from it.
-  bool grayDone();
-  void grayDiscard();  // close + remove (abort/failure path)
-  // Sticky phase-1 failure probe: true once a gray temp write failed. The
-  // row collectors stop feeding rows and the engine goes straight to the
-  // legacy paint pass instead of finishing a decode whose temp is dead.
-  bool grayWriteFailed() const override { return grayFailed; }
-  const char* grayPath() const { return grayPathBuf; }
-  // Percentiles → mapLut, error state reset. Pure integer; deterministic.
-  void beginRemap();
-  // Storage-failure fallback: reset the histogram, then beginRemap() — the
-  // deterministic fixed-contrast map for a paint-only legacy pass.
-  void beginLegacyFallback();
-
-  // x is image-local (0-based). `reverseScan` selects the mirrored kernel:
-  // a serpentine row is VISITED in its scan direction, so the horizontal
-  // term always lands on the next-visited pixel (2/4 to x+1 ascending,
-  // to x−1 descending). Returns the quantized 4-level tone.
-  // Mapped tone of one source pixel (the LUT chain the bake quantizes).
-  int mapv(const uint8_t gray) const { return adaptive ? mapLut[gray] : contrastLut[gammaLut[gray]]; }
-
-  // `srcRow` supplies the source-gray context for the symmetric local
-  // gradient (next/next2/prev along the scan direction, mapped). nullptr =
-  // the single-pixel ToneBaker::tone() path: the pixel is its own neighbor,
-  // so every gradient term is 0 and the pixel takes the smooth 8/8 kernel —
-  // the virtual interface stays unchanged for legacy callers.
-  uint8_t toneDir(const int x, const int gray, const bool reverseScan, const uint8_t* srcRow = nullptr) {
-    const int mv = mapv(static_cast<uint8_t>(gray));
-    const int d = reverseScan ? -1 : 1;
-    // Symmetric local gradient (amendment 7). Clamping the neighbor index
-    // to the row keeps every term a real mapped difference; on row 0
-    // (hasPrevRow false) dyUp is 0, which is exactly what makes the
-    // mirror-symmetric row-0 bake byte-identical forward vs reverse.
-    const int nextX = (x + d >= 0 && x + d < width) ? (x + d) : x;
-    const int next2X = (x + 2 * d >= 0 && x + 2 * d < width) ? (x + 2 * d) : nextX;
-    const int prevX = (x - d >= 0 && x - d < width) ? (x - d) : x;
-    const int nextMv = srcRow != nullptr ? mapv(srcRow[nextX]) : mv;
-    const int next2Mv = srcRow != nullptr ? mapv(srcRow[next2X]) : mv;
-    const int prevMv = srcRow != nullptr ? mapv(srcRow[prevX]) : mv;
-    const int upMv = hasPrevRow ? static_cast<int>(prevRowMv[x]) : mv;
-    const int dxFwd = mv > nextMv ? (mv - nextMv) : (nextMv - mv);
-    const int dxFwd2 = mv > next2Mv ? (mv - next2Mv) : (next2Mv - mv);
-    const int dxBack = mv > prevMv ? (mv - prevMv) : (prevMv - mv);
-    const int dyUp = mv > upMv ? (mv - upMv) : (upMv - mv);
-    int edgeMag = dxFwd > dxBack ? dxFwd : dxBack;
-    if (dyUp > edgeMag) edgeMag = dyUp;
-    // Every visited pixel seeds the next row's vertical context (the white
-    // snap below returns early, so write before both exits).
-    if (prevRowMv != nullptr) prevRowMv[x] = static_cast<uint8_t>(mv);
-    // White-paper snap: near-pure paper emits level 3, zeroes the slot and
-    // diffuses nothing — the white field carries no error and stays clean.
-    // Snap 240 (KCC-standard clip): 8×8 DCT ringing (240..251) around black
-    // text on white paper can no longer accumulate into dark dots.
-    if (mv >= kWhiteSnap) {
-      err[x + 2] = 0;
-      return 3;
-    }
-    // Consume the slot: e8 is eighth-levels; e the rounded whole level.
-    const int e8 = err[x + 2];
-    err[x + 2] = 0;
-    const int e = e8 >= 0 ? ((e8 + 4) >> 3) : -(((4 - e8) >> 3));
-    const int rem8 = e8 - (e << 3);  // exact residue, eighth-levels (-3..+4)
-    int v = mv + e;
-    if (v < 0) v = 0;
-    if (v > 255) v = 255;
-    // Smooth-region threshold dither (never on edges, never in the error):
-    // breaks row-periodic mode-locking on synthetic gradients; the hash is
-    // a pure function of (x, row), so runs stay byte-identical.
-    int jitter = 0;
-    if (noiseAmp > 0 && edgeMag < kEdgeSharp) {
-      uint32_t h = (static_cast<uint32_t>(x) + 1u) * 374761393u + (static_cast<uint32_t>(this->row) + 1u) * 668265263u;
-      h = (h ^ (h >> 13)) * 1274126177u;
-      const uint32_t span = static_cast<uint32_t>(2 * noiseAmp);  // power of two
-      jitter = static_cast<int>((h >> 17) & (span - 1u)) - noiseAmp;
-    }
-    const int veff = v + jitter;
-    int t = 3;
-    if (veff < kMids[0])
-      t = 0;
-    else if (veff < kMids[1])
-      t = 1;
-    else if (veff < kMids[2])
-      t = 2;
-    const int errVal = v - static_cast<int>(kLevels[t]);  // eighth-level units
-    // Edge-aware hybrid emission (amendment 7). Six taps, eighth-level
-    // units: smooth 8/8 (2/8 forward + the consume residue rounding the
-    // plane back to exact mass, 2/8 below, 1/8 elsewhere), mid 7/8, sharp
-    // 6/8 Atkinson. The forward taps respect the cross-cliff barrier.
-    const bool smooth = edgeMag <= kEdgeSmooth;
-    const bool mid = !smooth && edgeMag < kEdgeSharp;
-    const int xi = x + 2;
-    if (dxFwd < kEdgeBarrier) {
-      err[xi + d] += smooth ? (2 * errVal + rem8) : (mid ? (2 * errVal) : errVal);
-    }
-    if (dxFwd < kEdgeBarrier && dxFwd2 < kEdgeBarrier) {
-      err[xi + 2 * d] += errVal;
-    }
-    errNext[xi - d] += errVal;
-    errNext[xi] += smooth ? (2 * errVal) : errVal;
-    errNext[xi + d] += errVal;
-    errNext2[xi] += errVal;
-    return static_cast<uint8_t>(t);
-  }
-  // ToneBaker's forward kernel — kept for ascending-x callers and the tests;
-  // the quality decodes use toneRow(). Single-pixel: no row context.
-  uint8_t tone(const int x, const int gray) override { return toneDir(x, gray, false); }
-
-  // Row bake (the serpentine contract): visits even rows ascending and odd
-  // rows descending so the mirrored kernel's horizontal term always lands
-  // on the next-visited pixel, and advances the error state itself.
+  explicit ToneBake4(const int w) : width(w), ditherer_(w) {}
+  bool ok() const { return ditherer_.isValid(); }
+  // Error-state reset for the re-decode paint fallbacks (storage/decode
+  // failure doctrine): a fallback repaint must start from a clean plane —
+  // rows may have been baked before the failure.
+  void resetError() { ditherer_.reset(); }
+  // x is image-local (0-based). Returns the quantized 4-level tone.
+  uint8_t tone(const int x, const int gray) override { return ditherer_.processPixel(gray, x); }
+  void nextRow() override { ditherer_.nextRow(); }
+  // Row bake: visits the row left-to-right (the legacy scan — every row,
+  // non-serpentine) and advances the error state itself.
   void toneRow(const uint8_t* gray, uint8_t* tones) override {
     if (!ok() || width <= 0) return;
-    const bool rev = reverse;
-    for (int i = 0; i < width; ++i) {
-      const int x = rev ? (width - 1 - i) : i;
-      tones[x] = toneDir(x, gray[x], rev, gray);
-    }
-    nextRow();
+    for (int x = 0; x < width; ++x) tones[x] = ditherer_.processPixel(gray[x], x);
+    ditherer_.nextRow();
   }
-  void nextRow() override {
-    if (err == nullptr || errNext == nullptr || errNext2 == nullptr) return;
-    // Rotate: err ← errNext ← errNext2 ← zero. Swapping the plane pointers
-    // avoids the copy; the third plane is zeroed in place for the new tail.
-    err.swap(errNext);
-    errNext.swap(errNext2);
-    memset(errNext2.get(), 0, (width + 4) * sizeof(int32_t));
-    hasPrevRow = true;
-    reverse = !reverse;
-    ++row;
-  }
+  const int width;
+
+ private:
+  ::AtkinsonDitherer ditherer_;
 };
 
 // Retained verbatim for A/B on device and as the revert switch's reference
@@ -409,6 +154,35 @@ struct ToneCacheWriter {
   void abort();
 };
 
+// The single-pass bake sink the engine feeds every decoder's destination
+// rows through (legacy-BMP parity amendment 9): toneRow → cache row →
+// paint, in the scaler's raster-order emission (each row exactly once —
+// bufferless Sharp streaming at band completion, CLAHE after finish()'s
+// emit walk). The writer detaches mid-decode on a degraded rung (never
+// publish) or a failed row write (keep painting); `paint` is null for
+// worker cache-only jobs. Shared by the JPEG/PNG SDK decode, the GIF
+// converter pipeline, the BMP row decode (decodeBmpRows) and the re-decode
+// paint fallback — worker/foreground cache parity is this one sink.
+struct BakeSinkCtx {
+  ToneBake4* bake = nullptr;
+  const ImageSpec* spec = nullptr;
+  ToneCacheWriter* writer = nullptr;  // active cache stream; nullptr = cacheless
+  GfxRenderer* paint = nullptr;       // nullptr = worker leg (paintToTarget false)
+  uint8_t* toneRow = nullptr;         // [spec->w]
+  bool (*abortPoll)(void* ctx) = nullptr;
+  void* abortCtx = nullptr;
+  bool aborted = false;
+
+  // Detach the cache stream on a degraded decode: the partial .t (the
+  // identity header and any rows already streamed) is removed, nothing
+  // further is written or published.
+  void detachWriter() {
+    if (writer == nullptr) return;
+    writer->abort();
+    writer = nullptr;
+  }
+};
+
 // Flat tone-cache name (inside the book's ficache dir, one SdCardCacheStorage
 // validName blob). Keyed by the generation, the placement and the tone
 // policy: a layout change or a policy flip picks a fresh file; stale ones
@@ -421,78 +195,6 @@ bool cacheNameFor(const ImageSpec& spec, const char* dir, bool qualityTone, bool
 // that EXISTS but fails the identity/dims check is removed (regenerated by
 // the next decode).
 bool hasValidCache(const ImageSpec& spec, const char* dir, bool qualityTone, bool clahe);
-
-// Halo-free clamped dark-stroke sharpen core (the owner's
-// sharpenRowHaloFree, fidelity campaign 2026-11-10; iteration-3 owner audit
-// 2026-11-11): one row triple in, one row out, pure integer. A 3×3 tent blur
-// (separable (1,2,1)/4 ⊗ (1,2,1)/4, rounded >>4) gives the high-pass detail;
-// a ±6 coring deadzone leaves smooth gradients and 8×8 JPEG mosquito ripple
-// untouched; the detail is restored asymmetrically (dark strokes 1.25× —
-// after a ~2× box downscale a 1.5 px stroke's center IS the destination
-// minimum, so it must be allowed to recover toward ink — bright side 0.25×).
-// The bright side is clamped strictly to the 3×3 max (zero white halos); the
-// dark side is NOT clamped to the 3×3 min — that clamp is what kept thin
-// strokes at their diluted value — it is bounded instead by the local
-// contrast span (darkFloor = mn − (mx − mn)), so low-contrast shading can
-// never crush below its own span. Border rows replicate: pass the same
-// pointer for prev/next at the frame edges.
-constexpr int kSharpenDarkQ4 = 20;  // dark-stroke gain, Q4 (20/16 = 1.25)
-constexpr int kSharpenLightQ4 = 4;  // bright-side gain, Q4 (4/16 = 0.25)
-constexpr int kSharpenCoring = 6;   // |detail| deadzone (≥ JPEG ±6 ripple)
-inline void sharpenRowHaloFree(const uint8_t* prev, const uint8_t* self, const uint8_t* next, const int w,
-                               uint8_t* out) {
-  for (int x = 0; x < w; ++x) {
-    const int xl = x > 0 ? x - 1 : 0;
-    const int xr = x < w - 1 ? x + 1 : w - 1;
-    const int orig = self[x];
-    int outv = orig;
-    // 3×3 tent, (1,2,1) ⊗ (1,2,1) / 16 — exact integer weights, +8 rounds.
-    const int h0 = prev[xl] + 2 * prev[x] + prev[xr];
-    const int h1 = self[xl] + 2 * self[x] + self[xr];
-    const int h2 = next[xl] + 2 * next[x] + next[xr];
-    const int blur = (h0 + 2 * h1 + h2 + 8) >> 4;
-    int detail = orig - blur;
-    if (detail < -kSharpenCoring || detail > kSharpenCoring) {
-      // Local 3×3 [min,max] of the ORIGINAL neighborhood.
-      int mn = 255;
-      int mx = 0;
-      for (const uint8_t* r : {prev, self, next}) {
-        const int a = r[xl];
-        const int b = r[x];
-        const int c = r[xr];
-        if (a < mn) mn = a;
-        if (a > mx) mx = a;
-        if (b < mn) mn = b;
-        if (b > mx) mx = b;
-        if (c < mn) mn = c;
-        if (c > mx) mx = c;
-      }
-      if (detail > 0) {
-        detail -= kSharpenCoring;
-        outv = orig + ((detail * kSharpenLightQ4 + 8) >> 4);
-        if (outv > mx) outv = mx;  // strict upper clamp = ZERO white halos
-      } else {
-        detail += kSharpenCoring;
-        outv = orig + ((detail * kSharpenDarkQ4 - 8) >> 4);
-        // Do NOT clamp to mn: after a ~2× box downscale a 1.5 px stroke's
-        // center IS mn, so clamping ≥ mn would disable thin-stroke
-        // darkening entirely. Bound the pull by the local contrast span:
-        const int darkFloor = mn - (mx - mn);
-        const int floor0 = darkFloor > 0 ? darkFloor : 0;
-        if (outv < floor0) outv = floor0;
-      }
-    }
-    out[x] = static_cast<uint8_t>(outv);
-  }
-}
-
-// Gate: genuine downscales only — at 1:1 and upscale the tent bleeds ink
-// into flat margins (the tentPreblurOk finding). Same shape as the old
-// tentPreblurOk, either axis: a fit on one axis with a >1.25x squeeze on
-// the other is still a downscale decode.
-constexpr bool sharpenOk(const int srcW, const int srcH, const int dstW, const int dstH) {
-  return dstW > 0 && dstH > 0 && (srcW * 4 > dstW * 5 || srcH * 4 > dstH * 5);
-}
 
 // Header check shared by hasValidCache and the paint-side blit: the in-file
 // identity matches, dims within ±1 of the placement, payload covers every row.

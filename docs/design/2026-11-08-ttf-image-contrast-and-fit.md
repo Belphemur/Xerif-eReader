@@ -818,3 +818,108 @@ Three review threads on the amendment-7 heads, all verified real and fixed:
   full-decode→DC-fallback path; the worker leg pins `Skip` with no
   cache/temp debris, the foreground control leg pins the paint-uncached
   `Ok` with no publish.
+
+##### Amendment 9 (2026-11-11, legacy-BMP parity — the owner's 00004/00005/00006 directive)
+
+On physical X4 Pro hardware the legacy BMP engine
+(`JpegToBmpConverter` + `BitmapHelpers::AtkinsonDitherer`,
+`originalThresholds=false`) renders the baseline EPUB illustrations
+(`00005.jpeg`, `00006.jpeg`) with exactly the tonal balance, calm woven
+shading, clean paper highlights and crisp anti-aliased typography the owner
+wants. The only reason the legacy engine fails on `00004.jpeg` is that
+`JPEGDEC` forces progressive JPEGs to 1/8-scale DC-only thumbnails
+(`JpegToBmpConverter.cpp`'s decode gate). The quality path already decodes
+everything at full resolution — the five processing differences that made
+it diverge from the legacy look are removed here; full-res progressive and
+baseline decoding, the DPID fractional-box downscale, the degradation
+ladder, the `.pxc` caching, the atomic publish and the worker contracts of
+amendments 1–8 are untouched.
+
+1. **Exact legacy quantizer + identity tone map** (DRY: shared, not
+   copied). `ToneBake4` now embeds the legacy engine's own
+   `AtkinsonDitherer` (lib/GfxRenderer/BitmapHelpers.h,
+   `originalThresholds=false`) and delegates every pixel to it:
+   identity `0..255` luma (no histogram, no percentile stretch, no
+   gamma/contrast LUT — the legacy `USE_BRIGHTNESS=false` contract),
+   cutoffs `{30, 55, 150}`, error targets `{15, 35, 90, 210}` (target 210
+   keeps highlight headroom so paper ≥ ~203 tapers to clean white), the
+   deterministic left-to-right `6/8` Atkinson kernel
+   (`(adjusted − target) >> 3` into right, right+1, below-left, below,
+   below-right and two rows down) over three `int16` error rows of
+   width+4, zero noise, zero serpentine. The edge-aware hybrid of
+   amendment 7 (8/8→7/8→6/8 gating, cross-cliff barrier, smooth-region
+   threshold jitter, `prevRowMv` context) and the adaptive two-phase bake
+   (amendment 2) are gone. Host pin:
+   `LegacyAtkinsonParityOnSampleImage.*` bakes synthetic reference pages
+   (a 00005-shaped 90..250 wall fade, a 00006-shaped white page with
+   0..160 anti-aliased strokes over 255 paper, midtone fields bracketing
+   every cutoff) through both engines and asserts byte-identical 2-bit
+   output; the flat-field pins are measured from the reference
+   (e.g. flat 100 → solid level 2, flat 60 → 43% level 2 duty, flat
+   202..255 → solid level 3). Heap note: the embedded ditherer allocates
+   its three error rows with `makeUniqueNoThrow` — the same bounded,
+   transient ~2.9 KiB block the legacy engine allocates per render, and
+   ~half of the pre-parity bake's `int32` error planes.
+
+2. **Single-pass stream — the `.g` gray temp is gone.** With the identity
+   map there are no whole-image statistics before row 0, so
+   `decodeAndCache` streams each decoder's FINAL destination rows straight
+   through the shared `BakeSinkCtx` (`toneRow` → `ToneCacheWriter::writeRow`
+   → `paintToneRow`) — zero `.g` SD writes/reads per image, and the
+   percentile two-phase flow (collect → gray temp → remap) plus
+   `remapGrayToCache` are deleted. Ordering contract (verified in
+   DpidScaler.cpp): the scaler emits each destination row exactly once in
+   raster order — bufferless Sharp plans at band completion, Enhanced/CLAHE
+   after `finish()`'s emit walk (CLAHE runs on the resident destination
+   image before the walk) — so the bake's error state advances cleanly for
+   all four decoders (JPEG/PNG via `renderSourceRows`, the GIF converter's
+   raw-row pass-through, the BMP random-access decoder). The
+   paint-uncached storage doctrine survives at the writer: a failed cache
+   open paints without a cache, a failed row write detaches the writer and
+   every remaining row still paints (pinned by the renamed
+   `CacheOpenFailureStillPaintsTheImage` /
+   `CacheMidStreamWriteFailureStillPaintsTheImage`, write count exactly
+   header + two rows); the old phase-2 gray re-open/read failure cases are
+   structurally gone (nothing is re-read) and their tests retired. The
+   degraded-worker contracts of amendments 7–8 stand unchanged (worker
+   `Failed`/`Skip`, foreground paint-uncached `Ok`), and every degrade fact
+   (ladder stepdown, DC fallback, scale-reduced retry) is now applied at
+   the dims hook BEFORE the first row: `detachWriterIfDegraded` aborts the
+   partial `.t` there, so a degraded decode never writes or publishes a
+   cache.
+
+3. **No post-resize sharpen.** `sharpenRowHaloFree`, `sharpenOk`, the
+   4-row ring block and the one-row emit delay are removed (helpers, DpidCtx
+   state, `sharpenFeed/Emit/Flush` and the six Sharpen host tests with
+   them): downscaled JPEGs get the clean fractional box area-averaging the
+   legacy `JpegToBmpConverter` uses, with no 8×8 DCT ring amplification
+   around text (the 00006 defect class). The removed coring deadzone was
+   also what masked JPEG ripple — the legacy engine never sharpens, and
+   parity leaves no room for a stage the reference does not have. A side
+   effect: the sharpen ring's out-of-order pass-through degrade disappears,
+   so the sink sees strictly ordered rows.
+
+4. **Gray waveform route verified — already the legacy arm, no code
+   change.** The legacy bitmap reader refreshes an image page on the X4
+   Pro (UC8279) with the ABSOLUTE gray waveform:
+   `EpubReaderActivity.cpp` `absoluteImageGrayscale = pageHasImages &&
+   !deviceIsX3 && controller==UC8279 && absolute supported` →
+   `displayGrayscaleBase(GrayscaleMode::Absolute, baseMode)` with
+   `baseMode = pagesUntilFullRefresh <= 1 ? HALF_REFRESH : FAST_REFRESH`,
+   then the MSB/LSB plane walks (the renderer's `absoluteGrayPlanes` set
+   by the Absolute mode) and `displayGrayBuffer()` before `setRenderMode(BW)`.
+   The TTF image page's `renderTtfImageGrayAbsolute` is that same arm
+   verbatim — same predicate shape (`absoluteGrayImageRoute`, §5.1), same
+   base-mode rule, same plane walks, same display order ("the legacy arm's
+   exact order" comment in the code) — so the 2-bit levels `{0,1,2,3}`
+   drive identical physical reflectance on the X4 Pro glass in both
+   engines. The legacy quantizer's `{30,55,150}`/`{15,35,90,210}` tuning
+   was measured against exactly this waveform on X4/X4 Pro; on Overlay-mode
+   panels both engines likewise share the differential route. The brief's
+   premise that the legacy engine paints image pages with `absolute=false`
+   applies only to non-UC8279 (Overlay) panels — on the X4 Pro target the
+   routes already agree.
+
+5. **Cache letters.** Sharp/Enhanced bump `'c'`/`'d'` → `'e'`/`'f'`
+   (sweeping the amendment-7 bakes; never shipped outside PR #316 review
+   builds), `'l'` untouched.

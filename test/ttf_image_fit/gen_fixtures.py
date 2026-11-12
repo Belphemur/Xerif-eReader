@@ -201,7 +201,10 @@ def write_gif(path):
 write_gif(os.path.join(OUT, "dark.gif"))
 
 
-def write_small_bmp(path, w=64, h=48, gray=137):
+def write_small_bmp(path, w=64, h=48, gray=60):
+    # gray 60: the legacy Atkinson bake dithers levels 1/2 (both render dark
+    # in BW), so the placement-coverage pins measure the decode's box, not a
+    # tone choice (137 used to bake solid dark under the pre-parity bake).
     # 24-bit bottom-up BMP — a real BMP entry for the EPUB fixture.
     row_bytes = (w * 3 + 3) // 4 * 4
     payload = 40 + row_bytes * h

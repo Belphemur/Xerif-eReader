@@ -21,6 +21,7 @@
 #include <gtest/gtest.h>
 #include <render/ImageRenderer.h>
 
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -36,15 +37,12 @@
 #include "TtfImageCache.h"
 #include "TtfImageEngine.h"
 
-// decodeBmpRows and remapGrayToCache are engine-internal (decodeAndCache's
-// BMP branch); the suite drives them directly so BMP coverage needs no Epub.
+// decodeBmpRows is engine-internal (decodeAndCache's BMP branch); the suite
+// drives it directly so BMP coverage needs no Epub. Rows stream single-pass
+// through a BakeSinkCtx (TtfImageCache.h) — tone -> cache row -> paint.
 namespace ttfimg {
-DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, size_t size, ToneBake4* bake,
-                           GfxRenderer* legacyPaint, bool (*abortPoll)(void*), void* abortCtx, bool clahe,
+DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, size_t size, BakeSinkCtx* sink, bool clahe,
                            bool* degradedOut);
-DecodeResult remapGrayToCache(const ImageSpec& spec, ToneBake4& bake, const char* writePath, bool caching,
-                              const CacheIdentity& cacheId, GfxRenderer* paint, bool paintToTarget,
-                              bool (*abortPoll)(void*), void* abortCtx, bool* cacheStreamOk);
 }  // namespace ttfimg
 
 uint32_t g_fakeMillis = 0;
@@ -169,21 +167,20 @@ std::vector<uint8_t> readFixtureFile(const char* path) {
   return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 
-// Runs the production two-phase BMP flow for a paint-only decode: phase 1
-// collects into a gray temp (in-memory storage), phase 2 remaps and paints
-// (caching=false — no cache side effects).
-void bmpDecodeRemapPaint(FakeRenderer& r, const ttfimg::ImageSpec& spec, const std::vector<uint8_t>& bmp) {
+// Runs the production single-pass BMP flow for a paint-only decode: rows
+// stream through the bake's toneRow straight to the paint (no writer —
+// no cache side effects).
+void bmpDecodePaint(FakeRenderer& r, const ttfimg::ImageSpec& spec, const std::vector<uint8_t>& bmp) {
   ttfimg::ToneBake4 bake(spec.w);
   ASSERT_TRUE(bake.ok());
-  ASSERT_TRUE(bake.beginCollect("/t/paint_case.g"));
-  const auto res = ttfimg::decodeBmpRows(spec, bmp.data(), bmp.size(), &bake, /*legacyPaint=*/nullptr, nullptr, nullptr,
-                                         false, nullptr);
+  std::vector<uint8_t> toneRow(static_cast<size_t>(spec.w), 0);
+  ttfimg::BakeSinkCtx sink;
+  sink.bake = &bake;
+  sink.spec = &spec;
+  sink.paint = &r;
+  sink.toneRow = toneRow.data();
+  const auto res = ttfimg::decodeBmpRows(spec, bmp.data(), bmp.size(), &sink, false, nullptr);
   ASSERT_EQ(res, ttfimg::DecodeResult::Ok);
-  ASSERT_TRUE(bake.grayDone());
-  ASSERT_EQ(ttfimg::remapGrayToCache(spec, bake, "/t/paint_case.pxc", /*caching=*/false,
-                                     ttfimg::cacheIdentity(spec, true, false), &r,
-                                     /*paintToTarget=*/true, nullptr, nullptr, nullptr),
-            ttfimg::DecodeResult::Ok);
 }
 
 // ── the regression: paint bounds in portrait ────────────────────────────────
@@ -195,7 +192,7 @@ TEST(ImageFitPaint, BmpCoversBoxBelowThePhysicalPanelHeight) {
   // space; getDisplayHeight() would clip it all).
   const auto bmp = makeBmp(320, 480, 10);
   const auto spec = makeSpec(100, 600, 100, 150);
-  bmpDecodeRemapPaint(r, spec, bmp);
+  bmpDecodePaint(r, spec, bmp);
   expectBoxCoverage(r, spec);
 }
 
@@ -205,7 +202,7 @@ TEST(ImageFitPaint, BmpCoversBoxStraddlingThePhysicalPanelHeight) {
   // first 40 rows and the cache never noticed.
   const auto bmp = makeBmp(320, 480, 10);
   const auto spec = makeSpec(100, 440, 100, 150);
-  bmpDecodeRemapPaint(r, spec, bmp);
+  bmpDecodePaint(r, spec, bmp);
   expectBoxCoverage(r, spec);
 }
 
@@ -215,7 +212,7 @@ TEST(ImageFitPaint, BmpCoversNearOneToOneBox) {
   // painted 1:1 — still below the physical height.
   const auto bmp = makeBmp(100, 150, 10);
   const auto spec = makeSpec(50, 620, 100, 150);
-  bmpDecodeRemapPaint(r, spec, bmp);
+  bmpDecodePaint(r, spec, bmp);
   expectBoxCoverage(r, spec);
 }
 
@@ -781,140 +778,93 @@ TEST(ImageFitGif, ConverterCoversExactDimBoxBelowThePhysicalPanelHeight) {
   expectBoxCoverage(r, spec);
 }
 
-// ── adaptive bake pins (design 2026-11-08 §2, amendment 2) ──────────────────
-// Byte-exact, deterministic, pure-integer: the histogram → percentile →
-// stretch map, the degenerate fallback, and the phase-1 gray temp stream.
+// ── single-pass cache-stream pins (legacy parity, amendment 9) ──────────────
 
-TEST(AdaptiveBake, MidtoneStaysMidtoneWhenRangeIsFull) {
-  // The defect-A signature pin: the old fixed map sent source 128 → 176
-  // (gamma 2.2 brightening) → 190 (contrast) before quantization, collapsing
-  // midtones into the panel's two lightest levels. A near-uniform histogram
-  // (4 px per bin, N=1024) clips at lo=1 / hi=253 and the stretch keeps the
-  // midtone at 128 — no brightening anywhere in the map.
-  ttfimg::ToneBake4 bake(4);
-  ASSERT_TRUE(bake.ok());
-  ASSERT_TRUE(bake.beginCollect("/t/bake_full.g"));
-  for (int v = 0; v < 256; ++v) {
-    const uint8_t row[4] = {static_cast<uint8_t>(v), static_cast<uint8_t>(v), static_cast<uint8_t>(v),
-                            static_cast<uint8_t>(v)};
-    bake.collectRow(row);
-  }
-  ASSERT_TRUE(bake.grayDone());
-  bake.beginRemap();
-  // 0.5%/99.5% clip (blockiness design 2026-11-09): lo: cum ≥ 1024·5/1000 = 5
-  // first at v=1 (8). hi: cum ≥ 1024·995/1000 = 1018 first at v=254 (1020).
-  // Stretch [1,254] → [0,255].
-  EXPECT_EQ(bake.mapLut[1], 0);
-  EXPECT_EQ(bake.mapLut[254], 255);
-  EXPECT_EQ(bake.mapLut[128], static_cast<uint8_t>((128 - 1) * 255 / 253));  // == 128
-  EXPECT_EQ(bake.mapLut[128], 128);
-  EXPECT_EQ(bake.mapLut[2], 1);      // first in-range step above black
-  EXPECT_EQ(bake.mapLut[0], 0);      // below lo clamps to black
-  EXPECT_EQ(bake.mapLut[253], 253);  // one below hi: just under the top step
-}
-
-TEST(AdaptiveBake, PaleBandStretchesToTheFullRange) {
-  // The "Insert" case: a low-contrast scan concentrated in a bright band
-  // [50,128], with dust outliers at 0 and 255 that the percentile clip must
-  // ignore. Rows of 100 pixels, one row per band value (50..127), then an
-  // outlier row and one more all-128 row.
-  ttfimg::ToneBake4 bake(100);
-  ASSERT_TRUE(bake.ok());
-  ASSERT_TRUE(bake.beginCollect("/t/bake_pale.g"));
-  std::vector<uint8_t> row(100);
-  for (int v = 50; v <= 127; ++v) {
-    std::fill(row.begin(), row.end(), static_cast<uint8_t>(v));
-    bake.collectRow(row.data());
-  }
-  std::fill(row.begin(), row.end(), static_cast<uint8_t>(128));
-  bake.collectRow(row.data());
-  row[0] = 0;
-  row[1] = 255;
-  bake.collectRow(row.data());
-  ASSERT_TRUE(bake.grayDone());
-  bake.beginRemap();
-  // N=8000: lo target = 80 → cum(0)=1, cum(50)=101 ≥ 80 → lo=50 (the lone 0
-  // is clipped). hi target = 7920 → cum(127)=7801, cum(128)=8001 ≥ 7920 →
-  // hi=128 (the lone 255 is clipped). Stretch [50,128] → [0,255].
-  EXPECT_EQ(bake.mapLut[50], 0);
-  EXPECT_EQ(bake.mapLut[128], 255);
-  EXPECT_EQ(bake.mapLut[89], static_cast<uint8_t>((89 - 50) * 255 / 78));
-  EXPECT_EQ(bake.mapLut[0], 0);      // clipped outlier → black
-  EXPECT_EQ(bake.mapLut[255], 255);  // clipped outlier → white
-}
-
-TEST(AdaptiveBake, DegenerateHistogramFallsBackToFixedContrast) {
-  // A flat scan (single tone) has no range to stretch: the §2.1 fallback is
-  // the fixed contrast 1.3 map — without gamma.
-  ttfimg::ToneBake4 bake(8);
-  ASSERT_TRUE(bake.ok());
-  ASSERT_TRUE(bake.beginCollect("/t/bake_flat.g"));
-  const uint8_t row[8] = {128, 128, 128, 128, 128, 128, 128, 128};
-  for (int i = 0; i < 4; ++i) bake.collectRow(row);
-  ASSERT_TRUE(bake.grayDone());
-  bake.beginRemap();
-  for (int i = 0; i < 256; ++i) {
-    int c = (26 * i - 765) / 20;
-    if (c < 0) c = 0;
-    if (c > 255) c = 255;
-    ASSERT_EQ(bake.mapLut[i], c) << "i=" << i;
-  }
-}
-
-TEST(AdaptiveBake, GrayTempStreamsEveryRowByteExact) {
-  auto& storage = HalStorage::getInstance();
-  storage.resetFiles();
-  ttfimg::ToneBake4 bake(6);
-  ASSERT_TRUE(bake.ok());
-  ASSERT_TRUE(bake.beginCollect("/t/bake_stream.g"));
-  std::vector<std::vector<uint8_t>> rows;
-  for (int r = 0; r < 5; ++r) {
-    std::vector<uint8_t> row(6);
-    for (int x = 0; x < 6; ++x) row[x] = static_cast<uint8_t>(r * 40 + x);
-    rows.push_back(row);
-    bake.collectRow(row.data());
-  }
-  ASSERT_TRUE(bake.grayDone());
-  const auto& data = storage.files["/t/bake_stream.g"];
-  ASSERT_EQ(data.size(), 30u);
-  for (int r = 0; r < 5; ++r) {
-    EXPECT_EQ(0, memcmp(data.data() + r * 6, rows[r].data(), 6)) << "row " << r;
-  }
-  // The temp is consumed by the remap pass: no leftover .g after remap.
-  const ttfimg::ImageSpec spec = makeSpec(0, 0, 6, 5);
-  ttfimg::remapGrayToCache(spec, bake, "/t/bake_stream.pxc", /*caching=*/false,
-                           ttfimg::cacheIdentity(spec, true, false), nullptr, /*paintToTarget=*/false, nullptr, nullptr,
-                           nullptr);
-  EXPECT_FALSE(storage.exists("/t/bake_stream.g"));
-}
-
-TEST(AdaptiveBake, TwoPhaseCacheIsDeterministicAcrossRuns) {
-  // Worker/foreground parity: two full two-phase decodes of the same input
-  // produce byte-identical 2bpp caches (same histogram → same LUT → same
-  // serpentine FS sequence). Separate names so neither run overwrites the
-  // other's bytes.
+TEST(SinglePassBake, CacheStreamIsDeterministicAcrossRuns) {
+  // Worker/foreground parity: two full single-pass decodes of the same input
+  // produce byte-identical 2bpp caches (the same legacy Atkinson sequence).
+  // Separate names so neither run overwrites the other's bytes.
   auto& storage = HalStorage::getInstance();
   storage.resetFiles();
   const auto bmp = makeBmp(64, 48, 137);
   const auto spec = makeSpec(0, 0, 32, 24);
   for (int run = 0; run < 2; ++run) {
-    char gray[64];
     char cache[64];
-    snprintf(gray, sizeof(gray), "/t/parity%d.g", run);
     snprintf(cache, sizeof(cache), "/t/parity%d.pxc", run);
     ttfimg::ToneBake4 bake(spec.w);
     ASSERT_TRUE(bake.ok());
-    ASSERT_TRUE(bake.beginCollect(gray));
-    ASSERT_EQ(ttfimg::decodeBmpRows(spec, bmp.data(), bmp.size(), &bake, /*legacyPaint=*/nullptr, nullptr, nullptr,
-                                    false, nullptr),
-              ttfimg::DecodeResult::Ok);
-    ASSERT_TRUE(bake.grayDone());
-    ASSERT_EQ(ttfimg::remapGrayToCache(spec, bake, cache, /*caching=*/true, ttfimg::cacheIdentity(spec, true, false),
-                                       nullptr, /*paintToTarget=*/false, nullptr, nullptr, nullptr),
-              ttfimg::DecodeResult::Ok);
+    ttfimg::ToneCacheWriter writer;
+    ASSERT_TRUE(writer.begin(cache, spec.w, spec.h, ttfimg::cacheIdentity(spec, true, false)));
+    std::vector<uint8_t> toneRow(static_cast<size_t>(spec.w), 0);
+    ttfimg::BakeSinkCtx sink;
+    sink.bake = &bake;
+    sink.spec = &spec;
+    sink.writer = &writer;
+    sink.toneRow = toneRow.data();
+    ASSERT_EQ(ttfimg::decodeBmpRows(spec, bmp.data(), bmp.size(), &sink, false, nullptr), ttfimg::DecodeResult::Ok);
+    ASSERT_TRUE(writer.finalize());
   }
   EXPECT_EQ(storage.files["/t/parity0.pxc"], storage.files["/t/parity1.pxc"]);
   EXPECT_FALSE(storage.files["/t/parity0.pxc"].empty());
+}
+
+TEST(SinglePassBake, CacheStreamRowsArriveInRasterOrder) {
+  // The bake's error state advances per row, so the stream contract (each
+  // destination row exactly once, in raster order) is observable through
+  // the cache payload: a vertically graded BMP (dark top → bright bottom)
+  // bakes into a cache whose FIRST row carries the dark tones and whose
+  // LAST row carries the bright tones. A row fed out of order would leak
+  // the previous rows' error across the whole plane and flip this.
+  auto& storage = HalStorage::getInstance();
+  storage.resetFiles();
+  const int w = 64, h = 32;
+  std::vector<uint8_t> data = makeBmp(w, h, 0);
+  const int rowBytes = (w * 3 + 3) / 4 * 4;
+  for (int y = 0; y < h; ++y) {
+    uint8_t* row = data.data() + 54 + static_cast<size_t>(h - 1 - y) * rowBytes;
+    const uint8_t g = static_cast<uint8_t>(20 + (y * 180) / (h - 1));
+    for (int x = 0; x < w; ++x) {
+      row[x * 3] = g;
+      row[x * 3 + 1] = g;
+      row[x * 3 + 2] = g;
+    }
+  }
+  const auto spec = makeSpec(0, 0, 32, 16);
+  ttfimg::ToneBake4 bake(spec.w);
+  ASSERT_TRUE(bake.ok());
+  ttfimg::ToneCacheWriter writer;
+  const char* cache = "/t/gradient.pxc";
+  ASSERT_TRUE(writer.begin(cache, spec.w, spec.h, ttfimg::cacheIdentity(spec, true, false)));
+  std::vector<uint8_t> toneRow(static_cast<size_t>(spec.w), 0);
+  ttfimg::BakeSinkCtx sink;
+  sink.bake = &bake;
+  sink.spec = &spec;
+  sink.writer = &writer;
+  sink.toneRow = toneRow.data();
+  ASSERT_EQ(ttfimg::decodeBmpRows(spec, data.data(), data.size(), &sink, false, nullptr), ttfimg::DecodeResult::Ok);
+  ASSERT_TRUE(writer.finalize());
+  // The published file parses: header + 16 rows of 8 bytes, letter 'e'.
+  const std::string& bytes = storage.files[cache];
+  ASSERT_EQ(bytes.size(), ttfimg::kCacheHeaderBytes + (32 + 3) / 4 * 16u);
+  EXPECT_EQ(static_cast<char>(bytes[2]), 'e');
+  // Row tone histogram straight from the 2-bit payload (MSB-first, 4 px/B).
+  const auto rowLevelCounts = [&bytes, &spec](const int y) {
+    int counts[4] = {0, 0, 0, 0};
+    const uint8_t* row = reinterpret_cast<const uint8_t*>(bytes.data()) + ttfimg::kCacheHeaderBytes + y * 8;
+    for (int x = 0; x < spec.w; ++x) {
+      const int tone = (row[x >> 2] >> (6 - (x & 3) * 2)) & 0x03;
+      ++counts[tone];
+    }
+    return std::array<int, 4>{counts[0], counts[1], counts[2], counts[3]};
+  };
+  const auto first = rowLevelCounts(0);
+  const auto last = rowLevelCounts(spec.h - 1);
+  // The source gradient runs 20..200: the top dest band sits at gray ~20-26
+  // (level 0/1 territory), the bottom at ~188-200 (level 2, weaving 2/3).
+  EXPECT_EQ(first[0] + first[1], spec.w) << "the first cache row lost the dark top band";
+  EXPECT_EQ(first[2] + first[3], 0);
+  EXPECT_GT(last[2] + last[3], spec.w / 2) << "the last cache row lost the bright bottom band";
+  EXPECT_EQ(last[0], 0);
 }
 
 // ── end-to-end decodeAndCache pins (the production flow) ────────────────────
@@ -989,31 +939,6 @@ TEST(ImageFitEndToEnd, GifDecodePublishesCacheAndBlits) {
                         32, 24);
 }
 
-// ── review round 1 pins ─────────────────────────────────────────────────────
-
-TEST(AdaptiveBake, FullPageFlatFillPercentileNotSaturatedByU16Bins) {
-  // The qodo/kody finding: u16 bins saturate at 65535, so a flat full-page
-  // fill (90% at one tone) left hi at 255 and the stretch collapsed back to
-  // near-identity. u32 bins keep the percentile targets comparable to the
-  // real counts: the used range [100,200] must stretch to [0,255].
-  ttfimg::ToneBake4 bake(454);
-  ASSERT_TRUE(bake.ok());
-  ASSERT_TRUE(bake.beginCollect("/t/bake_flatfill.g"));
-  std::vector<uint8_t> row(454, 100);
-  for (int r = 0; r < 774; ++r) {
-    if (r % 10 == 9) std::fill(row.begin(), row.end(), static_cast<uint8_t>(200));  // 10% at 200
-    bake.collectRow(row.data());
-    if (r % 10 == 9) std::fill(row.begin(), row.end(), static_cast<uint8_t>(100));
-  }
-  ASSERT_TRUE(bake.grayDone());
-  bake.beginRemap();
-  // N = 351,396: lo target 3513 → first bin reaching it is 100; hi target
-  // 347,882 → first bin reaching it is 200 (the u16 bug left hi at 255).
-  EXPECT_EQ(bake.mapLut[100], 0);
-  EXPECT_EQ(bake.mapLut[200], 255);
-  EXPECT_EQ(bake.mapLut[150], static_cast<uint8_t>((150 - 100) * 255 / 100));
-}
-
 TEST(ImageFitEndToEnd, JpegDecodePublishesCacheAndBlits) {
   static uint8_t bookBuf[1 << 20];
   static uint8_t scratchBuf[4 << 20];
@@ -1046,10 +971,10 @@ TEST(ImageFitEndToEnd, PngDecodePublishesCacheAndBlits) {
                         400, 600);
 }
 
-// The storage-failure fallbacks (review round 1): gray-temp unavailability
+// The storage-failure fallbacks (review round 1): cache-stream unavailability
 // must degrade to uncached painting, never to a blank placement.
 
-TEST(ImageFitFallback, GrayOpenFailureStillPaintsTheImage) {
+TEST(ImageFitFallback, CacheOpenFailureStillPaintsTheImage) {
   static uint8_t bookBuf[1 << 20];
   static uint8_t scratchBuf[4 << 20];
   freeink::book::Arena bookArena(bookBuf, sizeof(bookBuf));
@@ -1064,7 +989,7 @@ TEST(ImageFitFallback, GrayOpenFailureStillPaintsTheImage) {
   FakeRenderer r;
   auto& storage = HalStorage::getInstance();
   storage.resetFiles();
-  storage.failOpenForWriteAtCall = 1;  // the .g temp open fails
+  storage.failOpenForWriteAtCall = 1;  // the .t cache-stream open fails
   storage.openForWriteCallCount = 0;
 
   ttfimg::ImageSpec spec = makeSpec(20, 600, 32, 24);
@@ -1076,16 +1001,16 @@ TEST(ImageFitFallback, GrayOpenFailureStillPaintsTheImage) {
                                           nullptr, true);
   storage.failOpenForWriteAtCall = 0;
   EXPECT_EQ(res, ttfimg::DecodeResult::Ok);
-  // The image painted (legacy single pass) and no cache/temp debris exists.
+  // The image painted single-pass and no cache debris exists.
   expectBoxCoverage(r, spec);
   EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true, false));
 }
 
-TEST(ImageFitFallback, GrayWriteFailureStopsRetryingWrites) {
-  // kody round: the gray-write failure is sticky — after the first failed
-  // row write the collectors stop feeding rows and the remaining rows must
-  // NOT retry the write (one log line total, no write storm), then the
-  // legacy pass paints the placement.
+TEST(ImageFitFallback, CacheWriteFailureStopsRetryingWrites) {
+  // kody round: the cache-write failure is sticky — after the first failed
+  // row write the sink detaches the writer and the remaining rows must NOT
+  // retry the write (one log line total, no write storm); the placement
+  // still paints single-pass.
   static uint8_t bookBuf[1 << 20];
   static uint8_t scratchBuf[4 << 20];
   freeink::book::Arena bookArena(bookBuf, sizeof(bookBuf));
@@ -1101,7 +1026,7 @@ TEST(ImageFitFallback, GrayWriteFailureStopsRetryingWrites) {
   auto& storage = HalStorage::getInstance();
   storage.resetFiles();
   // Armed after the last ASSERT: a failing ASSERT must not leak the injection.
-  HalFile::failWriteAtCall = 3;  // the third gray-row write fails
+  HalFile::failWriteAtCall = 3;  // the third cache-stream write fails
   HalFile::writeCallCount = 0;
 
   ttfimg::ImageSpec spec = makeSpec(20, 600, 32, 24);
@@ -1115,14 +1040,15 @@ TEST(ImageFitFallback, GrayWriteFailureStopsRetryingWrites) {
   EXPECT_EQ(res, ttfimg::DecodeResult::Ok);
   expectBoxCoverage(r, spec);
   EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true, false));
-  // Exactly three write attempts: the sticky gate stopped the retry storm
-  // after the first failure (the 24-row collect used to attempt every row).
+  // Exactly three write attempts (header + two rows): the sticky gate
+  // stopped the retry storm after the first failure — no per-row retries.
   EXPECT_EQ(HalFile::writeCallCount, 3);
-  // The dead temp is discarded even though the failure short-circuited.
-  EXPECT_FALSE(storage.exists((std::string(cachePath) + ".g").c_str()));
+  // The dead .t stream is discarded even though the failure short-circuited
+  // (the header + two rows were the only writes; no retries after).
+  EXPECT_FALSE(storage.exists((std::string(cachePath) + ".t").c_str()));
 }
 
-TEST(ImageFitFallback, GrayMidStreamWriteFailureStillPaintsTheImage) {
+TEST(ImageFitFallback, CacheMidStreamWriteFailureStillPaintsTheImage) {
   static uint8_t bookBuf[1 << 20];
   static uint8_t scratchBuf[4 << 20];
   freeink::book::Arena bookArena(bookBuf, sizeof(bookBuf));
@@ -1137,7 +1063,7 @@ TEST(ImageFitFallback, GrayMidStreamWriteFailureStillPaintsTheImage) {
   FakeRenderer r;
   auto& storage = HalStorage::getInstance();
   storage.resetFiles();
-  HalFile::failWriteAtCall = 3;  // the third gray-row write fails mid-stream
+  HalFile::failWriteAtCall = 3;  // the third cache-stream write fails mid-stream
   HalFile::writeCallCount = 0;
 
   ttfimg::ImageSpec spec = makeSpec(20, 600, 32, 24);
@@ -1151,60 +1077,6 @@ TEST(ImageFitFallback, GrayMidStreamWriteFailureStillPaintsTheImage) {
   EXPECT_EQ(res, ttfimg::DecodeResult::Ok);
   expectBoxCoverage(r, spec);
   EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true, false));
-}
-
-// Phase-2 read-failure fallbacks (review round 3): a failed gray re-open or a
-// failed mid-stream gray read leaves nothing painted — the decode must fall
-// back to the legacy paint (Ok, full coverage, no cache), not a blank box.
-
-namespace {
-// Shared body of the two phase-2 read-failure cases.
-void expectReadFailureStillPaints(const int failReadAtCall, const int failOpenForReadAtCall) {
-  static uint8_t bookBuf[1 << 20];
-  static uint8_t scratchBuf[4 << 20];
-  freeink::book::Arena bookArena(bookBuf, sizeof(bookBuf));
-  freeink::book::Arena scratch(scratchBuf, sizeof(scratchBuf));
-  HostFileSource source;
-  ASSERT_TRUE(source.open(FIT_FIXTURES "/fit_fixtures.epub"));
-  freeink::book::Book book;
-  ASSERT_EQ(book.open(source, bookArena, scratch), freeink::book::BookStatus::Ok);
-  Epub epub;
-  epub.items["OEBPS/images/small.bmp"] = readFixtureFile(FIT_FIXTURES "/small.bmp");
-
-  FakeRenderer r;
-  auto& storage = HalStorage::getInstance();
-  storage.resetFiles();
-
-  ttfimg::ImageSpec spec = makeSpec(20, 600, 32, 24);
-  snprintf(spec.href, sizeof(spec.href), "OEBPS/images/small.bmp");
-  spec.generation = 13;
-  char cachePath[256];
-  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, false, cachePath, sizeof(cachePath)));
-  // Arm the injections only after the last ASSERT: a failing ASSERT returns
-  // early, and leaked injections would fail every later ImageFit* test.
-  HalFile::failReadAtCall = failReadAtCall;
-  HalFile::readCallCount = 0;
-  storage.failOpenForReadAtCall = failOpenForReadAtCall;
-  storage.openForReadCallCount = 0;
-  const auto res = ttfimg::decodeAndCache(spec, cachePath, source, book.zip(), scratch, &epub, &r, true, true, nullptr,
-                                          nullptr, true);
-  HalFile::failReadAtCall = 0;
-  storage.failOpenForReadAtCall = 0;
-  EXPECT_EQ(res, ttfimg::DecodeResult::Ok);
-  expectBoxCoverage(r, spec);
-  EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true, false));
-}
-}  // namespace
-
-TEST(ImageFitFallback, GrayReadOpenFailureStillPaintsTheImage) {
-  // The remap's gray re-open fails (the .t writer's open is write-side, so
-  // the first READ open in the flow is the gray temp).
-  expectReadFailureStillPaints(0, 1);
-}
-
-TEST(ImageFitFallback, GrayMidReadFailureStillPaintsTheImage) {
-  // The third gray-row read fails mid-stream.
-  expectReadFailureStillPaints(3, 0);
 }
 
 TEST(ImageBudgetGate, RequiresTheFiveMebibyteBudgetOnBudgetClassBoards) {
@@ -1257,146 +1129,6 @@ TEST(ImageBudgetGate, BudgetDecisionIsAConstantExpression) {
                 "small-board floor short");
   static_assert(!ttfimg::psramBudgetOk(0, 0), "no PSRAM defers");
   SUCCEED();
-}
-
-// ── halo-free dark-stroke sharpen (fidelity campaign 2026-11-10) ────────────
-// The pure row core is pinned directly; the streaming wrapper (ring, pool
-// block, flush) is exercised by every decode-path test above.
-
-namespace {
-
-// A synthetic decoded 1.5px line: a vertical stroke spread by the box downscale
-// into a dark center column + a light shoulder column, on a white field.
-struct LineField {
-  static constexpr int kW = 16;
-  std::vector<uint8_t> a, b, c;  // prev/self/next rows
-  explicit LineField(uint8_t center = 120, uint8_t shoulder = 200) : a(kW, 255), b(kW, 255), c(kW, 255) {
-    for (const auto r : {&a, &b, &c}) {
-      (*r)[7] = center;
-      (*r)[8] = shoulder;
-    }
-  }
-  std::vector<uint8_t> sharpened() {
-    std::vector<uint8_t> out(kW);
-    ttfimg::sharpenRowHaloFree(a.data(), b.data(), c.data(), kW, out.data());
-    return out;
-  }
-};
-
-}  // namespace
-
-TEST(Sharpen, DarkStrokeRecoversItsShoulder) {
-  // Iteration-3 owner audit: after the ~2.12× box downscale the stroke's
-  // center IS the destination 3×3 minimum (120), so the old mn clamp
-  // forbade any darkening — the diluted stroke stayed diluted while the
-  // shoulder bleached. The dark side is now bounded by the local contrast
-  // span instead: the center recovers toward ink, the shoulder keeps the
-  // field value (detail 6 sits exactly on the coring edge — untouched),
-  // and nothing overshoots the field above.
-  LineField f;
-  const auto out = f.sharpened();
-  EXPECT_LT(out[7], 100);  // dark recovery: 120 pulls back toward ink
-  EXPECT_LE(out[8], 200);  // the shoulder does NOT bleach upward
-  for (const int v : out) {
-    EXPECT_LE(v, 255);  // no overshoot anywhere
-  }
-  EXPECT_EQ(out[0], 255);  // the far field is untouched
-}
-
-TEST(Sharpen, SoftShadingNeverCrushesBelowItsSpan) {
-  // Low-contrast shading (amplitude ≤10): the tent leaves every |detail| ≤ 6
-  // (coring) — the rows pass through untouched, so subtle texture cannot be
-  // crushed at all.
-  const int w = 32;
-  std::vector<uint8_t> prev(w, 200), self(w, 200), next(w, 200);
-  for (int x = 0; x < w; ++x) {
-    const int d = (x % 4 == 2) ? -10 : ((x % 4 == 0) ? 10 : 0);
-    prev[x] = static_cast<uint8_t>(200 + d);
-    self[x] = static_cast<uint8_t>(200 + d);
-    next[x] = static_cast<uint8_t>(200 + d);
-  }
-  std::vector<uint8_t> out(w);
-  ttfimg::sharpenRowHaloFree(prev.data(), self.data(), next.data(), w, out.data());
-  EXPECT_EQ(0, memcmp(out.data(), self.data(), static_cast<size_t>(w)));
-
-  // The dark floor arithmetic itself: one 170 dip on a 200 field (span
-  // mx − mn = 30 → floor 140). detail = −15 fires the branch, the pull
-  // recovers toward ink, and the floor holds the output at ≥ 140.
-  std::vector<uint8_t> f2(w, 200);
-  f2[10] = 170;
-  std::vector<uint8_t> out2(w);
-  ttfimg::sharpenRowHaloFree(f2.data(), f2.data(), f2.data(), w, out2.data());
-  EXPECT_LT(out2[10], 170) << "the dip must recover toward ink";
-  EXPECT_GE(out2[10], 140) << "dark pull exceeded the local contrast span";
-}
-
-TEST(Sharpen, JpegRingRippleStaysUntouched) {
-  // White paper with an 8×8 DCT ripple: coring 6 leaves |detail| ≤ 6
-  // untouched, so the JPEG mosquito ripple is never sharpened into dots
-  // (the 00006 white-field defect, iteration-3 owner audit).
-  const int w = 64;
-  std::vector<uint8_t> prev(w), self(w), next(w);
-  for (int x = 0; x < w; ++x) {
-    // Ripple detail against the tent blur stays within ±6 everywhere:
-    // a flat 255 field with a single 249 dip per 8-px block (detail 6 at
-    // the dip, ≤4 at its neighbors).
-    const uint8_t v = (x % 8 == 4) ? 249 : 255;
-    prev[x] = v;
-    self[x] = v;
-    next[x] = v;
-  }
-  std::vector<uint8_t> out(w);
-  ttfimg::sharpenRowHaloFree(prev.data(), self.data(), next.data(), w, out.data());
-  EXPECT_EQ(0, memcmp(out.data(), self.data(), static_cast<size_t>(w)));
-}
-
-TEST(Sharpen, ZeroHaloOutsideADarkSquare) {
-  // Dark square on a light 235 field: the light-side gain WANTS to overshoot
-  // the field beside the square's edge (the halo), the strict 3×3 clamp
-  // forbids it — no pixel outside the square exceeds the field value.
-  const int w = 24;
-  std::vector<uint8_t> prev(w, 235), self(w, 235), next(w, 235);
-  for (int x = 8; x < 16; ++x) {  // the square's top edge row (self)
-    prev[x] = 235;
-    self[x] = 30;
-    next[x] = 30;
-  }
-  std::vector<uint8_t> out(w);
-  ttfimg::sharpenRowHaloFree(prev.data(), self.data(), next.data(), w, out.data());
-  for (int x = 0; x < w; ++x) {
-    if (x >= 8 && x < 16) continue;  // inside the square
-    EXPECT_LE(out[x], 235) << "halo above the field at column " << x;
-  }
-  // And the square's edge actually sharpened (the clamp had work to do):
-  EXPECT_LE(out[7], 235);
-}
-
-TEST(Sharpen, SmoothGradientIsByteIdentical) {
-  // Coring: a gradient with per-pixel slope 2 has |detail| ≤ 3 everywhere
-  // (the tent reproduces linear functions exactly in the interior) — the
-  // rows pass through untouched.
-  const int w = 48;
-  std::vector<uint8_t> prev(w), self(w), next(w);
-  for (int x = 0; x < w; ++x) {
-    prev[x] = static_cast<uint8_t>(100 + 2 * x);
-    self[x] = static_cast<uint8_t>(100 + 2 * x);
-    next[x] = static_cast<uint8_t>(100 + 2 * x);
-  }
-  std::vector<uint8_t> out(w);
-  ttfimg::sharpenRowHaloFree(prev.data(), self.data(), next.data(), w, out.data());
-  EXPECT_EQ(0, memcmp(out.data(), self.data(), static_cast<size_t>(w)));
-}
-
-TEST(Sharpen, GateCoversDownscalesOnly) {
-  // Downscale (>1.25x on either axis) sharpens; 1:1, upscale (the Insert
-  // page) and sub-threshold squeezes do not.
-  EXPECT_TRUE(ttfimg::sharpenOk(934, 1400, 454, 680));  // the 00005-class page
-  EXPECT_TRUE(ttfimg::sharpenOk(965, 1400, 454, 658));  // the 00006-class page
-  EXPECT_TRUE(ttfimg::sharpenOk(300, 100, 100, 160));   // single-axis squeeze
-  EXPECT_FALSE(ttfimg::sharpenOk(100, 150, 100, 150));  // 1:1
-  EXPECT_FALSE(ttfimg::sharpenOk(100, 150, 240, 160));  // upscale (Insert)
-  EXPECT_FALSE(ttfimg::sharpenOk(250, 150, 200, 120));  // exactly 1.25x: not > 1.25
-  EXPECT_FALSE(ttfimg::sharpenOk(0, 0, 100, 100));      // degenerate
 }
 
 // ── in-file cache identity header (fidelity campaign 2026-11-10) ────────────
