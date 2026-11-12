@@ -180,7 +180,9 @@ class ParsedText {
   void ensureRubyCapacity();
   void suppressFirstLineIndent() { firstLineConsumed = true; }
   void resetFirstLineIndent() { firstLineConsumed = paragraphStartEmitted = false; }
-  void setBlockStyle(const BlockStyle& style) { blockStyle = style; }
+  void setBlockStyle(const BlockStyle& blockStyle) { this->blockStyle = blockStyle; }
+  void setHyphenationEnabled(const bool enabled) { hyphenationEnabled = enabled; }
+  bool isHyphenationEnabled() const { return hyphenationEnabled; }
   BlockStyle& getBlockStyle() { return blockStyle; }
   size_t size() const { return words.size(); }
   bool isEmpty() const { return words.empty(); }

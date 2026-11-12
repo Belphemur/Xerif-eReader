@@ -152,7 +152,8 @@ namespace {
 // pixels rounded exactly once. The change is not observable on the fork, so the
 // merged tree keeps v74 and both parents' v74 caches stay valid.
 
-constexpr uint8_t SECTION_FILE_VERSION = 74;
+constexpr uint8_t SECTION_FILE_VERSION = 75;
+// v75: Headings are not hyphenated (upstream #4442); invalidates both parents' v74 caches.
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
