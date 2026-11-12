@@ -138,6 +138,12 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
                          {StrId::STR_IMAGES_DISPLAY, StrId::STR_IMAGES_PLACEHOLDER, StrId::STR_IMAGES_SUPPRESS,
                           StrId::STR_IMAGES_DISPLAY_BW},
                          "imageRendering", StrId::STR_CAT_READER));
+  // Picture detail (DPID design 2026-11-09 §Contract 4): Sharp = DPID
+  // detail-preserving resize (default); Enhanced = DPID + CLAHE local
+  // contrast. DPID is always on — the enum selects only the CLAHE stage.
+  emit(SettingInfo::Enum(StrId::STR_PICTURE_DETAIL, &CrossPointSettings::pictureDetail,
+                         {StrId::STR_PICTURE_DETAIL_SHARP, StrId::STR_PICTURE_DETAIL_ENHANCED}, "pictureDetail",
+                         StrId::STR_CAT_READER));
   emit(SettingInfo::Enum(StrId::STR_READER_MENU_STYLE, &CrossPointSettings::readerMenuStyle,
                          {StrId::STR_MENU_STYLE_LIST, StrId::STR_MENU_STYLE_TOOLBAR}, "readerMenuStyle",
                          StrId::STR_CAT_READER));

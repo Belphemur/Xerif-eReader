@@ -257,8 +257,11 @@ bool ImagePredecodeWorker::abortTrampoline(void* ctx) {
 
 void ImagePredecodeWorker::processJob(const ttfimg::ImageSpec& spec) {
   const bool qualityTone = SETTINGS.imageDecodeQuality != 0;  // §5.6 revert switch
+  // Picture detail (DPID design §Contract 4): CLAHE gate rides with the
+  // quality tone policy — only meaningful when the quality bake runs.
+  const bool clahe = qualityTone && SETTINGS.pictureDetail != 0;
   char cachePath[256];
-  if (!ttfimg::cacheNameFor(spec, cacheDir_, qualityTone, cachePath, sizeof(cachePath))) {
+  if (!ttfimg::cacheNameFor(spec, cacheDir_, qualityTone, clahe, cachePath, sizeof(cachePath))) {
     LOG_DBG("IPR", "Cache path overflow: %s", spec.href);
     return;
   }
@@ -266,7 +269,7 @@ void ImagePredecodeWorker::processJob(const ttfimg::ImageSpec& spec) {
 
   // The cache can appear between enqueue and dequeue (foreground decoded it,
   // or an earlier sighting's job): re-check before any work (§5.4).
-  if (ttfimg::hasValidCache(spec, cacheDir_, qualityTone)) return;
+  if (ttfimg::hasValidCache(spec, cacheDir_, qualityTone, clahe)) return;
 
   // Foreground-activity pause: never checked mid-decode — an in-flight
   // decode only ends via the claim's abort flag (§5.7 rule 1).
@@ -278,6 +281,13 @@ void ImagePredecodeWorker::processJob(const ttfimg::ImageSpec& spec) {
   // DRAM + PSRAM gates (§5.7 rule 1): a decode that fails its gate is
   // deferred, not forced.
   if (!ttfimg::decodeGatesOk()) {
+    // INFO on the first deferral only (the flash test reads the budget
+    // headroom directly from serial — PSRAM budget 2026-11-09); retries stay
+    // silent so a memory-stuck backlog cannot spam serial.
+    if (spec.deferrals == 0) {
+      LOG_INF("IPR", "Decode deferred (DRAM/PSRAM gate): %s psram free %u KiB", spec.href,
+              static_cast<unsigned>(HalMemory::getPsramHeap().freeBytes / 1024));
+    }
     deferJob(spec);
     return;
   }
@@ -294,7 +304,7 @@ void ImagePredecodeWorker::processJob(const ttfimg::ImageSpec& spec) {
   if (!sessionValid_.load(std::memory_order_acquire)) return;
   // Re-check AFTER acquiring the claim: the foreground can publish the cache
   // while this job waited for the claim; decoding now would truncate it.
-  if (ttfimg::hasValidCache(spec, cacheDir_, qualityTone)) return;
+  if (ttfimg::hasValidCache(spec, cacheDir_, qualityTone, clahe)) return;
 
   // Decode under the capture-time orientation: the converters and the scratch
   // paint clamp against an orientation-aware screen width (a portrait default
@@ -318,12 +328,19 @@ void ImagePredecodeWorker::processJob(const ttfimg::ImageSpec& spec) {
   const ttfimg::DecodeResult res =
       ttfimg::decodeAndCache(spec, cachePath, *source_, *zip_, *decodeArena_, epub_, &scratchRenderer_, qualityTone,
                              /*caching=*/true, &ImagePredecodeWorker::abortTrampoline, &abortCtx,
-                             /*paintToTarget=*/false);
+                             /*paintToTarget=*/false, clahe);
   decodeArena_->release(arenaMark);
   ImageDecodeGate::releaseDecodeBus();
   // An aborted or failed decode never leaves a file (the engine drops the
   // partial cache on any failure path); "Ok" is a complete, valid cache the
-  // foreground's next pass blits. No render-path failure bookkeeping here.
+  // foreground's next pass blits. A worker Failed IS a no-cache outcome — the
+  // job produced nothing and a dropped decode means the cache stays cold for
+  // its whole sighting window: retry bounded like the gate deferrals instead
+  // of logging done (review 2026-11-10).
+  if (res == ttfimg::DecodeResult::Failed) {
+    deferJob(spec);
+    return;
+  }
   if (res != ttfimg::DecodeResult::Ok) {
     LOG_DBG("IPR", "Job skipped (kind %d): spine=%u %s", static_cast<int>(res), spec.spine, spec.href);
     return;

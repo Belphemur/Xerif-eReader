@@ -68,18 +68,18 @@ struct ImageSpec {
 // validName blob). Keyed by the generation, the placement and the tone
 // policy: a layout change or a policy flip picks a fresh file; stale ones
 // live until the book cache sweep (epub/<hash> clearCache) removes it.
-bool cacheNameFor(const ImageSpec& spec, const char* dir, bool qualityTone, char* out, size_t cap);
+bool cacheNameFor(const ImageSpec& spec, const char* dir, bool qualityTone, bool clahe, char* out, size_t cap);
 
 // Cache lookup: header dims must match the placement (±1, the same bounded
 // tolerance ImageBlock uses) and the file must cover the full payload.
-bool hasValidCache(const ImageSpec& spec, const char* dir, bool qualityTone);
+bool hasValidCache(const ImageSpec& spec, const char* dir, bool qualityTone, bool clahe);
 
 // Tone-row blit through `renderer` from the cache (no decode). DirectPixel
 // writes are band-clipped; rows are drawn at (x, y). The blit runs per
 // DirectPixelWriter pass through the strip/jointed gray planes (row-by-row
 // reads like ImageBlock's streaming path), in the orientation the renderer
 // reached the tone pointer at the read.
-bool blitFromCache(GfxRenderer& renderer, const ImageSpec& spec, const char* dir, bool qualityTone);
+bool blitFromCache(GfxRenderer& renderer, const ImageSpec& spec, const char* dir, bool qualityTone, bool clahe);
 
 enum class DecodeResult : uint8_t {
   Ok = 0,      // cache written (when caching) + rows painted
@@ -100,12 +100,36 @@ enum class DecodeResult : uint8_t {
 DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freeink::book::BookSource& source,
                             const freeink::book::ZipCatalog& zip, freeink::book::Arena& scratch, Epub* epub,
                             GfxRenderer* paint, bool qualityTone, bool caching, bool (*abortPoll)(void* ctx),
-                            void* abortCtx, bool paintToTarget = true);
+                            void* abortCtx, bool paintToTarget = true, bool clahe = false);
 // The probe/extract run against spec.hrefExt when set (overlong href — see
 // ImageSpec), else spec.href.
 
 // Full decode gates for a worker job (the #292 heap-gate precedents).
 bool decodeGatesOk();
+
+// PSRAM budget for one image decode (owner directive 2026-11-09): the TTF
+// reader boards are all 8 MB PSRAM S3s (platformio.ini gates
+// CROSSPOINT_TTF_READER to -DBOARD_HAS_PSRAM boards) and the reader uses
+// ~1 MB of it, so the decode ladder may claim up to 5 MB. The old 256 KiB
+// gate floor let full-page decodes start, fail the ~432 KiB rung-1 scratch
+// allocation and silently degrade to the ladder's bottom rung.
+constexpr size_t kPsramBudgetBytes = 5u * 1024u * 1024u;
+
+// Pre-budget floor: boards (or host runs) whose total PSRAM cannot back the
+// budget keep the old behavior instead of never decoding.
+constexpr size_t kPsramSmallPsramFloorBytes = 256u * 1024u;
+
+// Pure gate decision: a decode may start only when the budget floor is met.
+// Boards whose total PSRAM is below the budget fall back to the small floor;
+// PSRAM-less builds (0 total bytes) defer like any gate-starved job, and the
+// ladder inside the decode still degrades every rung it cannot fit. The
+// comparison is STRICT (>): a board whose total PSRAM exactly equals the
+// budget cannot keep all of it free, so demanding the budget as free would
+// defer that board forever instead of engaging the small floor.
+constexpr bool psramBudgetOk(const size_t psramTotal, const size_t psramFree) {
+  const size_t floor = psramTotal > kPsramBudgetBytes ? kPsramBudgetBytes : kPsramSmallPsramFloorBytes;
+  return psramFree >= floor;
+}
 
 #endif  // CROSSPOINT_TTF_READER
 

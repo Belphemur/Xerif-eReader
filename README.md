@@ -83,8 +83,10 @@ upstream and periodically synced from it.
 
 ### 📖 Reading experience
 
-- **Reader engine**: EPUB 2/3 rendering with embedded-style option, image handling,
-  hyphenation, kerning, adaptive table layouts, native CJK ruby annotations, chapter
+- **Reader engine**: EPUB 2/3 rendering with embedded-style option, image handling
+  with sharper picture rendering (detail-preserving downscale; optional local-contrast
+  enhancement under Settings → Reader → Picture Detail), hyphenation, kerning, adaptive
+  table layouts, native CJK ruby annotations, chapter
   navigation, footnotes, bookmarks, go-to-percent, auto page turn, orientation control,
   focus reading, and more.
 - **Dictionary on long-press or touch.** Long-press a word (or tap it on touch devices)

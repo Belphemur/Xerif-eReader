@@ -5,4 +5,5 @@
 
 #define LOG_INF(mod, fmt, ...) ::printf("[%s] " fmt "\n", mod, ##__VA_ARGS__)
 #define LOG_DBG(mod, fmt, ...) ::printf("[%s] " fmt "\n", mod, ##__VA_ARGS__)
+#define LOG_WRN(mod, fmt, ...) ::printf("[%s] " fmt "\n", mod, ##__VA_ARGS__)
 #define LOG_ERR(mod, fmt, ...) ::printf("[%s] " fmt "\n", mod, ##__VA_ARGS__)

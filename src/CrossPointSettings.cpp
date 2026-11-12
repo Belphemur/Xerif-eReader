@@ -137,6 +137,7 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   // value selects the tone bake on new decode paths only (old caches stay
   // valid under their own bake flag in the cache name).
   doc["imageDecodeQuality"] = imageDecodeQuality;
+  doc["pictureDetail"] = pictureDetail;
 
   bleturner::writeJson(ble, doc);
 }
@@ -284,6 +285,8 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   touchIdleSleep = doc["touchIdleSleep"] | (uint8_t)1 ? 1 : 0;
   // TTF image decode quality: anything non-zero counts as on (default on).
   imageDecodeQuality = doc["imageDecodeQuality"] | (uint8_t)1 ? 1 : 0;
+  // Picture detail: 0 = Sharp (DPID only), 1 = Enhanced (DPID + CLAHE).
+  pictureDetail = doc["pictureDetail"] | (uint8_t)0 ? 1 : 0;
 
   // The old fork reused the tap/long-press keys with a different value catalog.
   // When that legacy group is present, discard its bytes and fall back to the

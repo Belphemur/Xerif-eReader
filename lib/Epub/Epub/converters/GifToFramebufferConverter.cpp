@@ -48,6 +48,7 @@ struct GifContext {
   std::unique_ptr<uint8_t[]> qGrayRow;  // [dstWidth] averaged luma handed to the bake
   std::unique_ptr<uint8_t[]> qToneRow;  // [dstWidth] baked 4-level tones
   ToneBaker* bake{nullptr};             // not owned; from RenderConfig::toneBake
+  bool collect{false};                  // §2.1 phase 1: feed only, no paint/cache
   int qAccumDstY = -1;                  // dst row currently accumulating (-1 = none)
   int qFlushedRows = 0;                 // next destination row to bake (in order)
 };
@@ -74,8 +75,25 @@ void qResetAccum(GifContext& ctx) {
 }
 
 // Bakes one accumulated destination row (counts == 0 → white) and emits it
-// to the pixel cache and the renderer.
+// to the pixel cache and the renderer. In collect mode (design 2026-11-08
+// §2.1 amendment 2) the row only feeds the bake's phase-1 collection — the
+// engine's remap pass owns tone, cache and paint.
 void qFlushRow(const int dstY, GifContext& ctx) {
+  for (int dstX = 0; dstX < ctx.dstWidth; ++dstX) {
+    const uint32_t avg = ctx.qCounts[dstX] != 0 ? ctx.qSums[dstX] / ctx.qCounts[dstX] : 255;
+    ctx.qGrayRow[dstX] = static_cast<uint8_t>(avg > 255 ? 255 : avg);
+  }
+  if (ctx.collect) {
+    ctx.bake->collectRow(ctx.qGrayRow.get());
+    if (ctx.bake->grayWriteFailed()) {
+      // Gray temp died mid-collect: stop feeding rows (qFlushRemainder's
+      // loop exits on !success). The engine's legacy pass still paints.
+      ctx.success = false;
+      return;
+    }
+    ++ctx.qFlushedRows;  // qFlushRemainder's loop must still terminate
+    return;
+  }
   const int outY = ctx.config->y + dstY;
   DirectCacheWriter cw;
   const bool caching = ctx.caching;
@@ -93,10 +111,6 @@ void qFlushRow(const int dstY, GifContext& ctx) {
   // band guard tracks the wrong axis for off-panel rows — clip both here.
   const bool paintRow = outY >= 0 && outY < ctx.screenHeight;
   if (paintRow) pw.beginRow(outY);
-  for (int dstX = 0; dstX < ctx.dstWidth; ++dstX) {
-    const uint32_t avg = ctx.qCounts[dstX] != 0 ? ctx.qSums[dstX] / ctx.qCounts[dstX] : 255;
-    ctx.qGrayRow[dstX] = static_cast<uint8_t>(avg > 255 ? 255 : avg);
-  }
   // Serpentine row bake: the bake visits the row in its own scan direction
   // and advances the error state (toneRow contract, design §5.2).
   ctx.bake->toneRow(ctx.qGrayRow.get(), ctx.qToneRow.get());
@@ -193,6 +207,12 @@ void qFlushRemainder(GifContext& ctx) {
 }
 
 void renderCanvasRow(const uint8_t* grayRow, int srcY, GifContext& ctx) {
+  // DPID pass-through: raw source rows go to the app-side scaler; the
+  // converter's own resize (qRenderCanvasRow / legacy Bayer) never runs.
+  if (ctx.quality && ctx.collect && ctx.config->sourceRowFn != nullptr) {
+    if (!ctx.config->sourceRowFn(ctx.config->sourceUser, srcY, grayRow)) ctx.success = false;
+    return;
+  }
   if (ctx.quality) {
     qRenderCanvasRow(grayRow, srcY, ctx);
     return;
@@ -488,14 +508,23 @@ bool GifToFramebufferConverter::decodeGifSource(const char* imagePath, uint8_t* 
     // Quality bake state; allocation failure (or a missing injected bake)
     // degrades to the legacy path rather than failing the decode. Partially
     // allocated buffers are released so the fallback's cache band can still
-    // allocate under pressure.
+    // allocate under pressure. In collect mode (§2.1) no tone row buffer is
+    // needed — the remap pass bakes.
     ctx.qSums = makeUniqueNoThrow<uint32_t[]>(ctx.dstWidth);
     ctx.qCounts = makeUniqueNoThrow<uint16_t[]>(ctx.dstWidth);
     ctx.qGrayRow = makeUniqueNoThrow<uint8_t[]>(ctx.dstWidth);
-    ctx.qToneRow = makeUniqueNoThrow<uint8_t[]>(ctx.dstWidth);
-    if (ctx.qSums && ctx.qCounts && ctx.qGrayRow && ctx.qToneRow && config.toneBake != nullptr) {
+    if (!config.toneCollect) ctx.qToneRow = makeUniqueNoThrow<uint8_t[]>(ctx.dstWidth);
+    if (ctx.qSums && ctx.qCounts && ctx.qGrayRow && (config.toneCollect || ctx.qToneRow) &&
+        config.toneBake != nullptr) {
       ctx.bake = config.toneBake;
+      ctx.collect = config.toneCollect;
       ctx.quality = true;
+    } else if (config.toneCollect) {
+      // Collect mode must not silently render without collecting: the engine's
+      // remap would read a short gray stream (review round 1). Fail the decode
+      // before anything is painted; the engine picks a deliberate fallback.
+      LOG_ERR("GIF", "Collect-mode buffers unavailable — failing the decode");
+      return false;
     } else {
       LOG_ERR("GIF", "Quality bake unavailable — falling back to legacy dither");
       ctx.qSums.reset();
@@ -534,6 +563,16 @@ bool GifToFramebufferConverter::decodeGifSource(const char* imagePath, uint8_t* 
     }
   }
 
+  // DPID pass-through: report the canvas dims once, before the first row —
+  // the app-side scaler allocates its scratch here. false aborts (the
+  // engine's legacy fallback paints).
+  if (ctx.quality && ctx.collect && config.sourceDimsFn != nullptr &&
+      !config.sourceDimsFn(config.sourceUser, ctx.srcWidth, ctx.srcHeight)) {
+    ctx.success = false;
+    if (ctx.caching) ctx.cache.abort();
+    return false;
+  }
+
   int delayMs = 0;
   ctx.lastYieldMs = millis();
   const int frameState = gif->playFrame(false, &delayMs, &ctx);
@@ -549,7 +588,9 @@ bool GifToFramebufferConverter::decodeGifSource(const char* imagePath, uint8_t* 
     if (ctx.caching) ctx.cache.abort();
     return false;
   }
-  if (ctx.quality) {
+  if (ctx.quality && !(ctx.collect && config.sourceRowFn != nullptr)) {
+    // Sink mode: every row went to the app-side scaler; no converter-side
+    // accumulate state exists to flush.
     qFlushRemainder(ctx);
     if (!ctx.success) {
       LOG_ERR("GIF", "GIF quality flush failed: %s", label);

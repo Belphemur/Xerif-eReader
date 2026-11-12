@@ -103,7 +103,13 @@ class ImagePredecodeWorker {
 
   // Session constants (design §6 budget; the #292 heap-gate precedents).
   static constexpr size_t kStackBytes = 16 * 1024;
-  static constexpr size_t kDecodeArenaBytes = 32 * 1024;
+  // Owner-audit iteration 3 (2026-11-11): a deflated full-page JPEG needs
+  // ~74–81 KiB inside the decode arena (inflate window + tinfl ~46 KiB,
+  // skipBuf + TJpgDec ~9 KiB, srcW×16 band 15.5–22 KiB, RowScaler ~3.5 KiB);
+  // 32 KiB forced every deflated 934–1400 px page through renderJpeg's
+  // arena-retry step-down (half-res, uncached). 128 KiB covers it with
+  // margin; PSRAM-backed (HalMemory::allocatePsram), outside the DRAM pool.
+  static constexpr size_t kDecodeArenaBytes = 128 * 1024;
   static constexpr uint8_t kMaxDeferrals = 4;  // gate-failed retries before a job drops
   static constexpr uint32_t kIdleTimeoutMs = 4000;
   static constexpr uint32_t kJobDelayMs = 4;
