@@ -544,6 +544,66 @@ TEST(ImageFitSdk, ArenaRetryDecodePaintsUncachedAndFullArenaPublishes) {
   }
 }
 
+TEST(ImageFitSdk, DegradedWorkerDecodeFailsForRetryWithoutCaching) {
+  // Amendment 7: a degraded cache-only (worker) decode used to stream the
+  // whole .g through the remap with caching forced off and still report Ok
+  // — "Job done" with NO .pxc, stranding the image uncached for its whole
+  // sighting window. The engine must return Failed so processJob defers
+  // the job and a calmer pass re-decodes at full quality; no cache or temp
+  // debris may survive.
+  static uint8_t bookBuf[1 << 20];
+  static uint8_t openScratch[64 * 1024];
+  static uint8_t smallScratch[26 * 1024];
+  HostFileSource source;
+  ASSERT_TRUE(source.open(FIT_FIXTURES "/fit_fixtures.epub"));
+  freeink::book::Arena bookArena(bookBuf, sizeof(bookBuf));
+  freeink::book::Book book;
+  {
+    freeink::book::Arena openScratchArena(openScratch, sizeof(openScratch));
+    ASSERT_EQ(book.open(source, bookArena, openScratchArena), freeink::book::BookStatus::Ok);
+  }
+  Epub epub;
+  auto& storage = HalStorage::getInstance();
+
+  ttfimg::ImageSpec spec = makeSpec(0, 40, 480, 720);
+  snprintf(spec.href, sizeof(spec.href), "OEBPS/images/baseline_stored.jpg");
+  spec.generation = 31;
+
+  // 26 KiB forces the SDK's arena-retry step-down (same fixture/arena as
+  // ArenaRetryDecodePaintsUncachedAndFullArenaPublishes) — the dims hook
+  // reports scaleReduced and the decode is degraded.
+  storage.resetFiles();
+  FakeRenderer r;  // worker scratch renderer: non-null, never painted to
+  char cachePath[256];
+  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, false, cachePath, sizeof(cachePath)));
+  freeink::book::Arena small(smallScratch, sizeof(smallScratch));
+  const auto res = ttfimg::decodeAndCache(spec, cachePath, source, book.zip(), small, &epub, &r, true,
+                                          /*caching=*/true, nullptr, nullptr, /*paintToTarget=*/false, false);
+  EXPECT_EQ(res, ttfimg::DecodeResult::Failed) << "a degraded worker job must defer, not report silent success";
+  EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true, false));
+  EXPECT_FALSE(storage.exists(cachePath));
+  EXPECT_FALSE(storage.exists((std::string(cachePath) + ".t").c_str()));
+  EXPECT_FALSE(storage.exists((std::string(cachePath) + ".g").c_str()));
+
+  // Control: the same image under the foreground contract (paintToTarget)
+  // still paints uncached and reports Ok — the user sees the image now.
+  storage.resetFiles();
+  spec.generation = 32;
+  FakeRenderer r2;
+  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, false, cachePath, sizeof(cachePath)));
+  freeink::book::Arena small2(smallScratch, sizeof(smallScratch));
+  const auto resFg = ttfimg::decodeAndCache(spec, cachePath, source, book.zip(), small2, &epub, &r2, true,
+                                            /*caching=*/true, nullptr, nullptr, /*paintToTarget=*/true, false);
+  EXPECT_EQ(resFg, ttfimg::DecodeResult::Ok) << "the foreground degraded decode must still paint";
+  long dark = 0;
+  for (int y = spec.y; y < spec.y + spec.h; y += 8)
+    for (int x = spec.x; x < spec.x + spec.w; ++x)
+      if (physicalBitIsBlack(r2, x, y)) ++dark;
+  EXPECT_GT(dark, 0) << "the placement never painted";
+  EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true, false))
+      << "a degraded rung must never publish under the requested quality's key";
+}
+
 TEST(ImageFitSdk, BaselineJpegCoversEveryPlacement) {
   static uint8_t bookBuf[1 << 20];
   static uint8_t scratchBuf[4 << 20];

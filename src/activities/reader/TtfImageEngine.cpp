@@ -971,6 +971,18 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
         return DecodeResult::Failed;
       }
       if (bake.grayDone()) {
+        // A degraded worker job has nothing to produce: remap with caching
+        // forced off would stream the whole .g back, emit no cache and
+        // still report Ok — stranding the image uncached for its entire
+        // sighting window. Fail instead so processJob defers the job and a
+        // calmer pass re-decodes at full quality (amendment 7). Foreground
+        // decodes keep the paint-uncached contract below: the user sees
+        // the image now and nothing poisons the cache key.
+        if (dpid.degraded && !paintToTarget && caching) {
+          LOG_INF("TIMGE", "Worker decode degraded - deferring without remap: %s", spec.href);
+          bake.grayDiscard();
+          return DecodeResult::Failed;
+        }
         bool cacheStreamOk = false;
         // A rung stepdown (the attach ladder) bakes a lower-quality result —
         // the rows still PAINT (remap runs with caching forced off, so the
@@ -1123,6 +1135,14 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
                              paintToTarget, abortPoll, abortCtx, clahe);
     }
     if (collecting && bake.grayDone()) {
+      // Same degraded-worker contract as the JPEG/PNG branch (amendment 7):
+      // a degraded cache-only job defers instead of streaming to Ok with no
+      // cache; the foreground keeps the paint-uncached contract.
+      if (planDegraded && !paintToTarget && caching) {
+        LOG_INF("TIMGE", "Worker decode degraded - deferring without remap: %s", spec.href);
+        bake.grayDiscard();
+        return DecodeResult::Failed;
+      }
       bool cacheStreamOk = false;
       // Same degraded-rung contract as the JPEG/PNG branch: the remap runs
       // with caching forced off when the attach ladder stepped down, so the
