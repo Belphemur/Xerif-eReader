@@ -79,15 +79,16 @@ TEST(TextureBake, FlatNearLevelBakesToneCorrect) {
 }
 
 TEST(TextureBake, FlatDarkFieldStaysDominantlyBlack) {
-  // Flat 40 maps to 13 — level 0 dominates. The Atkinson absorption biases
-  // dark at low duty (mapped 13 over the 0→48 span = 27% level-1 duty
-  // tone-correct; measured 82.4% level 0 / 17.6% level 1 under the
-  // iteration-3 quantizer). No mid levels, no white, level-0 dominance
-  // with a floor.
+  // Flat 40 maps to 13 — level 0 dominates. Under the smooth-region 8/8
+  // mass-conserving kernel (amendment 7) the duty is the tone-correct one:
+  // mapped 13 over the 0→48 span = 27% level-1 duty (measured 73.5% level
+  // 0 / 26.5% level 1; the pure-Atkinson absorption used to bias this to
+  // 82.4% level 0). No mid levels, no white, level-0 dominance with a
+  // floor.
   const std::vector<uint8_t> gray(96 * 48, 40);
   const auto tones = bake(96, 48, gray, "/t/texture_flat40.g");
   const int l0 = levelCount(tones, 0);
-  EXPECT_GE(l0, 80 * 96 * 48 / 100);  // ≥80% level 0 (measured 82.4%)
+  EXPECT_GE(l0, 65 * 96 * 48 / 100);  // ≥65% level 0 (measured 73.5%)
   EXPECT_EQ(levelCount(tones, 1), 96 * 48 - l0);
   EXPECT_EQ(levelCount(tones, 2), 0);
   EXPECT_EQ(levelCount(tones, 3), 0);
@@ -95,21 +96,21 @@ TEST(TextureBake, FlatDarkFieldStaysDominantlyBlack) {
 
 TEST(TextureBake, FlatMidtoneBetweenLevelsStaysToneCorrect) {
   // Flat 127 maps to 126 (fixed-contrast degenerate map) — between levels
-  // 112 and 255 under the panel-calibrated set. The 25% Atkinson absorption
-  // has a documented low-duty dead zone: a flat field whose tone-correct
-  // duty is ~10% (predicted (126-112)/(255-112) = 9.8% level 3) parks on
-  // the lower level — measured 100% level 2 (tone err 14, the panel's own
-  // tone), never escaping the bracketing pair. That solid bake is the
-  // ordered trade: the 100%-conserving quantizer dithered this exact field
-  // into checkerboard worms, which is the defect the owner's Atkinson
-  // switch exists to kill. The contract that still holds: no white/black
-  // escape and the field is row-uniform (no banding).
+  // 112 and 255 under the panel-calibrated set. Under the smooth-region
+  // 8/8 mass-conserving kernel (amendment 7) the field dithers at its
+  // tone-correct duty: predicted (126−112)/(255−112) = 9.8% level 3,
+  // measured 8.5% — the pure-Atkinson dead zone (100% level 2) is gone by
+  // design. The wide six-tap dispersion plus the smooth-region threshold
+  // dither keep the low-duty dither worm-free: no black escape, the field
+  // stays inside the bracketing pair, and it is row-uniform (no banding).
   const std::vector<uint8_t> gray(48 * 24, 127);
   const auto tones = bake(48, 24, gray, "/t/texture_flat127.g");
   EXPECT_EQ(levelCount(tones, 1), 0);
   EXPECT_EQ(levelCount(tones, 0), 0);
-  EXPECT_EQ(levelCount(tones, 3), 0);  // dead zone: parks on the lower level
-  EXPECT_EQ(levelCount(tones, 2), 48 * 24);
+  const int l3 = levelCount(tones, 3);
+  EXPECT_GE(l3, 48 * 24 / 20);  // ≥5% level 3 (tone-correct ~9.8%)
+  EXPECT_LE(l3, 48 * 24 / 5);   // ≤20% (measured 8.5%)
+  EXPECT_EQ(levelCount(tones, 2), 48 * 24 - l3);
   EXPECT_LT(rowDelta(tones, 48, 24, 2), 4.0);
 }
 
@@ -235,4 +236,99 @@ TEST(TextureBake, ThinStrokesSurviveTheBake) {
     EXPECT_NE(tones[static_cast<size_t>(y) * w + 39], 0) << "halo left of 1px stroke, row " << y;
     EXPECT_NE(tones[static_cast<size_t>(y) * w + 41], 0) << "halo right of 1px stroke, row " << y;
   }
+}
+
+// ── Amendment 7 (edge-aware hybrid diffusion) ───────────────────────────────
+
+namespace {
+
+// Bakes the given field rows plus a full-range 0..255 sweep that shapes the
+// near-identity adaptive map (the AdaptiveBake full-range construction:
+// lo=1, hi=254), so assertions can be written in mapped space. The field
+// rows are collected FIRST so their bake starts from a clean error state;
+// the sweep rows only feed the histogram/map and are ignored by the
+// assertions.
+struct FieldBake {
+  std::vector<uint8_t> gray;
+  std::vector<uint8_t> tones;
+  ttfimg::ToneBake4 bake{0};
+  int fieldRows = 0;
+
+  FieldBake(const int w, const std::vector<uint8_t>& field, const int fieldRowCount, const char* tempPath) : bake{w} {
+    gray = field;
+    for (int v = 0; v < 256; ++v) gray.insert(gray.end(), static_cast<size_t>(w), static_cast<uint8_t>(v));
+    fieldRows = fieldRowCount;
+    if (bake.beginCollect(tempPath)) {
+      for (size_t y = 0; y < gray.size() / w; ++y) bake.collectRow(&gray[y * w]);
+    }
+    EXPECT_TRUE(bake.grayDone());
+    bake.beginRemap();
+    tones.resize(gray.size());
+    std::vector<uint8_t> row(w);
+    for (size_t y = 0; y < gray.size() / w; ++y) {
+      bake.toneRow(&gray[y * w], row.data());
+      std::copy(row.begin(), row.end(), tones.begin() + static_cast<std::ptrdiff_t>(y * w));
+    }
+  }
+};
+
+}  // namespace
+
+TEST(TextureBake, EdgeAwareHighlightRampHasNoDeadZoneShelf) {
+  // The pure-Atkinson dead zone (amendment 7's defect): smooth highlight
+  // shading inside the top span snapped flat to level 3 instead of
+  // tapering. The hybrid's smooth regions diffuse 8/8 mass-conserving, so
+  // the band keeps its gray stipple and the mean emitted tone tracks the
+  // mapped input.
+  const int w = 240;
+  const int fieldLo = 175;
+  const int fieldHi = 236;  // below the kWhiteSnap 240 clip
+  std::vector<uint8_t> field;
+  for (int v = fieldLo; v <= fieldHi; ++v) field.insert(field.end(), static_cast<size_t>(w), static_cast<uint8_t>(v));
+  const int fieldRows = fieldHi - fieldLo + 1;
+  const FieldBake baked(w, field, fieldRows, "/t/hybrid_ramp.g");
+
+  // Non-zero gray stipple density in the 220..235 band (rows are constant).
+  long stipple = 0;
+  const int bandLo = 220;
+  const int bandHi = 235;
+  for (int v = bandLo; v <= bandHi; ++v) {
+    const size_t y = static_cast<size_t>(v - fieldLo) * w;
+    for (int x = 0; x < w; ++x) {
+      if (baked.tones[y + x] != 3) ++stipple;
+    }
+  }
+  EXPECT_GT(stipple, static_cast<long>((bandHi - bandLo + 1)) * w / 20)
+      << "the highlight band parked flat on level 3 (dead-zone shelf)";
+
+  // Mean emitted tone within 5 levels of the mapped input over the ramp.
+  long long emitted = 0;
+  long long mapped = 0;
+  for (int r = 0; r < fieldRows; ++r) {
+    mapped += static_cast<long long>(baked.bake.mapLut[fieldLo + r]) * w;
+    for (int x = 0; x < w; ++x) {
+      emitted += ttfimg::ToneBake4::kLevels[baked.tones[static_cast<size_t>(r) * w + x]];
+    }
+  }
+  EXPECT_NEAR(static_cast<double>(emitted) / (fieldRows * w), static_cast<double>(mapped) / (fieldRows * w), 5.0);
+}
+
+TEST(TextureBake, EdgeAwareSharpStrokeBlocksCrossEdgeBleed) {
+  // Midtone shading ramp → bright paper margin (mapped 232, below the 240
+  // white snap) with a 2-px ink stroke inside it. The stroke-to-paper cliff
+  // (mapped step ≥ kEdgeBarrier 80) must refuse the forward taps, so the
+  // paper immediately after the stroke receives zero cross-cliff bleed and
+  // stays clean level 3 while the stroke bakes dark.
+  const int w = 96;
+  std::vector<uint8_t> field(static_cast<size_t>(w), 232);
+  for (int x = 0; x < 32; ++x) field[x] = 150;  // shading ramp
+  field[47] = 12;                               // 2-px ink stroke
+  field[48] = 12;
+  const FieldBake baked(w, field, 1, "/t/hybrid_stroke.g");
+  const uint8_t* t0 = baked.tones.data();
+  for (int x = 47; x <= 48; ++x) {
+    EXPECT_LE(t0[x], 1) << "stroke pixel " << x << " did not bake dark";
+  }
+  EXPECT_EQ(t0[49], 3) << "paper right after the stroke took cross-cliff bleed";
+  EXPECT_EQ(t0[50], 3) << "paper after the stroke took cross-cliff bleed";
 }

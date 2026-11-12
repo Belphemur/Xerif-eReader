@@ -62,12 +62,18 @@ constexpr bool absoluteGrayImageRoute(const bool pageHasImages, const bool quali
 // Near-white paper (mapped ≥ 240, the KCC-standard white-point clip) snaps
 // to level 3 with no diffusion: 8×8 DCT ringing (240..251) around black
 // text on white paper can no longer accumulate into dark dots.
-// The diffusion is serpentine Atkinson in exact 1/8-level units across six
-// neighbors (forward 1, forward 2, next-row behind/below/ahead, two-rows-
-// down below — 6/8 = 75% spread, 25% absorbed): the wider neighbor set
-// kills the checkerboard worms and edge blobs the 100% Sierra-Lite plane
-// produced on flat midtones while 1/8 shift-only terms keep the integer
-// plane exact (8·errVal eighth-units out per 8·e consumed).
+// The diffusion is the edge-aware hybrid (design 2026-11-11 amendment 7) in
+// exact 1/8-level units across the same six neighbors: smooth regions and
+// gentle gradients (edgeMag <= kEdgeSmooth) diffuse 8/8 — mass-conserving,
+// so subtle shading ramps reach the panel's lightest levels instead of
+// parking in the pure-Atkinson dead zone; moderate transitions keep 7/8;
+// sharp edges and strokes (edgeMag >= kEdgeSharp) drop to 6/8 Atkinson so
+// overshoot is damped at contours; a cross-cliff barrier (dxFwd >=
+// kEdgeBarrier) refuses the forward taps entirely so high-contrast strokes
+// never bleed error onto adjacent paper. The wider six-tap neighbor set
+// still kills the checkerboard worms and edge blobs the 100% Sierra-Lite
+// plane produced on flat midtones, and 1/8 shift-only terms keep the integer
+// plane exact.
 struct ToneBake4 : ToneBaker {
   static constexpr int kGammaNum = 22;  // γ = kGammaNum/kGammaDen (§7)
   static constexpr int kGammaDen = 10;
@@ -91,6 +97,21 @@ struct ToneBake4 : ToneBaker {
   static constexpr uint8_t kLevels[4] = {0, 48, 112, 255};
   static constexpr int kMids[3] = {28, 78, 182};  // nearest-level midpoints
   static constexpr int kWhiteSnap = 240;          // mapped value that snaps to paper white
+  // Edge-aware hybrid gates (amendment 7): symmetric local gradient of the
+  // mapped value — max(|mv−nextMv|, |mv−prevMv|, |mv−upMv|) — picks the
+  // diffusion strength: <= 20 smooth (8/8), 21..55 mid (7/8), >= 56 sharp
+  // (6/8 Atkinson). dxFwd >= kEdgeBarrier additionally blocks the forward
+  // taps so ink-to-paper cliffs do not bleed error across the contour.
+  static constexpr int kEdgeSmooth = 20;
+  static constexpr int kEdgeSharp = 56;
+  static constexpr int kEdgeBarrier = 80;
+  // Small deterministic threshold dither ONLY in smooth regions: with 8/8
+  // mass conservation a noiseless synthetic vertical gradient can mode-lock
+  // into row-periodic patterns (the texture design's original defect).
+  // Suppressed at edges (edgeMag >= kEdgeSharp) so strokes/text carry zero
+  // threshold jitter; the jitter never enters errVal — the emitted tone
+  // stays unbiased and worker/foreground parity holds (pure (x,row) hash).
+  static constexpr int kSmoothNoiseAmp = 4;  // range -amp..amp-1
 
   uint8_t gammaLut[256];
   uint8_t contrastLut[256];
@@ -109,42 +130,69 @@ struct ToneBake4 : ToneBaker {
   std::unique_ptr<int32_t[]> err;  // error plane, eighth-level units
   std::unique_ptr<int32_t[]> errNext;
   std::unique_ptr<int32_t[]> errNext2;
+  // Causal vertical edge context (amendment 7): the mapped value of each
+  // column of the previous baked row — the third gradient term (dyUp) and
+  // the row-0 mirror invariant's reason dyUp vanishes there. One byte per
+  // column, written once per visited pixel, read on the next row.
+  std::unique_ptr<uint8_t[]> prevRowMv;
+  bool hasPrevRow = false;
+  int noiseAmp = kSmoothNoiseAmp;  // 0 = no threshold dither (mirror pins)
   const int width;
   bool reverse = false;  // serpentine: the current row scans right-to-left
   int row = 0;           // baked row index
 
+  // The LUTs depend only on the constexpr gamma/contrast constants, but the
+  // gamma pass is soft-float (powf) — build both tables once and memcpy them
+  // per bake instead of 256 powf calls on every decode (amendment 7).
+  struct StaticLuts {
+    uint8_t gamma[256];
+    uint8_t contrast[256];
+    StaticLuts() {
+      for (int i = 0; i < 256; ++i) {
+        // eink-image's gamma pass: out = round(255 * (i/255)^(1/γ)).
+        const float corrected = powf(static_cast<float>(i) / 255.0f, static_cast<float>(kGammaDen) / kGammaNum);
+        int g = static_cast<int>(corrected * 255.0f + 0.5f);
+        if (g < 0) g = 0;
+        if (g > 255) g = 255;
+        gamma[i] = static_cast<uint8_t>(g);
+      }
+      for (int i = 0; i < 256; ++i) {
+        // eink-image's contrast pass as exact integers:
+        // ((v/255 − 1/2)·13/10 + 1/2)·255 = (26·v − 765)/20 — pivot 128
+        // fixed, endpoints clamp to 0/255.
+        int c = (26 * i - 765) / 20;
+        if (c < 0) c = 0;
+        if (c > 255) c = 255;
+        contrast[i] = static_cast<uint8_t>(c);
+      }
+    }
+  };
+  static const StaticLuts& luts() {
+    static const StaticLuts built;  // threadsafe init; build-time constants
+    return built;
+  }
+
   explicit ToneBake4(const int w) : width(w) {
-    for (int i = 0; i < 256; ++i) {
-      // eink-image's gamma pass: out = round(255 * (i/255)^(1/γ)).
-      const float corrected = powf(static_cast<float>(i) / 255.0f, static_cast<float>(kGammaDen) / kGammaNum);
-      int g = static_cast<int>(corrected * 255.0f + 0.5f);
-      if (g < 0) g = 0;
-      if (g > 255) g = 255;
-      gammaLut[i] = static_cast<uint8_t>(g);
-    }
-    for (int i = 0; i < 256; ++i) {
-      // eink-image's contrast pass as exact integers:
-      // ((v/255 − 1/2)·13/10 + 1/2)·255 = (26·v − 765)/20 — pivot 128 fixed,
-      // endpoints clamp to 0/255.
-      int c = (26 * i - 765) / 20;
-      if (c < 0) c = 0;
-      if (c > 255) c = 255;
-      contrastLut[i] = static_cast<uint8_t>(c);
-    }
+    memcpy(gammaLut, luts().gamma, sizeof(gammaLut));
+    memcpy(contrastLut, luts().contrast, sizeof(contrastLut));
     if (w > 0) {
       err.reset(new (std::nothrow) int32_t[w + 4]);
       errNext.reset(new (std::nothrow) int32_t[w + 4]);
       errNext2.reset(new (std::nothrow) int32_t[w + 4]);
+      prevRowMv.reset(new (std::nothrow) uint8_t[w]);
       if (err && errNext && errNext2) {
         memset(err.get(), 0, (w + 4) * sizeof(int32_t));
         memset(errNext.get(), 0, (w + 4) * sizeof(int32_t));
         memset(errNext2.get(), 0, (w + 4) * sizeof(int32_t));
       }
+      if (prevRowMv) memset(prevRowMv.get(), 0, static_cast<size_t>(w));
     }
     memset(hist, 0, sizeof(hist));
     memset(mapLut, 0, sizeof(mapLut));  // valid only after beginRemap()
   }
-  bool ok() const { return err != nullptr && errNext != nullptr && errNext2 != nullptr; }
+  bool ok() const {
+    return err != nullptr && errNext != nullptr && errNext2 != nullptr && (width <= 0 || prevRowMv != nullptr);
+  }
 
   // ── adaptive two-phase API (§2.1) ───────────────────────────────────────
   // The gray temp is a raw row-major 8-bit stream (no header: the caller
@@ -174,8 +222,34 @@ struct ToneBake4 : ToneBaker {
   // Mapped tone of one source pixel (the LUT chain the bake quantizes).
   int mapv(const uint8_t gray) const { return adaptive ? mapLut[gray] : contrastLut[gammaLut[gray]]; }
 
-  uint8_t toneDir(const int x, const int gray, const bool reverseScan) {
+  // `srcRow` supplies the source-gray context for the symmetric local
+  // gradient (next/next2/prev along the scan direction, mapped). nullptr =
+  // the single-pixel ToneBaker::tone() path: the pixel is its own neighbor,
+  // so every gradient term is 0 and the pixel takes the smooth 8/8 kernel —
+  // the virtual interface stays unchanged for legacy callers.
+  uint8_t toneDir(const int x, const int gray, const bool reverseScan, const uint8_t* srcRow = nullptr) {
     const int mv = mapv(static_cast<uint8_t>(gray));
+    const int d = reverseScan ? -1 : 1;
+    // Symmetric local gradient (amendment 7). Clamping the neighbor index
+    // to the row keeps every term a real mapped difference; on row 0
+    // (hasPrevRow false) dyUp is 0, which is exactly what makes the
+    // mirror-symmetric row-0 bake byte-identical forward vs reverse.
+    const int nextX = (x + d >= 0 && x + d < width) ? (x + d) : x;
+    const int next2X = (x + 2 * d >= 0 && x + 2 * d < width) ? (x + 2 * d) : nextX;
+    const int prevX = (x - d >= 0 && x - d < width) ? (x - d) : x;
+    const int nextMv = srcRow != nullptr ? mapv(srcRow[nextX]) : mv;
+    const int next2Mv = srcRow != nullptr ? mapv(srcRow[next2X]) : mv;
+    const int prevMv = srcRow != nullptr ? mapv(srcRow[prevX]) : mv;
+    const int upMv = hasPrevRow ? static_cast<int>(prevRowMv[x]) : mv;
+    const int dxFwd = mv > nextMv ? (mv - nextMv) : (nextMv - mv);
+    const int dxFwd2 = mv > next2Mv ? (mv - next2Mv) : (next2Mv - mv);
+    const int dxBack = mv > prevMv ? (mv - prevMv) : (prevMv - mv);
+    const int dyUp = mv > upMv ? (mv - upMv) : (upMv - mv);
+    int edgeMag = dxFwd > dxBack ? dxFwd : dxBack;
+    if (dyUp > edgeMag) edgeMag = dyUp;
+    // Every visited pixel seeds the next row's vertical context (the white
+    // snap below returns early, so write before both exits).
+    if (prevRowMv != nullptr) prevRowMv[x] = static_cast<uint8_t>(mv);
     // White-paper snap: near-pure paper emits level 3, zeroes the slot and
     // diffuses nothing — the white field carries no error and stays clean.
     // Snap 240 (KCC-standard clip): 8×8 DCT ringing (240..251) around black
@@ -188,31 +262,50 @@ struct ToneBake4 : ToneBaker {
     const int e8 = err[x + 2];
     err[x + 2] = 0;
     const int e = e8 >= 0 ? ((e8 + 4) >> 3) : -(((4 - e8) >> 3));
+    const int rem8 = e8 - (e << 3);  // exact residue, eighth-levels (-3..+4)
     int v = mv + e;
     if (v < 0) v = 0;
     if (v > 255) v = 255;
+    // Smooth-region threshold dither (never on edges, never in the error):
+    // breaks row-periodic mode-locking on synthetic gradients; the hash is
+    // a pure function of (x, row), so runs stay byte-identical.
+    int jitter = 0;
+    if (noiseAmp > 0 && edgeMag < kEdgeSharp) {
+      uint32_t h = (static_cast<uint32_t>(x) + 1u) * 374761393u + (static_cast<uint32_t>(this->row) + 1u) * 668265263u;
+      h = (h ^ (h >> 13)) * 1274126177u;
+      const uint32_t span = static_cast<uint32_t>(2 * noiseAmp);  // power of two
+      jitter = static_cast<int>((h >> 17) & (span - 1u)) - noiseAmp;
+    }
+    const int veff = v + jitter;
     int t = 3;
-    if (v < kMids[0])
+    if (veff < kMids[0])
       t = 0;
-    else if (v < kMids[1])
+    else if (veff < kMids[1])
       t = 1;
-    else if (v < kMids[2])
+    else if (veff < kMids[2])
       t = 2;
     const int errVal = v - static_cast<int>(kLevels[t]);  // eighth-level units
-    // Serpentine Atkinson, eighth-level units, six neighbors (75% spread):
-    // forward 1, forward 2, next row behind/below/ahead, two rows down below.
-    const int d = reverseScan ? -1 : 1;
+    // Edge-aware hybrid emission (amendment 7). Six taps, eighth-level
+    // units: smooth 8/8 (2/8 forward + the consume residue rounding the
+    // plane back to exact mass, 2/8 below, 1/8 elsewhere), mid 7/8, sharp
+    // 6/8 Atkinson. The forward taps respect the cross-cliff barrier.
+    const bool smooth = edgeMag <= kEdgeSmooth;
+    const bool mid = !smooth && edgeMag < kEdgeSharp;
     const int xi = x + 2;
-    err[xi + d] += errVal;
-    err[xi + 2 * d] += errVal;
+    if (dxFwd < kEdgeBarrier) {
+      err[xi + d] += smooth ? (2 * errVal + rem8) : (mid ? (2 * errVal) : errVal);
+    }
+    if (dxFwd < kEdgeBarrier && dxFwd2 < kEdgeBarrier) {
+      err[xi + 2 * d] += errVal;
+    }
     errNext[xi - d] += errVal;
-    errNext[xi] += errVal;
+    errNext[xi] += smooth ? (2 * errVal) : errVal;
     errNext[xi + d] += errVal;
     errNext2[xi] += errVal;
     return static_cast<uint8_t>(t);
   }
   // ToneBaker's forward kernel — kept for ascending-x callers and the tests;
-  // the quality decodes use toneRow().
+  // the quality decodes use toneRow(). Single-pixel: no row context.
   uint8_t tone(const int x, const int gray) override { return toneDir(x, gray, false); }
 
   // Row bake (the serpentine contract): visits even rows ascending and odd
@@ -223,7 +316,7 @@ struct ToneBake4 : ToneBaker {
     const bool rev = reverse;
     for (int i = 0; i < width; ++i) {
       const int x = rev ? (width - 1 - i) : i;
-      tones[x] = toneDir(x, gray[x], rev);
+      tones[x] = toneDir(x, gray[x], rev, gray);
     }
     nextRow();
   }
@@ -234,6 +327,7 @@ struct ToneBake4 : ToneBaker {
     err.swap(errNext);
     errNext.swap(errNext2);
     memset(errNext2.get(), 0, (width + 4) * sizeof(int32_t));
+    hasPrevRow = true;
     reverse = !reverse;
     ++row;
   }

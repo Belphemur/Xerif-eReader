@@ -160,6 +160,7 @@ void ToneBake4::beginRemap() {
     memset(errNext.get(), 0, (width + 4) * sizeof(int32_t));
     memset(errNext2.get(), 0, (width + 4) * sizeof(int32_t));
   }
+  hasPrevRow = false;  // the remap bake starts a fresh vertical context
   reverse = false;
   row = 0;
 }
@@ -282,7 +283,7 @@ uint64_t cacheHash64(const ImageSpec& spec) {
   return hash;
 }
 
-char cacheRevisionLetter(const bool qualityTone, const bool clahe) { return qualityTone ? (clahe ? 'b' : 'a') : 'l'; }
+char cacheRevisionLetter(const bool qualityTone, const bool clahe) { return qualityTone ? (clahe ? 'd' : 'c') : 'l'; }
 
 CacheIdentity cacheIdentity(const ImageSpec& spec, const bool qualityTone, const bool clahe) {
   CacheIdentity id;
@@ -319,7 +320,12 @@ bool cacheNameFor(const ImageSpec& spec, const char* dir, const bool qualityTone
   // (2026-11-11) — panel-calibrated levels {0,48,112,255} (midpoints
   // {28,78,182}), white snap 240, serpentine Atkinson 1/8 diffusion,
   // coring-6/darkFloor sharpen (both letters never used in this file's
-  // history — swept).
+  // history — swept). 'c' (Sharp) and 'd' (Enhanced) are the edge-aware
+  // hybrid bake (amendment 7, 2026-11-11): 8/8 → 7/8 → 6/8 diffusion
+  // strength by symmetric local gradient, the kEdgeBarrier cross-cliff
+  // guard, smooth-region threshold dither, the causal prevRowMv context,
+  // and the static gamma/contrast LUTs ('a'/'b' only ever shipped in the
+  // merged PR #303 develop builds — swept).
 
   // Full 64-bit hash in the name: a truncated identity would let two records
   // of the same dimensions and generation share one file, and the header

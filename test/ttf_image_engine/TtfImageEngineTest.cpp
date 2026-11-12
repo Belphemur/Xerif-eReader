@@ -74,13 +74,14 @@ TEST(CacheIdentity, PolicyLetterSeparatesBakes) {
   ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 10, 20, 100, 80), kDir, true, true, c, sizeof(c)));
   EXPECT_STRNE(a, b);
   EXPECT_STRNE(a, c);
-  // 'a' = Sharp, 'b' = DPID + CLAHE (Enhanced), 'l' = legacy: the
-  // iteration-3 owner audit bake (2026-11-11) invalidated every pre-campaign
-  // bake — panel-calibrated levels, white snap 240, Atkinson 1/8 diffusion,
-  // coring-6/darkFloor sharpen.
-  EXPECT_NE(strstr(a, "/ia"), nullptr);
+  // 'c' = Sharp, 'd' = DPID + CLAHE (Enhanced), 'l' = legacy: the
+  // edge-aware hybrid bake (amendment 7, 2026-11-11) invalidated every
+  // prior bake — gradient-gated 8/8 → 7/8 → 6/8 diffusion, the
+  // kEdgeBarrier cross-cliff guard, smooth-region threshold dither,
+  // prevRowMv context, static LUTs.
+  EXPECT_NE(strstr(a, "/ic"), nullptr);
   EXPECT_NE(strstr(b, "/il"), nullptr);
-  EXPECT_NE(strstr(c, "/ib"), nullptr);
+  EXPECT_NE(strstr(c, "/id"), nullptr);
 }
 
 TEST(CacheIdentity, RefusesOverlongDir) {
@@ -311,12 +312,11 @@ static int64_t planeMass(const ttfimg::ToneBake4& bake) {
   return m;
 }
 
-TEST(ToneBake4, AtkinsonSpreadsThreeQuartersOfTheError) {
-  // Atkinson plane (iteration-3 owner audit): slots hold exact 1/8-level
-  // units — six neighbors at 1/8 each — so every distributed term is an
-  // integer and one tone() spreads exactly 6·errVal eighth-units (75% of
-  // the error; the absorbed 2/8 is the worm-killing damping). A fresh slot
-  // carries no residue.
+TEST(ToneBake4, SmoothPixelsDiffuseTheFullError) {
+  // Edge-aware hybrid (amendment 7): a smooth pixel (single-pixel tone()
+  // = no row context, every gradient term 0) diffuses 8/8 — mass-conserving
+  // — so subtle ramps reach the light levels instead of parking in the
+  // pure-Atkinson dead zone. A fresh slot carries no residue (rem8 = 0).
   ttfimg::ToneBake4 bake(8);
   ASSERT_TRUE(bake.ok());
   const int64_t m0 = planeMass(bake);
@@ -331,10 +331,41 @@ TEST(ToneBake4, AtkinsonSpreadsThreeQuartersOfTheError) {
     t = 2;
   const int errVal = v - ttfimg::ToneBake4::kLevels[t];
   bake.tone(0, 127);
+  EXPECT_EQ(planeMass(bake) - m0, 8 * errVal);
+  // The smooth kernel (ascending visit: xi = x+2 = 2): 2/8 forward
+  // (err[3]), 1/8 two-ahead (err[4]), 1/8 below-back (errNext[1]), 2/8
+  // directly below (errNext[2]), 1/8 below-ahead (errNext[3]), 1/8 two
+  // rows down below (errNext2[2]).
+  EXPECT_EQ(bake.err[3], 2 * errVal);
+  EXPECT_EQ(bake.err[4], errVal);
+  EXPECT_EQ(bake.errNext[1], errVal);
+  EXPECT_EQ(bake.errNext[2], 2 * errVal);
+  EXPECT_EQ(bake.errNext[3], errVal);
+  EXPECT_EQ(bake.errNext2[2], errVal);
+}
+
+TEST(ToneBake4, SharpPixelsKeepAtkinsonDamping) {
+  // Edge-aware hybrid: a sharp pixel damps back to the 6/8 Atkinson spread
+  // (six neighbors at 1/8, 2/8 absorbed). Simulate a stroke-adjacent pixel
+  // by seeding prevRowMv far from the pixel's own value: a real sharp
+  // edge, no row context needed for the horizontal terms.
+  ttfimg::ToneBake4 bake(8);
+  ASSERT_TRUE(bake.ok());
+  bake.hasPrevRow = true;
+  bake.prevRowMv[0] = 0;  // dyUp = mapv(127) - 0: sharp
+  const int64_t m0 = planeMass(bake);
+  const int mv = bake.mapv(127);
+  const int v = mv;
+  int t = 3;
+  if (v < ttfimg::ToneBake4::kMids[0])
+    t = 0;
+  else if (v < ttfimg::ToneBake4::kMids[1])
+    t = 1;
+  else if (v < ttfimg::ToneBake4::kMids[2])
+    t = 2;
+  const int errVal = v - ttfimg::ToneBake4::kLevels[t];
+  bake.tone(0, 127);
   EXPECT_EQ(planeMass(bake) - m0, 6 * errVal);
-  // The 1/8 terms land on six slots (ascending visit: xi = x+2 = 2;
-  // forward +1/+2 = err[3..4], next row behind/below/ahead = errNext[1..3],
-  // two rows down below = errNext2[2]).
   EXPECT_EQ(bake.err[3], errVal);
   EXPECT_EQ(bake.err[4], errVal);
   EXPECT_EQ(bake.errNext[1], errVal);
@@ -364,10 +395,16 @@ TEST(ToneBake4, ConsumedErrorFeedsTheQuantizerInput) {
   const int errVal = v - ttfimg::ToneBake4::kLevels[t];
   bake.tone(0, 127);
   EXPECT_EQ(bake.err[2], 0);  // fully consumed
-  EXPECT_EQ(bake.err[3], errVal);
+  // Smooth kernel: the consume residue (rem8 = 37 − 40 = −3) rides the
+  // 2/8 forward tap, rounding the plane back to exact mass conservation.
+  EXPECT_EQ(bake.err[3], 2 * errVal - 3);
   EXPECT_EQ(bake.err[4], errVal);
-  // Mass: 6·errVal distributed eighth-units minus the 37 consumed.
-  EXPECT_EQ(planeMass(bake) - m0, 6 * errVal - 37);
+  EXPECT_EQ(bake.errNext[1], errVal);
+  EXPECT_EQ(bake.errNext[2], 2 * errVal);
+  EXPECT_EQ(bake.errNext[3], errVal);
+  EXPECT_EQ(bake.errNext2[2], errVal);
+  // Mass: 8·errVal + rem8 distributed eighth-units minus the 37 consumed.
+  EXPECT_EQ(planeMass(bake) - m0, 8 * errVal - 3 - 37);
 }
 
 TEST(ToneBake4, WhitePaperSnapsClean) {
@@ -389,13 +426,22 @@ TEST(ToneBake4, SerpentineMirrorsTheKernel) {
   // toneRow drives the scan direction itself: a mirror-symmetric row baked
   // ascending (row 0) equals the same row baked on a reverse-seeded bake —
   // the FS kernel mirrors with the visit direction, so the horizontal error
-  // term always lands on the next-visited pixel.
+  // term always lands on the next-visited pixel. Row 0 only (hasPrevRow
+  // false ⇒ dyUp = 0) and noiseAmp = 0: the threshold dither keys on the
+  // absolute column, which is not mirror-symmetric — with it the two runs
+  // legitimately differ.
   const int w = 16;
   uint8_t gray[w];
   for (int i = 0; i < w; ++i) gray[i] = static_cast<uint8_t>(60 + (i < w - 1 - i ? i : w - 1 - i) * 15);
+  // Symmetric sharp cliffs (mapped |105→12| ≥ kEdgeBarrier): the mirrored
+  // kernel AND the cross-cliff barrier must mirror together.
+  gray[3] = gray[12] = 12;
+  gray[4] = gray[11] = 12;
   ttfimg::ToneBake4 forward(w);
   ttfimg::ToneBake4 backward(w);
   ASSERT_TRUE(forward.ok() && backward.ok());
+  forward.noiseAmp = 0;
+  backward.noiseAmp = 0;
   backward.reverse = true;  // row 0 visits right-to-left
   uint8_t fwd[w];
   uint8_t rev[w];
