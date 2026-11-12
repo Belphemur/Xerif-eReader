@@ -140,6 +140,16 @@ class OptionPopup {
           }
         }
       }
+      if (!snap.touchReleased || snap.touchX >= 0) return true;
+    }
+
+    const auto swipe = input.wasSwipe();
+    if (swipe == MappedInputManager::SwipeDir::Up || swipe == MappedInputManager::SwipeDir::Down) {
+      // Swipe pages the viewport by the render cap; the next render's clamp
+      // corrects it if the panel actually fits fewer rows (as #4460 does).
+      const int rows = static_cast<int>(MaxVisibleOptions);
+      if (scrollTo(scrollTop_.load(std::memory_order_acquire) + (swipe == MappedInputManager::SwipeDir::Up ? rows : -rows)))
+        requestUpdate();
       return true;
     }
 
@@ -281,7 +291,9 @@ class OptionPopup {
 
     // Fixed fraction of the screen, clamped by the theme's side margins; the
     // old max-text-width sizing is gone, long labels wrap inside the buttons.
-    const fui::Rect screen = device.screen();
+    const auto safe = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+    const fui::Rect screen{fui::clampI16(safe.x), fui::clampI16(safe.y), fui::clampI16(safe.width),
+                           fui::clampI16(safe.height)};
     const int16_t width =
         fui::clampI16(std::min<int>(screen.width * 3 / 4, screen.width - metrics.optionPopupDialogSideMargin * 2));
     const int16_t height = fui::clampI16(fui::optionDialogHeight(target, props, width), 0, screen.height);
