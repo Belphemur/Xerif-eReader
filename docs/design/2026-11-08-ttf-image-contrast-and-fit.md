@@ -674,3 +674,92 @@ same PNG/JPEG at 480×800, dumped host-side and inspected; salt/steps metrics
 on the 00005/00006-derived anchors recorded in the final report. Device:
 owner flash test (X4 Pro: PNG + JPEG from the file browser, sibling
 navigation cache hits, sleep cover unchanged, BMP unchanged).
+
+##### Amendment 7 (2026-11-11, edge-aware hybrid diffusion + degraded-worker retry + cold-paint arena parity)
+
+The iteration-3 Atkinson bake is crisp at contours but its flat 2/8 absorption
+creates a quantization dead zone on smooth gradients: a highlight ramp
+(marked 175 → 236) parks flat on level 3 instead of tapering — the light-novel
+illustration defect this iteration targets. The fix is anisotropic
+edge-gated diffusion inside `ToneBake4`, all in the existing integer
+1/8-level plane (no float, no per-pixel heap):
+
+- **Symmetric local gradient**: every visited pixel computes
+  `edgeMag = max(|mv−nextMv|, |mv−next2Mv| (barrier only), |mv−prevMv|,
+  |mv−upMv|)` over MAPPED values, with the horizontal neighbors taken along
+  the scan direction (`d = ±1`) and clamped to the row. The vertical term
+  comes from `prevRowMv[x]` — a new `uint8_t[w]` causal context written once
+  per visited pixel (480 bytes at the 454 px placement, member of the bake,
+  zero heap churn) and reset by `beginRemap()`. On row 0 (`hasPrevRow ==
+  false`) `dyUp` is 0, which is what keeps the serpentine mirror invariant:
+  a mirror-symmetric row 0 baked descending is the exact mirror image of the
+  same row baked ascending (`SerpentineMirrorsTheKernel` extended with
+  symmetric ≥80-mapped cliffs; outputs map at mirrored indices, the
+  kernel/context mirror together, noiseAmp pinned 0 because the dither keys
+  on the absolute column).
+- **Diffusion strength ladder** (forward-1, forward-2, next-row
+  behind/below/ahead, two-rows-below — the same six taps):
+  `edgeMag <= kEdgeSmooth (20)` diffuses 8/8 mass-conserving (2/8 forward +
+  the consume residue `rem8` restoring exact mass, 2/8 directly below, 1/8
+  elsewhere) — zero tone loss, no highlight dead zone, wide six-tap
+  dispersion avoids FS diagonal worms; `21..55` keeps 7/8 (the extra 1/8
+  below-tap and `rem8` dropped) as the seamless transition; `>= kEdgeSharp
+  (56)` damps back to 6/8 Atkinson so overshoot dies at contours.
+- **Cross-cliff barrier**: when the forward neighbor differs by
+  `dxFwd >= kEdgeBarrier (80)` mapped levels (ink stroke vs paper), the
+  forward taps receive nothing — the error is absorbed instead of bleeding
+  across the contour (`EdgeAwareSharpStrokeBlocksCrossEdgeBleed`: the paper
+  pixels after a 2-px stroke stay clean level 3, the stroke bakes ≤ 1).
+- **Smooth-region threshold dither** (`kSmoothNoiseAmp 4`, range −4..+3,
+  pure `(x,row)` hash, never on `edgeMag >= kEdgeSharp` pixels, never
+  enters `errVal`): with 8/8 mass conservation a noiseless synthetic
+  vertical gradient can re-mode-lock row-periodically; ±4 breaks that
+  while `GradientHasNoRowPeriodicBanding` /
+  `GradientHasNoSustainedDensityOscillation` / `GradientToneIsPreserved`
+  hold unchanged (the existing texture pins pass as-is with the hybrid).
+
+**Measured flat-field consequences** (intended, re-pinned): the pure-Atkinson
+low-duty dead zone is gone — flat 127 (mapped 126) now dithers 8.5% level 3
+(tone-correct prediction 9.8%, `FlatMidtone…` re-pinned 5–20%), and flat 40
+(mapped 13) sits at 73.5% level 0 vs the tone-correct 73% (`FlatDark…`
+re-pinned ≥65%).
+
+- **Degraded worker decode retry fix** (`TtfImageEngine.cpp`, both the
+  JPEG/PNG and GIF/BMP branches): a cache-only job (`caching && !paintToTarget`)
+  whose DPID ladder stepped down (`dpid.degraded` / `planDegraded`) used to
+  stream the entire `.g` through `remapGrayToCache` with caching forced off
+  and still return `Ok` — `ImagePredecodeWorker::processJob` logged "Job
+  done" with NO `.pxc`, stranding the image uncached for its whole sighting
+  window. The engine now returns `Failed` immediately (gray temp discarded)
+  so the worker defers the job and a calmer pass re-decodes at full quality.
+  Foreground decodes (`paintToTarget`) keep the paint-uncached contract
+  unchanged. `legacyPaintPass` keeps returning `Ok` for worker jobs: its
+  trigger is SD storage failure (dead gray temp), not transient memory —
+  a bounded 4-deferral retry storm against a full card buys nothing.
+  (`DegradedWorkerDecodeFailsForRetryWithoutCaching` pins both legs.)
+- **Static gamma/contrast LUTs**: `ToneBake4`'s constructor ran 256 soft-float
+  `powf` calls on EVERY decode although both tables depend only on constexpr
+  constants (`kGammaEnabled == false`). The tables now build once in a
+  function-local `StaticLuts` (threadsafe static init; the ctor memcpys
+  them), byte-identical for `LutStructure` and every `mapv()` consumer.
+- **Foreground cold-paint arena parity**: the worker reserves a dedicated
+  `ttfimg::kDecodeArenaBytes` (128 KiB, moved from `ImagePredecodeWorker`
+  into `TtfImageEngine.h`) so deflated full-page JPEGs never step down
+  through the SDK's arena retry. The foreground cold paint
+  (`paintTtfPageImages`) shares `TtfBookRuntime::scratch()` (192 KiB) with
+  the live page's run text (the caller's readPage mark holds it across the
+  paint — EpubReaderActivity release points at :4580/:4608/:4796) and, mid
+  build, the layout session's ~152 KiB working set, so a cold jump to an
+  illustration could be left under ~40 KiB and decode half-res, uncached.
+  The paint now provides a call-scoped PSRAM fallback arena whenever
+  `scratch().capacity() - used() < kDecodeArenaBytes` (released with the
+  block at scope end; on pool exhaustion it proceeds exactly as today).
+- **Cache letters**: `cacheRevisionLetter` 'a'/'b' → 'c' (Sharp) / 'd'
+  (Enhanced) — 'a'/'b' only ever shipped in the merged PR #303 develop
+  builds, so every develop-era cache regenerates. Legacy 'l' unchanged.
+  All cache-letter pins updated (`PolicyLetterSeparatesBakes`).
+- **Host pins**: `SmoothPixelsDiffuseTheFullError` (8/8 slot layout + exact
+  mass), `SharpPixelsKeepAtkinsonDamping` (6/8 via a seeded sharp dyUp),
+  `ConsumedErrorFeedsTheQuantizerInput` re-derived (residue rides the 2/8
+  forward tap), the two new `TextureBake.EdgeAware*` tests above, and the
+  degraded-worker SDK test. Full host suite 1635/1635 green.

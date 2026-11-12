@@ -103,8 +103,29 @@ void paintTtfPageImages(const freeink::book::Page& page, freeink::book::TtfBookR
         }
       } guard{hash};
       const size_t scratchMark = ttf.scratch().mark();
+      // Cold-decode arena parity (design amendment 7): the worker reserves a
+      // dedicated ttfimg::kDecodeArenaBytes block so a deflated full-page
+      // JPEG never steps down through the SDK's arena retry. The foreground
+      // shares the runtime scratch arena with the live page's run text (the
+      // caller's mark holds it) and, mid-build, the layout session's ~152 KiB
+      // working set — provide a call-scoped PSRAM block whenever the shared
+      // arena is under the floor, so cold-jumping to an illustration decodes
+      // at full resolution like the predecode worker would.
+      freeink::book::Arena* decodeArena = &ttf.scratch();
+      PoolBytes decodeArenaBytes;
+      freeink::book::Arena fallbackArena;
+      if (ttf.scratch().capacity() - ttf.scratch().used() < ttfimg::kDecodeArenaBytes) {
+        decodeArenaBytes = poolMakeBytes(ttfimg::kDecodeArenaBytes);
+        if (decodeArenaBytes) {
+          fallbackArena.init(decodeArenaBytes.get(), ttfimg::kDecodeArenaBytes);
+          decodeArena = &fallbackArena;
+        } else {
+          LOG_DBG("QPR", "OOM: image decode arena fallback (%u KiB)",
+                  static_cast<unsigned>(ttfimg::kDecodeArenaBytes / 1024));
+        }
+      }
       const ttfimg::DecodeResult res =
-          ttfimg::decodeAndCache(spec, cachePath, ttf.source(), ttf.catalog().zip(), ttf.scratch(), ttf.decodeEpub(),
+          ttfimg::decodeAndCache(spec, cachePath, ttf.source(), ttf.catalog().zip(), *decodeArena, ttf.decodeEpub(),
                                  &renderer, qualityTone, /*caching=*/true, nullptr, nullptr, true, clahe);
       ttf.scratch().release(scratchMark);
       if (res != ttfimg::DecodeResult::Ok) {
