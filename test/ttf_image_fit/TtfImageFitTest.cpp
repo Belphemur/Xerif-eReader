@@ -604,6 +604,68 @@ TEST(ImageFitSdk, DegradedWorkerDecodeFailsForRetryWithoutCaching) {
       << "a degraded rung must never publish under the requested quality's key";
 }
 
+TEST(ImageFitSdk, DcFallbackWorkerJobSkipsInsteadOfDeferring) {
+  // review 2026-11-11: a progressive stream whose full decode fell back to
+  // the DC-only first scan degrades deterministically (dcfallback_prog.jpg
+  // carries a corrupt marker between the scans, so the full decode refuses
+  // every time and the fallback reports 1/8-scale dims). The decode is a
+  // bilinear thumbnail that can never publish under the requested quality's
+  // key, so a worker job is DROPPED (Skip — processJob logs and drops) not
+  // deferred: five identical full decodes holding the decode bus buy
+  // nothing. The foreground keeps the paint-uncached contract.
+  static uint8_t bookBuf[1 << 20];
+  static uint8_t openScratch[64 * 1024];
+  static uint8_t scratchBuf[4 << 20];
+  HostFileSource source;
+  ASSERT_TRUE(source.open(FIT_FIXTURES "/fit_fixtures.epub"));
+  freeink::book::Arena bookArena(bookBuf, sizeof(bookBuf));
+  freeink::book::Book book;
+  {
+    freeink::book::Arena openScratchArena(openScratch, sizeof(openScratch));
+    ASSERT_EQ(book.open(source, bookArena, openScratchArena), freeink::book::BookStatus::Ok);
+  }
+  Epub epub;
+  auto& storage = HalStorage::getInstance();
+
+  ttfimg::ImageSpec spec = makeSpec(0, 40, 480, 720);
+  snprintf(spec.href, sizeof(spec.href), "OEBPS/images/dcfallback_prog.jpg");
+  ASSERT_TRUE(book.zip().find(spec.href) != nullptr);
+
+  // Worker leg: roomy arena (no scaleReduced confound) — dcFallback only.
+  storage.resetFiles();
+  spec.generation = 41;
+  FakeRenderer r;  // worker scratch renderer: non-null, never painted to
+  char cachePath[256];
+  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, false, cachePath, sizeof(cachePath)));
+  freeink::book::Arena scratch(scratchBuf, sizeof(scratchBuf));
+  const auto res = ttfimg::decodeAndCache(spec, cachePath, source, book.zip(), scratch, &epub, &r, true,
+                                          /*caching=*/true, nullptr, nullptr, /*paintToTarget=*/false, false);
+  EXPECT_EQ(res, ttfimg::DecodeResult::Skip)
+      << "a deterministic DC fallback must drop the job, not burn the deferral budget";
+  EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true, false));
+  EXPECT_FALSE(storage.exists(cachePath));
+  EXPECT_FALSE(storage.exists((std::string(cachePath) + ".t").c_str()));
+  EXPECT_FALSE(storage.exists((std::string(cachePath) + ".g").c_str()));
+
+  // Control: the foreground still paints the DC thumbnail and reports Ok,
+  // and nothing is published under the full-quality key.
+  storage.resetFiles();
+  spec.generation = 42;
+  FakeRenderer r2;
+  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, false, cachePath, sizeof(cachePath)));
+  freeink::book::Arena scratch2(scratchBuf, sizeof(scratchBuf));
+  const auto resFg = ttfimg::decodeAndCache(spec, cachePath, source, book.zip(), scratch2, &epub, &r2, true,
+                                            /*caching=*/true, nullptr, nullptr, /*paintToTarget=*/true, false);
+  EXPECT_EQ(resFg, ttfimg::DecodeResult::Ok) << "the foreground DC fallback must still paint";
+  long dark = 0;
+  for (int y = spec.y; y < spec.y + spec.h; y += 8)
+    for (int x = spec.x; x < spec.x + spec.w; ++x)
+      if (physicalBitIsBlack(r2, x, y)) ++dark;
+  EXPECT_GT(dark, 0) << "the placement never painted";
+  EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true, false))
+      << "a DC fallback decode must never publish under the requested quality's key";
+}
+
 TEST(ImageFitSdk, BaselineJpegCoversEveryPlacement) {
   static uint8_t bookBuf[1 << 20];
   static uint8_t scratchBuf[4 << 20];

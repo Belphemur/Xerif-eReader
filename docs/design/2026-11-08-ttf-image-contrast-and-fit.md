@@ -763,3 +763,58 @@ re-pinned ≥65%).
   `ConsumedErrorFeedsTheQuantizerInput` re-derived (residue rides the 2/8
   forward tap), the two new `TextureBake.EdgeAware*` tests above, and the
   degraded-worker SDK test. Full host suite 1635/1635 green.
+
+##### Amendment 8 (2026-11-11, review round 3 — arena fallback placement, deterministic degrade policy, ladder-failure deferral)
+
+Three review threads on the amendment-7 heads, all verified real and fixed:
+
+- **The 128 KiB cold-paint fallback moved inside `decodeAndCache`**
+  (JPEG/PNG branch, after the probe). Amendment 7 had `paintTtfPageImages`
+  reserve the fallback BEFORE the kind was known; GIF/BMP decoders pull
+  their source into a separate PSRAM item buffer (`Epub::extractItemToPsram`
+  → the same pool `poolMakeBytes` serves) and never read the decode arena,
+  so the early reservation could starve that extraction of the very PSRAM
+  it needs — an extraction OOM leaves a cold GIF/BMP unpainted. The engine
+  now takes an optional `PoolBytes* arenaFallback` out-param, reserves the
+  128 KiB block only when the probe named JPEG/PNG quality decode and
+  `scratch` is under `kDecodeArenaBytes` free, and keeps it alive for the
+  whole SDK decode through the caller's PoolBytes. The worker (dedicated
+  arena exactly at the floor) and the host tests do not pass the out-param,
+  so their behavior is unchanged; on pool exhaustion the decode proceeds on
+  `scratch` as before. `QuickPageRelayout` just declares the PoolBytes.
+- **Deterministic vs transient worker degradation** (JPEG/PNG branch): the
+  amendment-7 `Failed` covered every degraded cache-only decode, but the
+  SDK maps EVERY full-decode failure cause (parse, coefficient-store OOM,
+  unsupported) to the same DC fallback (`renderJpegProgressiveFull`
+  "DC fallback covers every retry case"), and the DC fallback's dims hook
+  always reports `scaleReduced=false` — so `dcFallback` decodes are
+  structural for the stream at hand: a bilinear-class 1/8 thumbnail that
+  can never publish under the requested quality's key (fidelity campaign
+  2026-11-10). A worker dcFallback decode now returns `Skip` (processJob
+  logs and drops the job) instead of burning its deferral budget on
+  identical decodes that hold the decode bus; a later page sighting
+  re-enqueues a fresh job with the full budget if memory changed.
+  `scaleReduced` (arena-retry step-down, the SDK decode's own scale) stays
+  `Failed` — transient, pinned by
+  `DegradedWorkerDecodeFailsForRetryWithoutCaching`. And
+  `ImagePredecodeWorker::enqueue`'s refresh-in-place used to overwrite the
+  queued record with the sighting's fresh `deferrals=0`, resetting a
+  deferred job's retry budget on every re-sight; it now keeps the HIGHER
+  count, making the `kMaxDeferrals` bound real under steady pressure.
+- **Ladder-failure worker decodes defer** (both branches): when the whole
+  DPID allocation ladder refused (even the ~8 KB λ0 block — the dims hook
+  fired, `attachScaler` returned false), the decode fell into
+  `legacyPaintPass`, which for a cache-only job returns `Ok` producing
+  nothing — "Job done" with no cache, never retried (CodeRabbit). A worker
+  job now gets `Failed` there: JPEG/PNG branch at the `!dpid.attached`
+  site, GIF branch via the new `dimsFired` flag (distinguishing ladder
+  exhaustion from an empty GIF) feeding `legacyPaintPass`'s new
+  `workerResult` parameter. Storage-failure sites keep the documented
+  worker `Ok` no-op (a bounded deferral storm against a full card buys
+  nothing). The foreground legacy-pass second attempt is unchanged.
+- **Host pin**: `DcFallbackWorkerJobSkipsInsteadOfDeferring` — a new
+  `dcfallback_prog.jpg` fixture (valid DC first scan + a corrupt DHT
+  between the scans, counts summing 257 > 256) drives the SDK's real
+  full-decode→DC-fallback path; the worker leg pins `Skip` with no
+  cache/temp debris, the foreground control leg pins the paint-uncached
+  `Ok` with no publish.

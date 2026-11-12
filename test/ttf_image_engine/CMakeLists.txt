@@ -14,6 +14,7 @@ target_include_directories(TtfImageEngineTest PRIVATE
   # TtfImageCache.h's DitherUtils.h include uses the firmware's "Epub/..."
   # prefix (lib/Epub on the include path).
   ${REPO_ROOT}/lib/Epub
+  ${REPO_ROOT}/lib/Memory
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/include
   ${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont/include
 )

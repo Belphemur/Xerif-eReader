@@ -21,6 +21,7 @@
 #include <BookArena.h>  // freeink::book::Arena (book-side alias of freeink::font::Arena)
 #include <HalStorage.h>
 #include <Logging.h>
+#include <Memory.h>  // PoolBytes (the optional cold-decode arena fallback out-param)
 
 #include <cstdint>
 #include <cstring>
@@ -138,10 +139,21 @@ enum class DecodeResult : uint8_t {
 // "<cachePath>.t" and publishes it onto `cachePath` with
 // Storage::replaceFile on success — an interrupted decode never leaves a
 // torn final cache.
+//
+// `arenaFallback` (optional) opts the caller into the cold-decode arena
+// parity of design 2026-11-08 amendment 7: when the JPEG/PNG quality path
+// runs and the caller's `scratch` holds less than kDecodeArenaBytes free,
+// the engine reserves a dedicated 128 KiB block into *arenaFallback AFTER
+// the probe has named the kind — GIF/BMP decoders pull their source into a
+// separate PSRAM item buffer and never read the decode arena, so reserving
+// earlier could starve that extraction of the very PSRAM it needs. The
+// caller owns the block (a PoolBytes it holds for the call's duration); on
+// pool exhaustion the decode proceeds on `scratch` exactly as before.
 DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freeink::book::BookSource& source,
                             const freeink::book::ZipCatalog& zip, freeink::book::Arena& scratch, Epub* epub,
                             GfxRenderer* paint, bool qualityTone, bool caching, bool (*abortPoll)(void* ctx),
-                            void* abortCtx, bool paintToTarget = true, bool clahe = false);
+                            void* abortCtx, bool paintToTarget = true, bool clahe = false,
+                            PoolBytes* arenaFallback = nullptr);
 // The probe/extract run against spec.hrefExt when set (overlong href — see
 // ImageSpec), else spec.href.
 

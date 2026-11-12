@@ -288,6 +288,7 @@ struct DpidCtx {
   const freeink::book::ImageInfo* info = nullptr;  // probe result (progressive frame dims)
   bool clahe = false;                              // pictureDetail == Enhanced
   bool attached = false;                           // dims hook ran; begin() succeeded
+  bool dimsFired = false;                          // the source dims hook ran (GIF converter)
   // True when the decode's ladder stepped down from the requested rung —
   // DPID detail or CLAHE dropped after the scratch allocation failed.
   // A degraded bake must never be published under the requested quality's
@@ -536,6 +537,7 @@ bool dpidDimsFn(void* user, const uint16_t srcW, const uint16_t srcH, const bool
 // uint8_t*) row shape, the DpidScaler expects the same.
 bool dpidGifDimsFn(void* user, const int srcW, const int srcH) {
   auto* c = static_cast<DpidCtx*>(user);
+  c->dimsFired = true;
   c->attached = attachScaler(*c, srcW, srcH, c->spec->w, c->spec->h, c->clahe, false);
   return c->attached;
 }
@@ -805,13 +807,17 @@ DecodeResult remapGrayToCache(const ImageSpec& spec, ttfimg::ToneBake4& bake, co
 // paints — re-decoding with the deterministic degenerate map (fixed contrast
 // 1.3, gamma off) straight to the target, no cache, no temp. A cache-only
 // job (worker) has nothing to produce without storage: Ok, no-op.
+// `workerResult` selects what a cache-only job gets: storage-failure sites
+// keep the documented no-op Ok (a bounded deferral storm against a full card
+// buys nothing), while memory-failure sites pass Failed so processJob defers
+// and a calmer pass re-decodes (review 2026-11-11).
 DecodeResult legacyPaintPass(const ImageSpec& spec, const ImageInfo::Kind kind, freeink::book::BookSource& source,
                              const freeink::book::ZipCatalog& zip, freeink::book::Arena& scratch, Epub* epub,
                              const uint8_t* psramImage, const size_t imageSize, ttfimg::ToneBake4& bake,
                              GfxRenderer* paint, const bool paintToTarget, bool (*abortPoll)(void* ctx), void* abortCtx,
-                             const bool clahe) {
+                             const bool clahe, const DecodeResult workerResult = DecodeResult::Ok) {
   bake.beginLegacyFallback();
-  if (paint == nullptr || !paintToTarget) return DecodeResult::Ok;  // worker: no cache producible
+  if (paint == nullptr || !paintToTarget) return workerResult;  // worker: no cache producible
   if (kind == ImageInfo::Kind::Png || kind == ImageInfo::Kind::Jpeg) {
     freeink::book::PageImage sdkImage{};
     sdkImage.href = (spec.hrefExt != nullptr && spec.hrefExt[0] != '\0') ? spec.hrefExt : spec.href;
@@ -867,7 +873,8 @@ DecodeResult legacyPaintPass(const ImageSpec& spec, const ImageInfo::Kind kind, 
 DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freeink::book::BookSource& source,
                             const freeink::book::ZipCatalog& zip, freeink::book::Arena& scratch, Epub* epub,
                             GfxRenderer* paint, const bool qualityTone, const bool caching,
-                            bool (*abortPoll)(void* ctx), void* abortCtx, const bool paintToTarget, const bool clahe) {
+                            bool (*abortPoll)(void* ctx), void* abortCtx, const bool paintToTarget, const bool clahe,
+                            PoolBytes* arenaFallback) {
   const char* const href = (spec.hrefExt != nullptr && spec.hrefExt[0] != '\0') ? spec.hrefExt : spec.href;
   const ZipEntry* entry = zip.find(href);
   if (entry == nullptr) return DecodeResult::Skip;
@@ -904,6 +911,27 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
     // optional CLAHE — feeding the same adaptive bake's collection. The
     // shared remap pass then bakes, caches and paints exactly as before:
     // worker/foreground parity by construction is untouched.
+    //
+    // Cold-decode arena parity (design amendment 7, reviewed 2026-11-11):
+    // the 128 KiB fallback is reserved HERE, after the probe named the kind.
+    // GIF/BMP decoders pull their source into a separate PSRAM item buffer
+    // and never read the decode arena, so an earlier reservation (before
+    // the probe) could starve that extraction of the very PSRAM it needs —
+    // an extraction OOM leaves a cold GIF/BMP unpainted. The block stays
+    // alive for the whole SDK decode through the caller's PoolBytes; on
+    // pool exhaustion the decode proceeds on `scratch` as before.
+    freeink::book::Arena fallbackArena;
+    freeink::book::Arena* decodeArena = &scratch;
+    if (arenaFallback != nullptr && scratch.capacity() - scratch.used() < ttfimg::kDecodeArenaBytes) {
+      *arenaFallback = poolMakeBytes(ttfimg::kDecodeArenaBytes);
+      if (*arenaFallback) {
+        fallbackArena.init((*arenaFallback).get(), ttfimg::kDecodeArenaBytes);
+        decodeArena = &fallbackArena;
+      } else {
+        LOG_DBG("TIMGE", "OOM: image decode arena fallback (%u KiB)",
+                static_cast<unsigned>(ttfimg::kDecodeArenaBytes / 1024));
+      }
+    }
     ttfimg::ToneBake4 bake(spec.w);
     if (!bake.ok()) return DecodeResult::Failed;
     char grayPath[280];
@@ -927,8 +955,8 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
       dpid.info = &info;
       dpid.clahe = clahe;
       const BookStatus st = freeink::book::ImageRenderer::renderSourceRows(
-          source, zip, href, static_cast<uint16_t>(spec.w), static_cast<uint16_t>(spec.h), scratch, &dpidDimsFn, &dpid,
-          &dpidRowFn, &dpid, &dpidPollFn, &dpid);
+          source, zip, href, static_cast<uint16_t>(spec.w), static_cast<uint16_t>(spec.h), *decodeArena, &dpidDimsFn,
+          &dpid, &dpidRowFn, &dpid, &dpidPollFn, &dpid);
       if (st != BookStatus::Ok || ctx.aborted) {
         bake.grayDiscard();
         if (ctx.aborted) return DecodeResult::Busy;
@@ -942,7 +970,12 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
         // leaving the handle open across a full legacy decode strands an
         // empty .g file on the card (review 2026-11-11).
         bake.grayDiscard();
-        return legacyPaintPass(spec, info.kind, source, zip, scratch, epub, nullptr, 0, bake, paint, paintToTarget,
+        if (!paintToTarget && caching) {
+          // A worker job has nothing to paint and nothing to cache here —
+          // deferring lets a calmer pass re-decode (review 2026-11-11).
+          return DecodeResult::Failed;
+        }
+        return legacyPaintPass(spec, info.kind, source, zip, *decodeArena, epub, nullptr, 0, bake, paint, paintToTarget,
                                abortPoll, abortCtx, clahe);
       }
       // dpidRowFn/emit stop on abort; finish() applies pass 2 + CLAHE and
@@ -963,7 +996,7 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
         // checking after stranded JPEG/PNG placements on a full SD card
         // (review 2026-11-10, kody + CodeRabbit).
         bake.grayDiscard();
-        return legacyPaintPass(spec, info.kind, source, zip, scratch, epub, nullptr, 0, bake, paint, paintToTarget,
+        return legacyPaintPass(spec, info.kind, source, zip, *decodeArena, epub, nullptr, 0, bake, paint, paintToTarget,
                                abortPoll, abortCtx, clahe);
       }
       if (!finished || !flushed) {
@@ -979,8 +1012,24 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
         // decodes keep the paint-uncached contract below: the user sees
         // the image now and nothing poisons the cache key.
         if (dpid.degraded && !paintToTarget && caching) {
-          LOG_INF("TIMGE", "Worker decode degraded - deferring without remap: %s", spec.href);
           bake.grayDiscard();
+          if (dpid.dcFallback) {
+            // Deterministic degradation: the progressive stream fell back to
+            // the DC-only first scan and reports 1/8-scale dims every time —
+            // the decode is a bilinear-class thumbnail that can never publish
+            // under the requested quality's key (fidelity campaign
+            // 2026-11-10). No retry can produce the full scan THIS pass, so
+            // the job is dropped (Skip = processJob logs and drops) instead
+            // of burning its deferral budget on identical decodes that hold
+            // the bus. A later page sighting re-enqueues a fresh job, which
+            // still gets the whole retry budget if memory changed.
+            // (The SDK maps every full-decode failure cause — parse, store
+            // OOM, unsupported — to the same fallback, so finer cause
+            // tracking would need an SDK API change; out of scope.)
+            LOG_INF("TIMGE", "DC fallback decode - worker job skipped: %s", spec.href);
+            return DecodeResult::Skip;
+          }
+          LOG_INF("TIMGE", "Worker decode degraded - deferring without remap: %s", spec.href);
           return DecodeResult::Failed;
         }
         bool cacheStreamOk = false;
@@ -1000,8 +1049,8 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
         if (remap != DecodeResult::Ok) {
           // Phase-2 storage failure (gray re-open/read): still paint — the
           // legacy pass repaints the whole box, replacing any remap rows.
-          return legacyPaintPass(spec, info.kind, source, zip, scratch, epub, nullptr, 0, bake, paint, paintToTarget,
-                                 abortPoll, abortCtx, clahe);
+          return legacyPaintPass(spec, info.kind, source, zip, *decodeArena, epub, nullptr, 0, bake, paint,
+                                 paintToTarget, abortPoll, abortCtx, clahe);
         }
         // Degraded cache stream: rows painted, no cache — skip the publish.
         if (publishing && !cacheStreamOk) return DecodeResult::Ok;
@@ -1019,7 +1068,7 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
       // through: re-decode with the degenerate map and paint.
     }
     if (collecting) bake.grayDiscard();  // failed grayDone: release temp + handle
-    return legacyPaintPass(spec, info.kind, source, zip, scratch, epub, nullptr, 0, bake, paint, paintToTarget,
+    return legacyPaintPass(spec, info.kind, source, zip, *decodeArena, epub, nullptr, 0, bake, paint, paintToTarget,
                            abortPoll, abortCtx, clahe);
   }
 
@@ -1060,6 +1109,10 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
     // PROBE dims (the true source — baseline JPEG's power-of-two pre-scale is
     // inside the SDK renderer, review 2026-11-10 steer).
     bool planDegraded = false;
+    // The DPID ladder refused every rung (dims hook ran, attachScaler
+    // returned false — the GIF converter then fails the collect decode).
+    // Memory failure, not a decode failure: a worker job must defer.
+    bool ladderFailed = false;
     if (info.kind == ImageInfo::Kind::Gif) {
       // Select the converter by the SNIFFED kind, not the href: ImageProbe
       // identified this GIF from its bytes, so a mismatched or extensionless
@@ -1106,6 +1159,7 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
         // Dims hook never fired (empty GIF / zero rows): nothing collected.
         decoded = false;
       }
+      if (collecting && !dpid.attached && dpid.dimsFired) ladderFailed = true;
       if (decoded && collecting && dpid.attached) {
         // Pass 2 + optional CLAHE + the emit walk into the bake's collect.
         decoded = dpid.scaler.finish();
@@ -1131,8 +1185,14 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
       // the placement is given up. In legacy mode (!collecting) the failed
       // decode itself was the paint attempt — Failed stands.
       if (!collecting) return DecodeResult::Failed;
+      // DPID ladder exhaustion is a memory failure, not a decode failure:
+      // a worker job has nothing to paint or cache — defer (review
+      // 2026-11-11, same contract as the JPEG/PNG branch). The foreground
+      // keeps the legacy-pass second attempt below.
+      const DecodeResult workerResult =
+          ladderFailed && !paintToTarget && caching ? DecodeResult::Failed : DecodeResult::Ok;
       return legacyPaintPass(spec, info.kind, source, zip, scratch, epub, image.get(), imageSize, bake, paint,
-                             paintToTarget, abortPoll, abortCtx, clahe);
+                             paintToTarget, abortPoll, abortCtx, clahe, workerResult);
     }
     if (collecting && bake.grayDone()) {
       // Same degraded-worker contract as the JPEG/PNG branch (amendment 7):

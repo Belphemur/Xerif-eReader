@@ -156,7 +156,15 @@ bool ImagePredecodeWorker::enqueue(const ttfimg::ImageSpec& spec) {
     ttfimg::ImageSpec& other = *reinterpret_cast<ttfimg::ImageSpec*>(queueStorage_ + slot * sizeof(ttfimg::ImageSpec));
     if (strncmp(other.href, spec.href, ttfimg::ImageSpec::kHrefCap) == 0 && other.x == spec.x && other.y == spec.y &&
         other.w == spec.w && other.h == spec.h) {
-      other = spec;
+      // Refresh in place with the authoritative sighting (fresh generation —
+      // dropping the new sighting would leave a record the dequeue discards
+      // as stale), but keep the HIGHER deferral count: the sighting's fresh
+      // record would reset a deferred job's retry budget on every re-sight,
+      // letting an image under steady memory pressure defer forever
+      // (review 2026-11-11).
+      ttfimg::ImageSpec updated = spec;
+      if (other.deferrals > updated.deferrals) updated.deferrals = other.deferrals;
+      other = updated;
       refreshed = true;
       break;
     }
