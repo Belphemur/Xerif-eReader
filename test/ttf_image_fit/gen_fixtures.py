@@ -2,8 +2,8 @@
 """Configure-time fixture generator for the TTF image fit suite (stdlib only).
 
 Builds a minimal EPUB carrying one PROGRESSIVE JPEG (DC-only first scan) —
-the format TJpgDec cannot decode, so the SDK's DC-path renderer is the only
-host-exercisable implementation — plus the gray pattern PNG/BMP twins. The
+whose DC-only path the SDK's renderer exercises host-side — plus the gray
+pattern PNG/BMP twins. The
 DC scan uses quantizer 8, so DC coefficient = 8*(block_avg - 128) exactly and
 the decoded gray equals the block average: tonal pins stay byte-exact.
 
@@ -33,7 +33,7 @@ def pattern(x, y):
 pix = [[pattern(x, y) for x in range(W)] for y in range(H)]
 
 
-def write_progressive_jpeg(path, source=None):
+def write_progressive_jpeg(path, source=None, corrupt_tail=False):
     global pix
     src = source if source is not None else pix
     def avg(x0, y0):
@@ -85,6 +85,15 @@ def write_progressive_jpeg(path, source=None):
         out.append(b)
         if b == 0xFF:
             out.append(0x00)
+    if corrupt_tail:
+        # A DHT whose table counts overflow (257 > 256 symbols) AFTER the
+        # first scan's entropy data. ProgressiveJpeg's full decode walks the
+        # marker between scans and refuses the stream (ParseError), while the
+        # DC-only fallback renderer stops at the first scan — the SDK's
+        # DC-fallback shape (renderJpegProgressiveFull returns OutOfMemory,
+        # the 1/8-scale blocksW x blocksH dims hook fires). Used by the
+        # worker dcFallback pin.
+        out += b"\xff\xc4" + struct.pack(">H", 2 + 17) + b"\x00" + bytes([255, 2] + [0] * 14)
     out += b"\xff\xd9"
     atomic_write(path, out)
 
@@ -119,6 +128,9 @@ write_progressive_jpeg(os.path.join(OUT, "prog.jpg"))
 # regions paint no ink in the BW coverage check).
 dark_pix = [[10] * W for _ in range(H)]
 write_progressive_jpeg(os.path.join(OUT, "dark_prog.jpg"), dark_pix)
+# DC-fallback twin: valid first scan + corrupt marker between scans, so the
+# SDK's full decode fails and the DC fallback reports 1/8-scale dims.
+write_progressive_jpeg(os.path.join(OUT, "dcfallback_prog.jpg"), dark_pix, corrupt_tail=True)
 write_png(os.path.join(OUT, "pattern.png"))
 def write_gif(path):
     """Minimal 96x144 GIF87a: 2-color palette, every pixel index 0 (dark),
@@ -189,7 +201,10 @@ def write_gif(path):
 write_gif(os.path.join(OUT, "dark.gif"))
 
 
-def write_small_bmp(path, w=64, h=48, gray=137):
+def write_small_bmp(path, w=64, h=48, gray=60):
+    # gray 60: the legacy Atkinson bake dithers levels 1/2 (both render dark
+    # in BW), so the placement-coverage pins measure the decode's box, not a
+    # tone choice (137 used to bake solid dark under the pre-parity bake).
     # 24-bit bottom-up BMP — a real BMP entry for the EPUB fixture.
     row_bytes = (w * 3 + 3) // 4 * 4
     payload = 40 + row_bytes * h
@@ -235,6 +250,7 @@ opf = """<?xml version="1.0" encoding="UTF-8"?>
     <item id="ch1" href="text/ch1.xhtml" media-type="application/xhtml+xml"/>
     <item id="i1" href="images/prog.jpg" media-type="image/jpeg"/>
     <item id="i6" href="images/dark_prog.jpg" media-type="image/jpeg"/>
+    <item id="i8" href="images/dcfallback_prog.jpg" media-type="image/jpeg"/>
     <item id="i2" href="images/pattern.png" media-type="image/png"/>
     <item id="i5" href="images/dark.png" media-type="image/png"/>
     <item id="i3" href="images/dark.gif" media-type="image/gif"/>
@@ -271,6 +287,7 @@ with zipfile.ZipFile(epub_tmp, "w") as z:
     z.writestr("OEBPS/text/ch1.xhtml", ch1)
     z.write(os.path.join(OUT, "prog.jpg"), "OEBPS/images/prog.jpg")
     z.write(os.path.join(OUT, "dark_prog.jpg"), "OEBPS/images/dark_prog.jpg")
+    z.write(os.path.join(OUT, "dcfallback_prog.jpg"), "OEBPS/images/dcfallback_prog.jpg")
     z.write(os.path.join(OUT, "pattern.png"), "OEBPS/images/pattern.png")
     z.write(os.path.join(OUT, "dark.png"), "OEBPS/images/dark.png")
     z.write(os.path.join(OUT, "dark.gif"), "OEBPS/images/dark.gif")

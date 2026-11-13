@@ -67,7 +67,7 @@ bool ImagePredecodeWorker::reserve() {
   }
   scratchBegan_ = true;
 
-  // SDK decode arena: probe + row-decode scratch (TJpgDec band, RowScaler
+  // SDK decode arena: probe + row-decode scratch (JPEGDEC band, RowScaler
   // accumulators). PSRAM. The control object lives BEFORE the allocatable
   // region: alloc() bumps from the buffer base, so a control object placed
   // at the base would be overwritten by the first decode scratch allocation.
@@ -156,7 +156,19 @@ bool ImagePredecodeWorker::enqueue(const ttfimg::ImageSpec& spec) {
     ttfimg::ImageSpec& other = *reinterpret_cast<ttfimg::ImageSpec*>(queueStorage_ + slot * sizeof(ttfimg::ImageSpec));
     if (strncmp(other.href, spec.href, ttfimg::ImageSpec::kHrefCap) == 0 && other.x == spec.x && other.y == spec.y &&
         other.w == spec.w && other.h == spec.h) {
-      other = spec;
+      // Refresh in place with the authoritative sighting (fresh generation —
+      // dropping the new sighting would leave a record the dequeue discards
+      // as stale), but keep the HIGHER deferral count WITHIN one generation:
+      // the sighting's fresh record would reset a deferred job's retry budget
+      // on every re-sight, letting an image under steady memory pressure
+      // defer forever (review 2026-11-11). A generation change replaces the
+      // job entirely — its spent budget belongs to the old layout, so the
+      // refreshed record starts from its own sighting's count (review
+      // 2026-11-13).
+      ttfimg::ImageSpec updated = spec;
+      if (other.generation == updated.generation && other.deferrals > updated.deferrals)
+        updated.deferrals = other.deferrals;
+      other = updated;
       refreshed = true;
       break;
     }
@@ -257,9 +269,10 @@ bool ImagePredecodeWorker::abortTrampoline(void* ctx) {
 
 void ImagePredecodeWorker::processJob(const ttfimg::ImageSpec& spec) {
   const bool qualityTone = SETTINGS.imageDecodeQuality != 0;  // §5.6 revert switch
-  // Picture detail (DPID design §Contract 4): CLAHE gate rides with the
-  // quality tone policy — only meaningful when the quality bake runs.
-  const bool clahe = qualityTone && SETTINGS.pictureDetail != 0;
+  // The Sharp/Enhanced CLAHE selector was removed with the linear-light
+  // blue-noise bake (design 2026-11-13): one quality bake, DPID resize
+  // always on, CLAHE stage off.
+  const bool clahe = false;
   char cachePath[256];
   if (!ttfimg::cacheNameFor(spec, cacheDir_, qualityTone, clahe, cachePath, sizeof(cachePath))) {
     LOG_DBG("IPR", "Cache path overflow: %s", spec.href);

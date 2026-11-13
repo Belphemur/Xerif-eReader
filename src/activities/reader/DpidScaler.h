@@ -24,8 +24,11 @@
 // redistribution, bilinear blend of the 4 surrounding tile maps, in place on
 // the destination image — after the resize, before ToneBake4's collect.
 //
-// Disabled-gate contract: the pictureDetail setting gates ONLY CLAHE, so
-// "Sharp" is the CLAHE-disabled code path, byte-identical by construction.
+// Disabled-gate contract: the caller's clahe flag gates ONLY the CLAHE pass
+// (the pictureDetail setting was removed with the linear-light blue-noise
+// bake, 2026-11-13; the flag stays so the ladder keeps its degraded-rung
+// contracts), so clahe=false is the CLAHE-disabled code path, byte-identical
+// by construction.
 //
 // Integer fixed point only (Q16.16 edge math), fully deterministic. The full
 // destination image lives in one call-scoped PSRAM block the caller hands in
@@ -61,7 +64,7 @@ class DpidScaler {
     int srcH = 0;
     int dstW = 0;
     int dstH = 0;
-    bool clahe = false;   // pictureDetail == Enhanced
+    bool clahe = false;   // CLAHE stage request (ladder-degradable)
     bool detail = true;   // DPID λ=1 pass-2 request; streaming plans drop it
     bool random = false;  // source rows re-readable (pass 2 runs only here)
     // Small class (dst >= src on both axes) picks each destination pixel

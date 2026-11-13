@@ -21,6 +21,7 @@
 #include <BookArena.h>  // freeink::book::Arena (book-side alias of freeink::font::Arena)
 #include <HalStorage.h>
 #include <Logging.h>
+#include <Memory.h>  // PoolBytes (the optional cold-decode arena fallback out-param)
 
 #include <cstdint>
 #include <cstring>
@@ -138,15 +139,39 @@ enum class DecodeResult : uint8_t {
 // "<cachePath>.t" and publishes it onto `cachePath` with
 // Storage::replaceFile on success — an interrupted decode never leaves a
 // torn final cache.
+//
+// `arenaFallback` (optional) opts the caller into the cold-decode arena
+// parity of design 2026-11-08 amendment 7: when the JPEG/PNG quality path
+// runs and the caller's `scratch` holds less than kDecodeArenaBytes free,
+// the engine reserves a dedicated 128 KiB block into *arenaFallback AFTER
+// the probe has named the kind — GIF/BMP decoders pull their source into a
+// separate PSRAM item buffer and never read the decode arena, so reserving
+// earlier could starve that extraction of the very PSRAM it needs. The
+// caller owns the block (a PoolBytes it holds for the call's duration); on
+// pool exhaustion the decode proceeds on `scratch` exactly as before.
 DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freeink::book::BookSource& source,
                             const freeink::book::ZipCatalog& zip, freeink::book::Arena& scratch, Epub* epub,
                             GfxRenderer* paint, bool qualityTone, bool caching, bool (*abortPoll)(void* ctx),
-                            void* abortCtx, bool paintToTarget = true, bool clahe = false);
+                            void* abortCtx, bool paintToTarget = true, bool clahe = false,
+                            PoolBytes* arenaFallback = nullptr);
 // The probe/extract run against spec.hrefExt when set (overlong href — see
 // ImageSpec), else spec.href.
 
 // Full decode gates for a worker job (the #292 heap-gate precedents).
 bool decodeGatesOk();
+
+// Host-test seam: when armed, attachScaler refuses every rung, simulating a
+// DPID ladder exhausted under memory pressure. Never set in production.
+void setAttachLadderFailForTest(bool fail);
+
+// Decode-arena floor shared by the worker and the foreground cold paint
+// (owner-audit iteration 3, 2026-11-11): a deflated full-page JPEG needs
+// ~74–81 KiB inside the decode arena (inflate window + tinfl ~46 KiB,
+// JPEGDEC decoder heap ~17 KiB, srcW×16 band 15.5–22 KiB, RowScaler ~3.5 KiB);
+// 128 KiB covers it with margin so no decode steps down through the SDK's
+// arena retry. PSRAM-backed on device; the 5 MiB budget pins hold (the
+// budget measures the store + scaler scratch, this is a separate reserve).
+constexpr size_t kDecodeArenaBytes = 128 * 1024;
 
 // PSRAM budget for one image decode (owner directive 2026-11-09): the TTF
 // reader boards are all 8 MB PSRAM S3s (platformio.ini gates

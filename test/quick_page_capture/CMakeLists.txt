@@ -19,7 +19,7 @@ add_executable(QuickPageCaptureTest
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/src/vendor/miniz_cores_impl.c
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/src/vendor/unibreak_impl.c
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/pngle/pngle.c
-  ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/src/vendor/tjpgd_impl.c
+  ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/src/vendor/jpegdec_impl.cpp
 )
 
 target_include_directories(QuickPageCaptureTest PRIVATE
@@ -33,7 +33,7 @@ target_include_directories(QuickPageCaptureTest PRIVATE
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/miniz/include
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/pngle
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/stb
-  ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/tjpgd
+  ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/jpegdec/src
 )
 
 target_compile_definitions(QuickPageCaptureTest PRIVATE

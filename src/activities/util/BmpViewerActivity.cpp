@@ -273,7 +273,10 @@ bool BmpViewerActivity::renderImageEngine(const MappedInputManager::Labels& labe
   // only the explicit B/W choice drops tone — Placeholder/Suppress are layout
   // choices for book pages, not tone choices for a photo viewer.
   const bool qualityTone = SETTINGS.imageDecodeQuality != 0;
-  const bool clahe = qualityTone && SETTINGS.pictureDetail != 0;
+  // The Sharp/Enhanced CLAHE selector was removed with the linear-light
+  // blue-noise bake (design 2026-11-13): one quality bake, DPID resize
+  // always on, CLAHE stage off.
+  const bool clahe = false;
   const bool imageGrayscale = SETTINGS.imageRendering != CrossPointSettings::IMAGES_DISPLAY_BW;
 
   if (!Storage.exists(VIEWER_FICACHE_DIR) && !Storage.mkdir(VIEWER_FICACHE_DIR)) {

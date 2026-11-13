@@ -674,3 +674,356 @@ same PNG/JPEG at 480×800, dumped host-side and inspected; salt/steps metrics
 on the 00005/00006-derived anchors recorded in the final report. Device:
 owner flash test (X4 Pro: PNG + JPEG from the file browser, sibling
 navigation cache hits, sleep cover unchanged, BMP unchanged).
+
+##### Amendment 7 (2026-11-11, edge-aware hybrid diffusion + degraded-worker retry + cold-paint arena parity)
+
+The iteration-3 Atkinson bake is crisp at contours but its flat 2/8 absorption
+creates a quantization dead zone on smooth gradients: a highlight ramp
+(marked 175 → 236) parks flat on level 3 instead of tapering — the light-novel
+illustration defect this iteration targets. The fix is anisotropic
+edge-gated diffusion inside `ToneBake4`, all in the existing integer
+1/8-level plane (no float, no per-pixel heap):
+
+- **Symmetric local gradient**: every visited pixel computes
+  `edgeMag = max(|mv−nextMv|, |mv−next2Mv| (barrier only), |mv−prevMv|,
+  |mv−upMv|)` over MAPPED values, with the horizontal neighbors taken along
+  the scan direction (`d = ±1`) and clamped to the row. The vertical term
+  comes from `prevRowMv[x]` — a new `uint8_t[w]` causal context written once
+  per visited pixel (480 bytes at the 454 px placement, member of the bake,
+  zero heap churn) and reset by `beginRemap()`. On row 0 (`hasPrevRow ==
+  false`) `dyUp` is 0, which is what keeps the serpentine mirror invariant:
+  a mirror-symmetric row 0 baked descending is the exact mirror image of the
+  same row baked ascending (`SerpentineMirrorsTheKernel` extended with
+  symmetric ≥80-mapped cliffs; outputs map at mirrored indices, the
+  kernel/context mirror together, noiseAmp pinned 0 because the dither keys
+  on the absolute column).
+- **Diffusion strength ladder** (forward-1, forward-2, next-row
+  behind/below/ahead, two-rows-below — the same six taps):
+  `edgeMag <= kEdgeSmooth (20)` diffuses 8/8 mass-conserving (2/8 forward +
+  the consume residue `rem8` restoring exact mass, 2/8 directly below, 1/8
+  elsewhere) — zero tone loss, no highlight dead zone, wide six-tap
+  dispersion avoids FS diagonal worms; `21..55` keeps 7/8 (the extra 1/8
+  below-tap and `rem8` dropped) as the seamless transition; `>= kEdgeSharp
+  (56)` damps back to 6/8 Atkinson so overshoot dies at contours.
+- **Cross-cliff barrier**: when the forward neighbor differs by
+  `dxFwd >= kEdgeBarrier (80)` mapped levels (ink stroke vs paper), the
+  forward taps receive nothing — the error is absorbed instead of bleeding
+  across the contour (`EdgeAwareSharpStrokeBlocksCrossEdgeBleed`: the paper
+  pixels after a 2-px stroke stay clean level 3, the stroke bakes ≤ 1).
+- **Smooth-region threshold dither** (`kSmoothNoiseAmp 4`, range −4..+3,
+  pure `(x,row)` hash, never on `edgeMag >= kEdgeSharp` pixels, never
+  enters `errVal`): with 8/8 mass conservation a noiseless synthetic
+  vertical gradient can re-mode-lock row-periodically; ±4 breaks that
+  while `GradientHasNoRowPeriodicBanding` /
+  `GradientHasNoSustainedDensityOscillation` / `GradientToneIsPreserved`
+  hold unchanged (the existing texture pins pass as-is with the hybrid).
+
+**Measured flat-field consequences** (intended, re-pinned): the pure-Atkinson
+low-duty dead zone is gone — flat 127 (mapped 126) now dithers 8.5% level 3
+(tone-correct prediction 9.8%, `FlatMidtone…` re-pinned 5–20%), and flat 40
+(mapped 13) sits at 73.5% level 0 vs the tone-correct 73% (`FlatDark…`
+re-pinned ≥65%).
+
+- **Degraded worker decode retry fix** (`TtfImageEngine.cpp`, both the
+  JPEG/PNG and GIF/BMP branches): a cache-only job (`caching && !paintToTarget`)
+  whose DPID ladder stepped down (`dpid.degraded` / `planDegraded`) used to
+  stream the entire `.g` through `remapGrayToCache` with caching forced off
+  and still return `Ok` — `ImagePredecodeWorker::processJob` logged "Job
+  done" with NO `.pxc`, stranding the image uncached for its whole sighting
+  window. The engine now returns `Failed` immediately (gray temp discarded)
+  so the worker defers the job and a calmer pass re-decodes at full quality.
+  Foreground decodes (`paintToTarget`) keep the paint-uncached contract
+  unchanged. `legacyPaintPass` keeps returning `Ok` for worker jobs: its
+  trigger is SD storage failure (dead gray temp), not transient memory —
+  a bounded 4-deferral retry storm against a full card buys nothing.
+  (`DegradedWorkerDecodeFailsForRetryWithoutCaching` pins both legs.)
+- **Static gamma/contrast LUTs**: `ToneBake4`'s constructor ran 256 soft-float
+  `powf` calls on EVERY decode although both tables depend only on constexpr
+  constants (`kGammaEnabled == false`). The tables now build once in a
+  function-local `StaticLuts` (threadsafe static init; the ctor memcpys
+  them), byte-identical for `LutStructure` and every `mapv()` consumer.
+- **Foreground cold-paint arena parity**: the worker reserves a dedicated
+  `ttfimg::kDecodeArenaBytes` (128 KiB, moved from `ImagePredecodeWorker`
+  into `TtfImageEngine.h`) so deflated full-page JPEGs never step down
+  through the SDK's arena retry. The foreground cold paint
+  (`paintTtfPageImages`) shares `TtfBookRuntime::scratch()` (192 KiB) with
+  the live page's run text (the caller's readPage mark holds it across the
+  paint — EpubReaderActivity release points at :4580/:4608/:4796) and, mid
+  build, the layout session's ~152 KiB working set, so a cold jump to an
+  illustration could be left under ~40 KiB and decode half-res, uncached.
+  The paint now provides a call-scoped PSRAM fallback arena whenever
+  `scratch().capacity() - used() < kDecodeArenaBytes` (released with the
+  block at scope end; on pool exhaustion it proceeds exactly as today).
+- **Cache letters**: `cacheRevisionLetter` 'a'/'b' → 'c' (Sharp) / 'd'
+  (Enhanced) — 'a'/'b' only ever shipped in the merged PR #303 develop
+  builds, so every develop-era cache regenerates. Legacy 'l' unchanged.
+  All cache-letter pins updated (`PolicyLetterSeparatesBakes`).
+- **Host pins**: `SmoothPixelsDiffuseTheFullError` (8/8 slot layout + exact
+  mass), `SharpPixelsKeepAtkinsonDamping` (6/8 via a seeded sharp dyUp),
+  `ConsumedErrorFeedsTheQuantizerInput` re-derived (residue rides the 2/8
+  forward tap), the two new `TextureBake.EdgeAware*` tests above, and the
+  degraded-worker SDK test. Full host suite 1635/1635 green.
+
+##### Amendment 8 (2026-11-11, review round 3 — arena fallback placement, deterministic degrade policy, ladder-failure deferral)
+
+Three review threads on the amendment-7 heads, all verified real and fixed:
+
+- **The 128 KiB cold-paint fallback moved inside `decodeAndCache`**
+  (JPEG/PNG branch, after the probe). Amendment 7 had `paintTtfPageImages`
+  reserve the fallback BEFORE the kind was known; GIF/BMP decoders pull
+  their source into a separate PSRAM item buffer (`Epub::extractItemToPsram`
+  → the same pool `poolMakeBytes` serves) and never read the decode arena,
+  so the early reservation could starve that extraction of the very PSRAM
+  it needs — an extraction OOM leaves a cold GIF/BMP unpainted. The engine
+  now takes an optional `PoolBytes* arenaFallback` out-param, reserves the
+  128 KiB block only when the probe named JPEG/PNG quality decode and
+  `scratch` is under `kDecodeArenaBytes` free, and keeps it alive for the
+  whole SDK decode through the caller's PoolBytes. The worker (dedicated
+  arena exactly at the floor) and the host tests do not pass the out-param,
+  so their behavior is unchanged; on pool exhaustion the decode proceeds on
+  `scratch` as before. `QuickPageRelayout` just declares the PoolBytes.
+- **Deterministic vs transient worker degradation** (JPEG/PNG branch): the
+  amendment-7 `Failed` covered every degraded cache-only decode, but the
+  SDK maps EVERY full-decode failure cause (parse, coefficient-store OOM,
+  unsupported) to the same DC fallback (`renderJpegProgressiveFull`
+  "DC fallback covers every retry case"), and the DC fallback's dims hook
+  always reports `scaleReduced=false` — so `dcFallback` decodes are
+  structural for the stream at hand: a bilinear-class 1/8 thumbnail that
+  can never publish under the requested quality's key (fidelity campaign
+  2026-11-10). A worker dcFallback decode now returns `Skip` (processJob
+  logs and drops the job) instead of burning its deferral budget on
+  identical decodes that hold the decode bus; a later page sighting
+  re-enqueues a fresh job with the full budget if memory changed.
+  `scaleReduced` (arena-retry step-down, the SDK decode's own scale) stays
+  `Failed` — transient, pinned by
+  `DegradedWorkerDecodeFailsForRetryWithoutCaching`. And
+  `ImagePredecodeWorker::enqueue`'s refresh-in-place used to overwrite the
+  queued record with the sighting's fresh `deferrals=0`, resetting a
+  deferred job's retry budget on every re-sight; it now keeps the HIGHER
+  count, making the `kMaxDeferrals` bound real under steady pressure.
+- **Ladder-failure worker decodes defer** (both branches): when the whole
+  DPID allocation ladder refused (even the ~8 KB λ0 block — the dims hook
+  fired, `attachScaler` returned false), the decode fell into
+  `legacyPaintPass`, which for a cache-only job returns `Ok` producing
+  nothing — "Job done" with no cache, never retried (CodeRabbit). A worker
+  job now gets `Failed` there: JPEG/PNG branch at the `!dpid.attached`
+  site, GIF branch via the new `dimsFired` flag (distinguishing ladder
+  exhaustion from an empty GIF) feeding `legacyPaintPass`'s new
+  `workerResult` parameter. Storage-failure sites keep the documented
+  worker `Ok` no-op (a bounded deferral storm against a full card buys
+  nothing). The foreground legacy-pass second attempt is unchanged.
+- **Host pin**: `DcFallbackWorkerJobSkipsInsteadOfDeferring` — a new
+  `dcfallback_prog.jpg` fixture (valid DC first scan + a corrupt DHT
+  between the scans, counts summing 257 > 256) drives the SDK's real
+  full-decode→DC-fallback path; the worker leg pins `Skip` with no
+  cache/temp debris, the foreground control leg pins the paint-uncached
+  `Ok` with no publish.
+
+##### Amendment 9 (2026-11-11, legacy-BMP parity — the owner's 00004/00005/00006 directive)
+
+On physical X4 Pro hardware the legacy BMP engine
+(`JpegToBmpConverter` + `BitmapHelpers::AtkinsonDitherer`,
+`originalThresholds=false`) renders the baseline EPUB illustrations
+(`00005.jpeg`, `00006.jpeg`) with exactly the tonal balance, calm woven
+shading, clean paper highlights and crisp anti-aliased typography the owner
+wants. The only reason the legacy engine fails on `00004.jpeg` is that
+`JPEGDEC` forces progressive JPEGs to 1/8-scale DC-only thumbnails
+(`JpegToBmpConverter.cpp`'s decode gate). The quality path already decodes
+everything at full resolution — the five processing differences that made
+it diverge from the legacy look are removed here; full-res progressive and
+baseline decoding, the DPID fractional-box downscale, the degradation
+ladder, the `.pxc` caching, the atomic publish and the worker contracts of
+amendments 1–8 are untouched.
+
+1. **Exact legacy quantizer + identity tone map** (DRY: shared, not
+   copied). `ToneBake4` now embeds the legacy engine's own
+   `AtkinsonDitherer` (lib/GfxRenderer/BitmapHelpers.h,
+   `originalThresholds=false`) and delegates every pixel to it:
+   identity `0..255` luma (no histogram, no percentile stretch, no
+   gamma/contrast LUT — the legacy `USE_BRIGHTNESS=false` contract),
+   cutoffs `{30, 55, 150}`, error targets `{15, 35, 90, 210}` (target 210
+   keeps highlight headroom so paper ≥ ~203 tapers to clean white), the
+   deterministic left-to-right `6/8` Atkinson kernel
+   (`(adjusted − target) >> 3` into right, right+1, below-left, below,
+   below-right and two rows down) over three `int16` error rows of
+   width+4, zero noise, zero serpentine. The edge-aware hybrid of
+   amendment 7 (8/8→7/8→6/8 gating, cross-cliff barrier, smooth-region
+   threshold jitter, `prevRowMv` context) and the adaptive two-phase bake
+   (amendment 2) are gone. Host pin:
+   `LegacyAtkinsonParityOnSampleImage.*` bakes synthetic reference pages
+   (a 00005-shaped 90..250 wall fade, a 00006-shaped white page with
+   0..160 anti-aliased strokes over 255 paper, midtone fields bracketing
+   every cutoff) through both engines and asserts byte-identical 2-bit
+   output; the flat-field pins are measured from the reference
+   (e.g. flat 100 → solid level 2, flat 60 → 43% level 2 duty, flat
+   202..255 → solid level 3). Heap note: the embedded ditherer allocates
+   its three error rows with `makeUniqueNoThrow` — the same bounded,
+   transient ~2.9 KiB block the legacy engine allocates per render, and
+   ~half of the pre-parity bake's `int32` error planes.
+
+2. **Single-pass stream — the `.g` gray temp is gone.** With the identity
+   map there are no whole-image statistics before row 0, so
+   `decodeAndCache` streams each decoder's FINAL destination rows straight
+   through the shared `BakeSinkCtx` (`toneRow` → `ToneCacheWriter::writeRow`
+   → `paintToneRow`) — zero `.g` SD writes/reads per image, and the
+   percentile two-phase flow (collect → gray temp → remap) plus
+   `remapGrayToCache` are deleted. Ordering contract (verified in
+   DpidScaler.cpp): the scaler emits each destination row exactly once in
+   raster order — bufferless Sharp plans at band completion, Enhanced/CLAHE
+   after `finish()`'s emit walk (CLAHE runs on the resident destination
+   image before the walk) — so the bake's error state advances cleanly for
+   all four decoders (JPEG/PNG via `renderSourceRows`, the GIF converter's
+   raw-row pass-through, the BMP random-access decoder). The
+   paint-uncached storage doctrine survives at the writer: a failed cache
+   open paints without a cache, a failed row write detaches the writer and
+   every remaining row still paints (pinned by the renamed
+   `CacheOpenFailureStillPaintsTheImage` /
+   `CacheMidStreamWriteFailureStillPaintsTheImage`, write count exactly
+   header + two rows); the old phase-2 gray re-open/read failure cases are
+   structurally gone (nothing is re-read) and their tests retired. The
+   degraded-worker contracts of amendments 7–8 stand unchanged (worker
+   `Failed`/`Skip`, foreground paint-uncached `Ok`), and every degrade fact
+   (ladder stepdown, DC fallback, scale-reduced retry) is now applied at
+   the dims hook BEFORE the first row: `detachWriterIfDegraded` aborts the
+   partial `.t` there, so a degraded decode never writes or publishes a
+   cache.
+
+3. **No post-resize sharpen.** `sharpenRowHaloFree`, `sharpenOk`, the
+   4-row ring block and the one-row emit delay are removed (helpers, DpidCtx
+   state, `sharpenFeed/Emit/Flush` and the six Sharpen host tests with
+   them): downscaled JPEGs get the clean fractional box area-averaging the
+   legacy `JpegToBmpConverter` uses, with no 8×8 DCT ring amplification
+   around text (the 00006 defect class). The removed coring deadzone was
+   also what masked JPEG ripple — the legacy engine never sharpens, and
+   parity leaves no room for a stage the reference does not have. A side
+   effect: the sharpen ring's out-of-order pass-through degrade disappears,
+   so the sink sees strictly ordered rows.
+
+4. **Gray waveform route verified — already the legacy arm, no code
+   change.** The legacy bitmap reader refreshes an image page on the X4
+   Pro (UC8279) with the ABSOLUTE gray waveform:
+   `EpubReaderActivity.cpp` `absoluteImageGrayscale = pageHasImages &&
+   !deviceIsX3 && controller==UC8279 && absolute supported` →
+   `displayGrayscaleBase(GrayscaleMode::Absolute, baseMode)` with
+   `baseMode = pagesUntilFullRefresh <= 1 ? HALF_REFRESH : FAST_REFRESH`,
+   then the MSB/LSB plane walks (the renderer's `absoluteGrayPlanes` set
+   by the Absolute mode) and `displayGrayBuffer()` before `setRenderMode(BW)`.
+   The TTF image page's `renderTtfImageGrayAbsolute` is that same arm
+   verbatim — same predicate shape (`absoluteGrayImageRoute`, §5.1), same
+   base-mode rule, same plane walks, same display order ("the legacy arm's
+   exact order" comment in the code) — so the 2-bit levels `{0,1,2,3}`
+   drive identical physical reflectance on the X4 Pro glass in both
+   engines. The legacy quantizer's `{30,55,150}`/`{15,35,90,210}` tuning
+   was measured against exactly this waveform on X4/X4 Pro; on Overlay-mode
+   panels both engines likewise share the differential route. The brief's
+   premise that the legacy engine paints image pages with `absolute=false`
+   applies only to non-UC8279 (Overlay) panels — on the X4 Pro target the
+   routes already agree.
+
+5. **Cache letters.** Sharp/Enhanced bump `'c'`/`'d'` → `'e'`/`'f'`
+   (sweeping the amendment-7 bakes; never shipped outside PR #316 review
+   builds), `'l'` untouched.
+
+##### Amendment 10 (2026-11-13, JPEG front-end unification — TJpgDec removed, JPEGDEC vendored)
+
+Both briefs in the 2026-11-13 combined directive named this landing
+"Amendment 10"; the two amendments are numbered sequentially as applied
+(jpegdec-front first, then the blue-noise bake as Amendment 11).
+
+`ImageRenderer`'s baseline JPEG decode and the progressive DC-only fallback
+decode through **JPEGDEC** now; `third_party/tjpgd/` and
+`src/vendor/tjpgd_impl.c` are deleted (deletion over deprecation; zero
+`tjpgd`/`jd_prepare`/`jd_decomp` references remain in code). Rationale: the
+quality path still showed JPEG blockiness the legacy JPEGDEC path did not,
+and the surviving suspect after the Stage-B/C split was the TJpgDec front
+end (MCU-grid decode/dither rounding).
+
+- **Vendoring**: JPEGDEC is a git submodule —
+  `libs/book/FreeInkBook/third_party/jpegdec` →
+  `https://github.com/bitbank2/JPEGDEC.git` pinned to upstream release tag
+  **1.8.5** (`0e879642e5e68624687f9ade16d799a091298ec8`), registered in the
+  SDK `.gitmodules` like FreeType. `src/vendor/jpegdec_impl.cpp` compiles it
+  for device and host builds. The firmware's `platformio.ini` JPEGDEC libdep
+  now points at the same vendored submodule (`symlink://`) instead of the
+  retired 1.2.7 registry pin — `JpegToFramebufferConverter`'s header is
+  byte-identical between the two pins, and the binary keeps exactly one
+  JPEGDEC implementation.
+- **Contracts preserved**: streaming `ImageRowFn` rows top→bottom, one
+  `SourceDimsFn` report before the first row, `scaleReduced` flag, the
+  1.5× pre-scale margin (mapped to `JPEG_SCALE_HALF/QUARTER/EIGHTH`),
+  draw-callback abort, EIGHT_BIT_GRAYSCALE Y-only luma. `RowScaler` /
+  `DpidScaler` / the bake / the app-side `dcFallback` contracts unchanged.
+  `ZipEntryReader` gains `seek()` so JPEGDEC's header scan can skip large
+  marker segments past its 2 KiB stream buffer (deflated entries rewind the
+  inflate state; stored entries are random access).
+- **Memory**: the JPEGDEC object (~17 KiB decode state) lives on the heap
+  (PSRAM-preferred), never on the caller arena — a caller arena too small
+  for a decode band must still afford the decoder. The caller arena holds
+  only the decode band (srcW×16) + scaler state; `testJpegScaleArenaRetry`
+  re-accounts for the split (4 KiB now forces the scale-2 band retry).
+- **Progressive unchanged**: full-fidelity decode stays in
+  `libs/assets/ProgressiveJpeg`; the DC fallback moves to JPEGDEC's first
+  scan. 00004 keeps its full-res progressive decode (never a 1/8 thumbnail).
+- **Host parity**: the real fixtures (`fixtures/images`, committed)
+  decode through the new front end with dims/rows/sample pins byte-identical
+  to the TJpgDec-era reference probe except ONE documented pixel (00006 row
+  274, col 127: 249 vs 254 — a near-white paper pixel one IDCT rounding step
+  apart).
+- **Host-only JPEGFilter fix**: upstream's x86 SSE marker filter desyncs
+  some entropy streams (reproduced on the `wide_scaling_test.jpg` fixture;
+  identical behavior on upstream 1.2.7 — not a 1.8.5 regression; the ESP32
+  device build never compiles the SSE filter). `jpegdec_impl.cpp` defines
+  `NO_SIMD` for host builds so the host decode path is byte-identical to the
+  device's scalar one.
+
+##### Amendment 11 (2026-11-13, linear-light blue-noise bake — ToneBake4 stateless, pictureDetail removed)
+
+Across a 293-round blind A/B visual tournament over the manga/light-novel/
+photo/gradient corpus (`00001..00029`), **64×64 Void-and-Cluster
+blue-noise ordered dithering in linear light** beat the Atkinson bake
+(11–0) and the legacy engine (8–0) and matched offline Direct Binary
+Search. `ToneBake4` is rewritten accordingly:
+
+- **Exact linear-light math** (`scripts/gen_bluenoise64.py`, IEEE-754
+  double): v(g) = 255·(g/255)^2.2 against the panel's four nominal encoded
+  reflectances L_k = 255·(85k/255)^2.2; interval k with fractional position
+  s(g); the ordered threshold nz comes from the toroidal pattern. For every
+  integer nz: s(g) > nz ⟺ thresh(g) > nz with thresh = clamp(⌈s⌉, 0, 256),
+  so the runtime quantizer is branchless — `(entry >> 9) + (nz < (entry &
+  0x1FF))` from `kBlueNoiseLinearLut[256]` (512 bytes). Palette anchors
+  {0, 85, 170, 255} quantize to the solid levels {0, 1, 2, 3}. No tone
+  mapping cutoffs, no error targets, no diffusion error state at all —
+  the bake's mean reflectance IS the image's mean reflectance.
+- **ESP32-S3 profile**: `kBlueNoise64[64][64]` + the LUT are 32-byte
+  aligned (L1 data-cache line size) in one translation unit (Flash
+  `.rodata`, single copy); each 64-pixel row slice spans exactly two cache
+  lines; `toneRow` steps in 64-pixel tiles with no `(x & 63)` masking in
+  the inner loop. Zero heap (the bake is a stack value: vtable pointer +
+  width + row counter), zero float, zero divide, zero branches.
+- **Stateless**: `tone(x, gray)` is a pure table lookup; `toneRow`
+  advances the row counter itself (the sink calls it once per row);
+  `resetError()` clears the row counter for the re-decode paint fallback
+  contract. Worker/foreground/placement parity holds by construction.
+- **Host pins** (`TtfImageEngineTest`, replacing the amendment-9
+  Atkinson-parity suite): `BlueNoise64StatisticalAndToroidalInvariants`
+  (every value 16× per tile; lag-1 correlations negative including the
+  toroidal wrap), `LinearLutBitExactAgainstFloatReference` (exhaustive
+  65536 (g,nz) pairs against the double reference), 
+  `PaletteAnchorsAreSolidAndLinearRampIsMonotone` (solid anchors; the full
+  ramp's reconstructed reflectance monotone and within a threshold step of
+  (g/255)^2.2), `TiledToneRowMatchesScalarToneAcrossBoundaries` (widths
+  1..799 across >2 row wraps; `resetError()` restarts clean). The texture
+  suite pins exact per-tile duties (thresh/256) and linear-light tone
+  correctness; `SinglePassBake` pins the published `'g'` letter.
+- **Cache letters**: Sharp/Enhanced bump `'e'`/`'f'` → `'g'`/`'h'`
+  (sweeping the amendment-9 parity bakes; never shipped outside PR #316
+  review builds), `'l'` untouched.
+- **`pictureDetail` removed** (owner directive): the Sharp/Enhanced CLAHE
+  selector (SettingsList ENUM row, JSON field, `STR_PICTURE_DETAIL*`
+  strings) is gone — the quality path has ONE bake, the DPID
+  detail-preserving resize stays always-on, and the CLAHE stage stays off
+  (`clahe = false` at all four call sites; the `clahe` flag and the
+  `'g'`/`'h'` letters remain so the degraded-rung ladder contracts and the
+  DPID disabled-gate byte-identity keep working unchanged). The only
+  alternate path is the untouched `imageDecodeQuality = 0` legacy revert
+  (`FloydSteinberg4`, letter `'l'`).

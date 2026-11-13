@@ -477,13 +477,6 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // cache) and GIF/BMP stay unrendered. No settings-menu entry yet;
   // JSON-only (owner adds UI).
   uint8_t imageDecodeQuality = 1;
-  // Picture detail for the TTF image pipeline (design
-  // 2026-11-09-ttf-image-dpid-clahe.md §Contract 4). 0 = "Sharp": the DPID
-  // detail-preserving resize only (the default — conservative). 1 =
-  // "Enhanced": adds the CLAHE local-contrast pass after the resize. DPID
-  // is always on; the setting gates only CLAHE. SettingsList ENUM row —
-  // loaded and clamped by the generic loop.
-  uint8_t pictureDetail = 0;
   // Tilt-based page turning (X3 only — requires QMI8658 IMU)
   uint8_t tiltPageTurn = TILT_OFF;
   // Master reader-touch toggle on boards with a touch controller.

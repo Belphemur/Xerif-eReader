@@ -25,9 +25,10 @@ namespace {
 // construction.
 void paintTtfPageImages(const freeink::book::Page& page, freeink::book::TtfBookRuntime& ttf, GfxRenderer& renderer) {
   const bool qualityTone = SETTINGS.imageDecodeQuality != 0;
-  // Picture detail (DPID design §Contract 4): CLAHE gate rides with the
-  // quality tone policy.
-  const bool clahe = qualityTone && SETTINGS.pictureDetail != 0;
+  // The Sharp/Enhanced CLAHE selector was removed with the linear-light
+  // blue-noise bake (design 2026-11-13): one quality bake, DPID resize
+  // always on, CLAHE stage off.
+  const bool clahe = false;
   if (!qualityTone) {
     // Revert switch: the previous image paint path verbatim.
     const freeink::book::BookStatus st = freeink::book::PageRenderer::renderImages(
@@ -103,9 +104,18 @@ void paintTtfPageImages(const freeink::book::Page& page, freeink::book::TtfBookR
         }
       } guard{hash};
       const size_t scratchMark = ttf.scratch().mark();
-      const ttfimg::DecodeResult res =
-          ttfimg::decodeAndCache(spec, cachePath, ttf.source(), ttf.catalog().zip(), ttf.scratch(), ttf.decodeEpub(),
-                                 &renderer, qualityTone, /*caching=*/true, nullptr, nullptr, true, clahe);
+      // Cold-decode arena parity (design amendment 7): a deflated full-page
+      // JPEG must not step down through the SDK's arena retry. The engine
+      // reserves the dedicated ttfimg::kDecodeArenaBytes fallback itself,
+      // AFTER its probe names the kind — GIF/BMP decoders pull their source
+      // into a separate PSRAM item buffer and must not be starved of PSRAM
+      // by a reserve they never use (review 2026-11-11). This PoolBytes only
+      // keeps the block alive for the call; the runtime scratch arena stays
+      // the decode arena whenever it is at or above the floor.
+      PoolBytes decodeArenaBytes;
+      const ttfimg::DecodeResult res = ttfimg::decodeAndCache(
+          spec, cachePath, ttf.source(), ttf.catalog().zip(), ttf.scratch(), ttf.decodeEpub(), &renderer, qualityTone,
+          /*caching=*/true, nullptr, nullptr, true, clahe, &decodeArenaBytes);
       ttf.scratch().release(scratchMark);
       if (res != ttfimg::DecodeResult::Ok) {
         LOG_DBG("QPR", "TTF image decode: kind=%d %s", static_cast<int>(res),

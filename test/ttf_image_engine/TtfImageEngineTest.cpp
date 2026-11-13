@@ -12,9 +12,12 @@
 #include <Arduino.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "Epub/Epub/blocks/ImageDecodeGate.h"
 #include "HalStorage.h"
@@ -74,13 +77,12 @@ TEST(CacheIdentity, PolicyLetterSeparatesBakes) {
   ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 10, 20, 100, 80), kDir, true, true, c, sizeof(c)));
   EXPECT_STRNE(a, b);
   EXPECT_STRNE(a, c);
-  // 'a' = Sharp, 'b' = DPID + CLAHE (Enhanced), 'l' = legacy: the
-  // iteration-3 owner audit bake (2026-11-11) invalidated every pre-campaign
-  // bake — panel-calibrated levels, white snap 240, Atkinson 1/8 diffusion,
-  // coring-6/darkFloor sharpen.
-  EXPECT_NE(strstr(a, "/ia"), nullptr);
+  // 'g' = Sharp, 'h' = DPID + CLAHE (Enhanced), 'l' = legacy: the
+  // linear-light blue-noise bake + JPEGDEC front end (amendment 10,
+  // 2026-11-13) invalidated every prior bake.
+  EXPECT_NE(strstr(a, "/ig"), nullptr);
   EXPECT_NE(strstr(b, "/il"), nullptr);
-  EXPECT_NE(strstr(c, "/ib"), nullptr);
+  EXPECT_NE(strstr(c, "/ih"), nullptr);
 }
 
 TEST(CacheIdentity, RefusesOverlongDir) {
@@ -266,7 +268,197 @@ TEST(ToneBake, QuantizesToFourLevels) {
   EXPECT_GE(mid, 1);
 }
 
-// ── ToneBake4 (design 2026-11-08 §5.2) ───────────────────────────────────
+// ── the blue-noise bake pins (amendment 10) ──────────────────────────────
+
+namespace {
+
+// Reference: the linear-light blue-noise quantizer, re-derived with C double
+// pow — the exact formula scripts/gen_bluenoise64.py used to build
+// kBlueNoiseLinearLut (double on both sides so no libm float rounding can
+// split a boundary case).
+struct LutExpect {
+  int k;       // base level (0..2)
+  int thresh;  // ceil of the fractional position, 0..256
+};
+
+LutExpect linearLightExpect(const int g) {
+  const double v = 255.0 * std::pow(g / 255.0, 2.2);
+  const double lv[4] = {0.0, 255.0 * std::pow(85.0 / 255.0, 2.2), 255.0 * std::pow(170.0 / 255.0, 2.2), 255.0};
+  int k = 0;
+  while (k < 2 && v >= lv[k + 1]) ++k;
+  const double s = (v - lv[k]) / (lv[k + 1] - lv[k]) * 256.0;
+  int thresh = static_cast<int>(std::ceil(s));
+  thresh = thresh < 0 ? 0 : (thresh > 256 ? 256 : thresh);
+  return {k, thresh};
+}
+
+// Bakes rows through ToneBake4's toneRow (the production path).
+std::vector<uint8_t> ttfBakeRows(const int w, const int h, const std::vector<uint8_t>& gray) {
+  ttfimg::ToneBake4 bake(w);
+  EXPECT_TRUE(bake.ok());
+  std::vector<uint8_t> tones(gray.size(), 0);
+  std::vector<uint8_t> row(static_cast<size_t>(w));
+  for (int y = 0; y < h; ++y) {
+    bake.toneRow(&gray[static_cast<size_t>(y) * w], row.data());
+    std::copy(row.begin(), row.end(), tones.begin() + static_cast<std::ptrdiff_t>(y) * w);
+  }
+  return tones;
+}
+
+}  // namespace
+
+TEST(BlueNoise64StatisticalAndToroidalInvariants, EveryValueUsed16TimesAndCorrelationsNegative) {
+  // Toroidal void-and-cluster signature: every rank value 0..255 appears
+  // exactly 16 times per tile, and the lag-1 correlations — horizontal,
+  // vertical, AND across the toroidal wrap (col 63 → 0, row 63 → 0) — are
+  // strictly negative. Positive or near-zero lag-1 correlation would mean
+  // white-noise clumping or a Bayer-like periodicity; a seam at the wrap
+  // would show as a positive wrap correlation.
+  int histogram[256] = {};
+  for (int y = 0; y < 64; ++y) {
+    for (int x = 0; x < 64; ++x) {
+      const int v = ttfimg::kBlueNoise64[y][x];
+      ASSERT_GE(v, 0);
+      ASSERT_LE(v, 255);
+      ++histogram[v];
+    }
+  }
+  for (int v = 0; v < 256; ++v) EXPECT_EQ(histogram[v], 16) << "value " << v;
+
+  auto lag1 = [](auto atWrapped, const long long total) {
+    const double mean = static_cast<double>(total) / (64 * 64);
+    double num = 0.0, den = 0.0;
+    for (int y = 0; y < 64; ++y) {
+      for (int x = 0; x < 64; ++x) {
+        const double a = static_cast<double>(ttfimg::kBlueNoise64[y][x]) - mean;
+        num += a * (static_cast<double>(atWrapped(y, x)) - mean);
+        den += a * a;
+      }
+    }
+    return num / den;
+  };
+  const double h = lag1([](int y, int x) { return ttfimg::kBlueNoise64[y][(x + 1) & 63]; }, 4096 * 127);
+  const double vCorr = lag1([](int y, int x) { return ttfimg::kBlueNoise64[(y + 1) & 63][x]; }, 4096 * 127);
+  EXPECT_LT(h, -0.10) << "horizontal lag-1 correlation";
+  EXPECT_LT(vCorr, -0.10) << "vertical lag-1 correlation";
+  // The wrap pairs ARE part of those walks: at(63, x)'s neighbor is
+  // at(0, x) through the &63 index, so a pattern with a tile-edge seam would
+  // push these correlations up. Assert the wrap rows directly too.
+  double wrapNum = 0.0;
+  for (int x = 0; x < 64; ++x) {
+    const double a = static_cast<double>(ttfimg::kBlueNoise64[63][x]) - 126.5625;
+    wrapNum += a * (static_cast<double>(ttfimg::kBlueNoise64[0][x]) - 126.5625);
+  }
+  EXPECT_LT(wrapNum / 64.0, 0.0) << "row 63 → 0 wrap must not correlate positively";
+}
+
+TEST(LinearLutBitExactAgainstFloatReference, All65536Pairs) {
+  // Exhaustive: for every gray g and noise value nz, the packed LUT entry
+  // quantizes exactly like the float reference s(g) > nz.
+  for (int g = 0; g < 256; ++g) {
+    const LutExpect expect = linearLightExpect(g);
+    const uint16_t entry = ttfimg::kBlueNoiseLinearLut[g];
+    ASSERT_EQ(entry >> 9, expect.k) << "gray " << g;
+    ASSERT_EQ(entry & 0x1FF, expect.thresh) << "gray " << g;
+    for (int nz = 0; nz < 256; ++nz) {
+      const int lutTone = (entry >> 9) + (nz < (entry & 0x1FFu) ? 1 : 0);
+      const double v = 255.0 * std::pow(g / 255.0, 2.2);
+      const double lv[4] = {0.0, 255.0 * std::pow(85.0 / 255.0, 2.2), 255.0 * std::pow(170.0 / 255.0, 2.2), 255.0};
+      int k = 0;
+      while (k < 2 && v >= lv[k + 1]) ++k;
+      const double s = (v - lv[k]) / (lv[k + 1] - lv[k]) * 256.0;
+      const int refTone = k + (s > static_cast<double>(nz) ? 1 : 0);
+      ASSERT_EQ(lutTone, refTone) << "gray " << g << " nz " << nz;
+    }
+  }
+}
+
+TEST(PaletteAnchorsAreSolidAndLinearRampIsMonotone, FullTilePerGray) {
+  // The four palette anchors bake 100% solid across a full 64x64 tile (zero
+  // speckle on exact palette tones and clean paper), and across g = 0..255
+  // the tile's reconstructed linear reflectance is monotonically
+  // non-decreasing, tracking (g/255)^2.2 within 1/240 of full scale (~the
+  // half-step of the widest panel interval).
+  const double lv[4] = {0.0, 255.0 * std::pow(85.0 / 255.0, 2.2), 255.0 * std::pow(170.0 / 255.0, 2.2), 255.0};
+  const int anchors[4] = {0, 85, 170, 255};
+  for (const int a : anchors) {
+    ttfimg::ToneBake4 bake(64);
+    ASSERT_TRUE(bake.ok());
+    int levelCount[4] = {0, 0, 0, 0};
+    for (int y = 0; y < 64; ++y) {
+      std::vector<uint8_t> grayRow(64, static_cast<uint8_t>(a));
+      std::vector<uint8_t> toneRow(64, 0);
+      bake.toneRow(grayRow.data(), toneRow.data());
+      for (const uint8_t t : toneRow) ++levelCount[t];
+    }
+    EXPECT_EQ(levelCount[a / 85], 64 * 64) << "anchor " << a << " not solid";
+  }
+  double prevMean = -1.0;
+  for (int g = 0; g <= 255; ++g) {
+    ttfimg::ToneBake4 bake(64);
+    ASSERT_TRUE(bake.ok());
+    double linearSum = 0.0;
+    for (int y = 0; y < 64; ++y) {
+      std::vector<uint8_t> grayRow(64, static_cast<uint8_t>(g));
+      std::vector<uint8_t> toneRow(64, 0);
+      bake.toneRow(grayRow.data(), toneRow.data());
+      for (const uint8_t t : toneRow) linearSum += lv[t];
+    }
+    const double mean = linearSum / (64 * 64);
+    EXPECT_GE(mean, prevMean) << "reflectance decreased at gray " << g;
+    prevMean = mean;
+    const double target = 255.0 * std::pow(g / 255.0, 2.2);
+    EXPECT_NEAR(mean, target, 255.0 / 240.0) << "gray " << g << " mean " << mean << " target " << target;
+  }
+}
+
+TEST(TiledToneRowMatchesScalarToneAcrossBoundaries, WidthsAndRowWraps) {
+  // toneRow() must be byte-identical to the scalar tone(x, gray) + nextRow()
+  // walk for every width (including the 64-pixel tile boundary and odd
+  // tails) and across more than two vertical 64-row wraps; resetError()
+  // restarts cleanly at row 0.
+  for (const int w : {1, 63, 64, 65, 128, 440, 480, 799}) {
+    const int rows = 150;
+    std::vector<uint8_t> gray(static_cast<size_t>(w) * rows);
+    for (int y = 0; y < rows; ++y) {
+      for (int x = 0; x < w; ++x) gray[static_cast<size_t>(y) * w + x] = static_cast<uint8_t>((x * 7 + y * 13) & 0xFF);
+    }
+    // Scalar reference.
+    std::vector<uint8_t> scalar(static_cast<size_t>(w) * rows);
+    {
+      ttfimg::ToneBake4 bake(w);
+      ASSERT_TRUE(bake.ok());
+      for (int y = 0; y < rows; ++y) {
+        for (int x = 0; x < w; ++x)
+          scalar[static_cast<size_t>(y) * w + x] = bake.tone(x, gray[static_cast<size_t>(y) * w + x]);
+        bake.nextRow();
+      }
+    }
+    // Tiled production path.
+    std::vector<uint8_t> tiled(static_cast<size_t>(w) * rows);
+    {
+      ttfimg::ToneBake4 bake(w);
+      ASSERT_TRUE(bake.ok());
+      std::vector<uint8_t> rowBuf(static_cast<size_t>(w));
+      for (int y = 0; y < rows; ++y) {
+        bake.toneRow(&gray[static_cast<size_t>(y) * w], rowBuf.data());
+        std::copy(rowBuf.begin(), rowBuf.end(), tiled.begin() + static_cast<std::ptrdiff_t>(y) * w);
+      }
+    }
+    EXPECT_EQ(0, memcmp(scalar.data(), tiled.data(), scalar.size())) << "width " << w;
+    // resetError restart: after rows were baked, a reset bake equals a fresh
+    // one on the same rows.
+    ttfimg::ToneBake4 restarted(w);
+    ASSERT_TRUE(restarted.ok());
+    std::vector<uint8_t> rowBuf(static_cast<size_t>(w));
+    restarted.toneRow(&gray[0], rowBuf.data());
+    restarted.toneRow(&gray[static_cast<size_t>(w)], rowBuf.data());
+    restarted.resetError();
+    std::vector<uint8_t> again(static_cast<size_t>(w));
+    for (int x = 0; x < w; ++x) again[x] = restarted.tone(x, gray[x]);
+    EXPECT_EQ(0, memcmp(again.data(), &scalar[0], again.size())) << "width " << w << " reset row";
+  }
+}
 
 TEST(ToneBake4, IsDeterministicAcrossRuns) {
   // Worker/foreground parity foundation: the same bake over the same rows.
@@ -304,202 +496,6 @@ TEST(ToneBake4, IsPlacementIndependent) {
   }
 }
 
-static int64_t planeMass(const ttfimg::ToneBake4& bake) {
-  const int n = bake.width + 4;
-  int64_t m = 0;
-  for (int i = 0; i < n; ++i) m += bake.err[i] + bake.errNext[i] + bake.errNext2[i];
-  return m;
-}
-
-TEST(ToneBake4, AtkinsonSpreadsThreeQuartersOfTheError) {
-  // Atkinson plane (iteration-3 owner audit): slots hold exact 1/8-level
-  // units — six neighbors at 1/8 each — so every distributed term is an
-  // integer and one tone() spreads exactly 6·errVal eighth-units (75% of
-  // the error; the absorbed 2/8 is the worm-killing damping). A fresh slot
-  // carries no residue.
-  ttfimg::ToneBake4 bake(8);
-  ASSERT_TRUE(bake.ok());
-  const int64_t m0 = planeMass(bake);
-  const int mv = bake.mapv(127);
-  const int v = mv;  // fresh slot: no consumed error
-  int t = 3;
-  if (v < ttfimg::ToneBake4::kMids[0])
-    t = 0;
-  else if (v < ttfimg::ToneBake4::kMids[1])
-    t = 1;
-  else if (v < ttfimg::ToneBake4::kMids[2])
-    t = 2;
-  const int errVal = v - ttfimg::ToneBake4::kLevels[t];
-  bake.tone(0, 127);
-  EXPECT_EQ(planeMass(bake) - m0, 6 * errVal);
-  // The 1/8 terms land on six slots (ascending visit: xi = x+2 = 2;
-  // forward +1/+2 = err[3..4], next row behind/below/ahead = errNext[1..3],
-  // two rows down below = errNext2[2]).
-  EXPECT_EQ(bake.err[3], errVal);
-  EXPECT_EQ(bake.err[4], errVal);
-  EXPECT_EQ(bake.errNext[1], errVal);
-  EXPECT_EQ(bake.errNext[2], errVal);
-  EXPECT_EQ(bake.errNext[3], errVal);
-  EXPECT_EQ(bake.errNext2[2], errVal);
-}
-
-TEST(ToneBake4, ConsumedErrorFeedsTheQuantizerInput) {
-  // The consumed slot error joins the mapped value BEFORE quantization:
-  // seed e8 = 37 eighth-levels -> consumed e = 5 (round (37+4)>>3); the
-  // rounding residual is absorbed with the plane's 2/8 (the consume zeroes
-  // the slot); the quantizer sees mv + 5.
-  ttfimg::ToneBake4 bake(8);
-  ASSERT_TRUE(bake.ok());
-  bake.err[2] = 37;
-  const int64_t m0 = planeMass(bake);
-  const int mv = bake.mapv(127);
-  const int v = mv + 5;
-  int t = 3;
-  if (v < ttfimg::ToneBake4::kMids[0])
-    t = 0;
-  else if (v < ttfimg::ToneBake4::kMids[1])
-    t = 1;
-  else if (v < ttfimg::ToneBake4::kMids[2])
-    t = 2;
-  const int errVal = v - ttfimg::ToneBake4::kLevels[t];
-  bake.tone(0, 127);
-  EXPECT_EQ(bake.err[2], 0);  // fully consumed
-  EXPECT_EQ(bake.err[3], errVal);
-  EXPECT_EQ(bake.err[4], errVal);
-  // Mass: 6·errVal distributed eighth-units minus the 37 consumed.
-  EXPECT_EQ(planeMass(bake) - m0, 6 * errVal - 37);
-}
-
-TEST(ToneBake4, WhitePaperSnapsClean) {
-  // Mapped values >= 240 (the KCC-standard clip, iteration-3 audit) emit
-  // level 3 with the slot zeroed and no diffusion: the paper field stays
-  // clean and carries no error — 8×8 DCT ringing (240..251) can no longer
-  // accumulate into dark dots.
-  ttfimg::ToneBake4 bake(8);
-  ASSERT_TRUE(bake.ok());
-  bake.err[2] = 37;  // pending error must be dropped by the snap
-  const int64_t m0 = planeMass(bake);
-  const uint8_t t = bake.tone(0, 255);
-  EXPECT_EQ(t, 3);
-  EXPECT_EQ(bake.err[2], 0);
-  EXPECT_EQ(planeMass(bake) - m0, -37);  // slot zeroed, nothing diffused
-}
-
-TEST(ToneBake4, SerpentineMirrorsTheKernel) {
-  // toneRow drives the scan direction itself: a mirror-symmetric row baked
-  // ascending (row 0) equals the same row baked on a reverse-seeded bake —
-  // the FS kernel mirrors with the visit direction, so the horizontal error
-  // term always lands on the next-visited pixel.
-  const int w = 16;
-  uint8_t gray[w];
-  for (int i = 0; i < w; ++i) gray[i] = static_cast<uint8_t>(60 + (i < w - 1 - i ? i : w - 1 - i) * 15);
-  ttfimg::ToneBake4 forward(w);
-  ttfimg::ToneBake4 backward(w);
-  ASSERT_TRUE(forward.ok() && backward.ok());
-  backward.reverse = true;  // row 0 visits right-to-left
-  uint8_t fwd[w];
-  uint8_t rev[w];
-  forward.toneRow(gray, fwd);
-  backward.toneRow(gray, rev);
-  for (int x = 0; x < w; ++x) EXPECT_EQ(fwd[x], rev[w - 1 - x]) << "column " << x;
-  // And the serpentine state flips per row: row 1 of the same bake (visited
-  // descending) differs from row 0 — direction-aware error flow.
-  uint8_t row2[w];
-  forward.toneRow(gray, row2);
-  EXPECT_NE(memcmp(fwd, row2, sizeof(fwd)), 0);
-}
-
-TEST(ToneBake4, SmallRangeHistUsesFixedContrastFallback) {
-  // A two-level near-flat histogram (99% level 236, speckle at 234) would
-  // stretch range 2 to the full scale, baking the flat field near-black —
-  // the small-range guard routes it to the fixed-contrast map (review
-  // 2026-11-10). compare against the degenerate (contrast-only) map.
-  ttfimg::ToneBake4 bake(16);
-  ASSERT_TRUE(bake.ok());
-  bake.hist[234] = 10;
-  bake.hist[236] = 990;
-  bake.histCount = 1000;
-  bake.beginRemap();
-  ttfimg::ToneBake4 ref(16);
-  ASSERT_TRUE(ref.ok());
-  ref.beginLegacyFallback();  // fixed contrast 1.3, gamma off
-  for (int i = 0; i < 256; ++i) ASSERT_EQ(bake.mapLut[i], ref.mapLut[i]) << "level " << i;
-}
-
-TEST(ToneBake4, PaperGuardKeepsTheDarkAnchorOnWhiteHeavyPages) {
-  // Owner directive (fidelity campaign 2026-11-10), implemented verbatim:
-  // when non-paper pixels are >= 5% of the histogram, the paper bins
-  // (250..255) are ignored when locating the dark anchor.
-  //
-  // MEASURED SCOPE (verified against the loop order, kept as documentation):
-  // the ascending lo loop stops at the FIRST bin where cum >= 0.5%, so with
-  // >= 5% non-paper pixels the unguarded anchor already lands on content
-  // (0..249) — the guard's outcome is identical there. The anchor only
-  // lands inside the paper bins when content < 0.5%, where the guard does
-  // NOT fire (5% not met) — that case keeps the pre-campaign behavior
-  // (lo in the paper bins, the stretch inverts paper) and is REPORTED as
-  // residual risk; the white-page cleanliness this campaign ships rides on
-  // the white-paper snap (kWhiteSnap) instead.
-  //
-  // Pin 1 — guard fires (content 6%), anchor unchanged vs unguarded:
-  auto build = [](uint32_t dark, uint32_t paper) {
-    ttfimg::ToneBake4 b(16);
-    b.hist[10] = dark;
-    b.hist[253] = paper;
-    b.hist[255] = 1000 - dark - paper;
-    b.histCount = 1000;
-    b.beginRemap();
-    return b;
-  };
-  // Pin 1 — guard fires (content 6% >= 5%): the anchor sits on the dark
-  // content; paper maps back to paper.
-  const auto guarded = build(60, 800);  // 6% content: guard fires
-  EXPECT_EQ(guarded.mapLut[10], 0);     // the dark point stretches to black
-  EXPECT_GT(guarded.mapLut[253], 200);  // paper stays paper
-
-  // Pin 2 — content 0.4% (guard inert by the directive's own threshold):
-  // pre-campaign behavior stands (anchor in the paper bins; the stretch
-  // runs because the paper's own bin spread gives range 5). Documented
-  // residual risk, unchanged by this campaign.
-  ttfimg::ToneBake4 sparse(16);
-  sparse.hist[10] = 4;
-  sparse.hist[250] = 166;
-  sparse.hist[251] = 166;
-  sparse.hist[252] = 166;
-  sparse.hist[253] = 166;
-  sparse.hist[254] = 166;
-  sparse.hist[255] = 166;
-  sparse.histCount = 1000;
-  sparse.beginRemap();
-  EXPECT_EQ(sparse.mapLut[253], 153);  // (253−250)·255/5 — paper mid-stretch
-  EXPECT_EQ(sparse.mapLut[10], 0);
-}
-
-TEST(ToneBake4, StretchStillAppliesToRealHistograms) {
-  // The guard must not eat genuine range: a wide two-level histogram still
-  // stretches to full scale (lo -> 0, hi -> 255).
-  ttfimg::ToneBake4 bake(16);
-  ASSERT_TRUE(bake.ok());
-  bake.hist[40] = 512;
-  bake.hist[255] = 512;
-  bake.histCount = 1024;
-  bake.beginRemap();
-  EXPECT_EQ(bake.mapLut[40], 0);
-  EXPECT_EQ(bake.mapLut[255], 255);
-}
-
-TEST(ToneBake4, PerPixelToneStaysForwardForAscendingCallers) {
-  // The ToneBaker per-pixel kernel is ALWAYS ascending (the callers' raster
-  // order): a reverse-flagged bake's tone() must not mirror the kernel —
-  // the serpentine lives in toneRow's visit order, not in tone().
-  const int w = 8;
-  ttfimg::ToneBake4 a(w);
-  ttfimg::ToneBake4 b(w);
-  ASSERT_TRUE(a.ok() && b.ok());
-  b.reverse = true;  // must not change tone()'s kernel
-  for (int x = 0; x < w; ++x) EXPECT_EQ(a.tone(x, 128), b.tone(x, 128));
-}
-
 TEST(ToneBake4, ToneRowDeterministicAcrossRuns) {
   // Worker/foreground parity through the row API (the production path).
   const int w = 37;
@@ -515,35 +511,58 @@ TEST(ToneBake4, ToneRowDeterministicAcrossRuns) {
   EXPECT_EQ(memcmp(run1, run2, sizeof(run1)), 0);
 }
 
-TEST(ToneBake4, FlatInputsPinEndpointsAndMidtones) {
-  // Flat 0/255 have zero quantization error: no diffusion, one tone.
-  {
-    ttfimg::ToneBake4 bake(8);
-    ASSERT_TRUE(bake.ok());
-    for (int x = 0; x < 8; ++x) EXPECT_EQ(bake.tone(x, 0), 0);
-    bake.nextRow();
-    for (int x = 0; x < 8; ++x) EXPECT_EQ(bake.tone(x, 0), 0);
-  }
-  {
-    ttfimg::ToneBake4 bake(8);
-    ASSERT_TRUE(bake.ok());
-    for (int x = 0; x < 8; ++x) EXPECT_EQ(bake.tone(x, 255), 3);
-    bake.nextRow();
-    for (int x = 0; x < 8; ++x) EXPECT_EQ(bake.tone(x, 255), 3);
-  }
-  {
-    // Flat mid-gray: gamma+contrast map 128 into tone 2's band (the mapped
-    // endpoints clamp, so the row stays inside {2,3} — no pepper into 0/1).
-    ttfimg::ToneBake4 bake(32);
-    ASSERT_TRUE(bake.ok());
-    for (int r = 0; r < 4; ++r) {
-      for (int x = 0; x < 32; ++x) {
-        const uint8_t t = bake.tone(x, 128);
-        EXPECT_GE(t, 2);
-        EXPECT_LE(t, 3);
+TEST(ToneBake4, ErrorStateResetsForTheRepaintFallback) {
+  // resetError() gives the re-decode paint fallbacks a clean plane: after
+  // baking rows, the next bake must equal a fresh one (the same rows).
+  const int w = 16;
+  uint8_t gray[16];
+  for (int i = 0; i < w; ++i) gray[i] = static_cast<uint8_t>(30 + i * 14);
+  ttfimg::ToneBake4 dirty(w);
+  ASSERT_TRUE(dirty.ok());
+  uint8_t row[16];
+  dirty.toneRow(gray, row);
+  dirty.resetError();
+  ttfimg::ToneBake4 fresh(w);
+  ASSERT_TRUE(fresh.ok());
+  uint8_t row2[16];
+  dirty.toneRow(gray, row);
+  fresh.toneRow(gray, row2);
+  EXPECT_EQ(0, memcmp(row, row2, sizeof(row)));
+}
+
+TEST(ToneBake4, FlatFieldsDitherTheirLinearLightDuty) {
+  // Ordered-dither character: only the four palette anchors bake solid;
+  // every other flat field dithers its bracketing pair at the exact
+  // linear-light duty thresh(g)/256 (full 64x64 tiles), and the emitted
+  // linear-light mean tracks the input's (g/255)^2.2 reflectance within a
+  // single threshold-quantization step.
+  const double lv[4] = {0.0, 255.0 * std::pow(85.0 / 255.0, 2.2), 255.0 * std::pow(170.0 / 255.0, 2.2), 255.0};
+  for (const int v : {0, 20, 40, 60, 85, 100, 128, 160, 170, 203, 250, 255}) {
+    const int w = 128;
+    const int h = 64;
+    std::vector<uint8_t> gray(static_cast<size_t>(w) * h, static_cast<uint8_t>(v));
+    const auto ttf = ttfBakeRows(w, h, gray);
+    const LutExpect expect = linearLightExpect(v);
+    if (expect.thresh == 0 || expect.thresh == 256) {
+      // Anchor: one solid level.
+      const uint8_t solid = static_cast<uint8_t>(expect.k + (expect.thresh == 256 ? 1 : 0));
+      int others = 0;
+      for (const uint8_t t : ttf) {
+        if (t != solid) ++others;
       }
-      bake.nextRow();
+      EXPECT_EQ(others, 0) << "gray " << v << " anchor not solid";
+    } else {
+      int nLow = 0;
+      for (const uint8_t t : ttf) {
+        if (t == expect.k) ++nLow;
+      }
+      EXPECT_EQ(nLow, (256 - expect.thresh) * (w * h) / 256) << "gray " << v << " duty";
     }
+    double linearSum = 0.0;
+    for (const uint8_t t : ttf) linearSum += lv[t];
+    const double mean = linearSum / ttf.size();
+    const double target = 255.0 * std::pow(v / 255.0, 2.2);
+    EXPECT_NEAR(mean, target, 1.1) << "gray " << v << " mean " << mean << " target " << target;
   }
 }
 
@@ -559,39 +578,6 @@ TEST(ToneBake4, GradientUsesAllFourTones) {
     bake.nextRow();
   }
   for (int t = 0; t < 4; ++t) EXPECT_TRUE(seen[t]) << "tone " << t << " never emitted";
-}
-
-TEST(ToneBake4, StepInputChangesToneAtTheBoundary) {
-  // The sRGB-space thresholds moved with the LUTs (§5.2) and now with the
-  // panel-calibrated midpoints {28, 78, 182}: sRGB 10 maps into the level-1
-  // band (mapped 38, between 28 and 78), sRGB 30/60/100 into level 2 —
-  // pinned with margin against LUT-build drift. Fresh bake per pick:
-  // tone() diffuses, and a prior pick's error must not move a boundary pin.
-  const auto pick = [](const uint8_t g) {
-    ttfimg::ToneBake4 bake(8);
-    return bake.tone(0, g);
-  };
-  EXPECT_EQ(pick(6), 0);   // mapped 21 < 28: level 0
-  EXPECT_EQ(pick(10), 1);  // mapped 38: level 1
-  EXPECT_EQ(pick(30), 2);  // mapped 86: level 2
-  EXPECT_EQ(pick(60), 2);
-  EXPECT_EQ(pick(100), 2);  // mapped 178, four under the 182 midpoint
-}
-
-TEST(ToneBake4, LutStructure) {
-  // Structural pins (libm-independent): endpoints fixed, non-decreasing,
-  // contrast pivot preserved, midtone brightened per the reference curve.
-  ttfimg::ToneBake4 bake(1);
-  EXPECT_EQ(bake.gammaLut[0], 0);
-  EXPECT_EQ(bake.gammaLut[255], 255);
-  EXPECT_EQ(bake.contrastLut[0], 0);
-  EXPECT_EQ(bake.contrastLut[255], 255);
-  for (int i = 1; i < 256; ++i) {
-    EXPECT_GE(bake.gammaLut[i], bake.gammaLut[i - 1]);
-    EXPECT_GE(bake.contrastLut[i], bake.contrastLut[i - 1]);
-  }
-  EXPECT_NEAR(bake.contrastLut[128], 128, 2);  // pivot 128 stays
-  EXPECT_NEAR(bake.gammaLut[128], 186, 4);     // 0.502^(1/2.2) brightens
 }
 
 // ── Display routing predicate (design 2026-11-08 §5.1) ───────────────────

@@ -5,165 +5,6 @@
 #include <cstdio>
 
 namespace ttfimg {
-
-// ── ToneBake4 adaptive two-phase API (design 2026-11-08 §2.1, amendment 2) ──
-
-bool ToneBake4::beginCollect(const char* grayPath) {
-  if (width <= 0 || !ok()) return false;
-  memset(hist, 0, sizeof(hist));
-  histCount = 0;
-  adaptive = false;
-  grayFailed = false;
-  grayOpen = false;
-  grayPathLen = 0;
-  // Validate the snprintf result BEFORE recording the path: a truncated or
-  // empty path must never be opened (the open would target a different file).
-  const int pathLen = snprintf(grayPathBuf, sizeof(grayPathBuf), "%s", grayPath);
-  if (pathLen <= 0 || pathLen >= static_cast<int>(sizeof(grayPathBuf))) {
-    grayPathBuf[0] = '\0';
-    grayPathLen = 0;
-    return false;
-  }
-  grayPathLen = static_cast<size_t>(pathLen);
-  if (!Storage.openFileForWrite("TIMGE", grayPathBuf, grayFile)) {
-    LOG_ERR("TIMGE", "Gray temp open failed: %s", grayPathBuf);
-    return false;
-  }
-  grayOpen = true;
-  return true;
-}
-
-void ToneBake4::collectRow(const uint8_t* gray) {
-  if (width <= 0 || gray == nullptr) return;
-  // u32 bins: no saturation, so the percentile targets always compare
-  // against the real counts (1 KB of state in the bake object, no heap).
-  for (int x = 0; x < width; ++x) ++hist[gray[x]];
-  histCount += static_cast<uint32_t>(width);
-  if (grayOpen && !grayFailed) {  // sticky: one log, no writes after failure
-    if (grayFile.write(gray, static_cast<uint32_t>(width)) != width) {
-      LOG_ERR("TIMGE", "Gray temp write failed: %s", grayPathBuf);
-      grayFailed = true;  // sticky: grayDone() refuses a short stream
-    }
-  }
-}
-
-bool ToneBake4::grayDone() {
-  if (grayOpen) {
-    if (!grayFile.close()) {
-      // grayOpen stays true: the handle stays reachable so a later
-      // grayDiscard() (engine callers invoke it on this path) can still
-      // close it and remove the temp.
-      LOG_ERR("TIMGE", "Gray temp close failed: %s", grayPathBuf);
-      return false;
-    }
-    grayOpen = false;
-  }
-  if (grayFailed) {
-    grayFailed = false;
-    Storage.remove(grayPathBuf);
-    return false;
-  }
-  return true;
-}
-
-void ToneBake4::beginLegacyFallback() {
-  // Storage-failure paint fallback (review round 1): drop whatever partial
-  // histogram phase 1 managed and bake with the deterministic degenerate map
-  // (fixed contrast 1.3, gamma off) — the image still paints without any
-  // cache or gray temp.
-  memset(hist, 0, sizeof(hist));
-  histCount = 0;
-  beginRemap();
-}
-
-void ToneBake4::grayDiscard() {
-  if (grayOpen) {
-    grayOpen = false;
-    grayFile.close();
-  }
-  if (grayPathLen != 0) Storage.remove(grayPathBuf);
-}
-
-void ToneBake4::beginRemap() {
-  // Percentile clip (integer): the smallest lo with cum(lo) >= ceil-ish(N·1%)
-  // and the smallest hi with cum(hi) >= N·99%. A single flat histogram (hi <=
-  // lo) has no range to stretch — fall back to the fixed contrast 1.3 map
-  // with the gamma stage off.
-  const uint32_t n = histCount;
-  int lo = 0;
-  int hi = 255;
-  if (n > 0) {
-    const uint32_t loTarget = n * kClipNum / kClipDen > 0 ? n * kClipNum / kClipDen : 1;
-    const uint32_t hiTarget = n * (kClipDen - kClipNum) / kClipDen;
-    uint32_t cum = 0;
-    // Paper guard (fidelity campaign 2026-11-10): a white-heavy page whose
-    // content is under the 0.5% dark-anchor target reaches that target
-    // INSIDE the paper bins (250..255) — the stretch then maps the paper
-    // itself toward black. With ≥5% real content, locate the dark anchor
-    // below the paper bins so the page keeps its dark-point stretch.
-    uint32_t nonPaper = n;
-    for (int v = 250; v < 256; ++v) nonPaper -= hist[v];
-    const int loLimit = nonPaper >= n / 20 ? 250 : 256;
-    lo = 255;
-    for (int v = 0; v < loLimit; ++v) {
-      cum += hist[v];
-      if (cum >= loTarget) {
-        lo = v;
-        break;
-      }
-    }
-    cum = 0;
-    for (int v = 0; v < 256; ++v) {
-      cum += hist[v];
-      if (cum >= hiTarget) {
-        hi = v;
-        break;
-      }
-    }
-  }
-  // A two- or three-level histogram (e.g. a near-flat scan at 99% level 236
-  // with speckle at 234) has a range the percentile stretch would amplify
-  // to the full 0..255 scale, baking the flat field as near-black plus
-  // speckle — route any small range to the same fixed-contrast fallback.
-  if (n == 0 || hi <= lo || hi - lo < 3) {
-    // Degenerate (flat scan, empty collection, or a small-range histogram):
-    // fixed contrast, no gamma — the doc §2.1 fallback.
-    for (int i = 0; i < 256; ++i) {
-      int c = (26 * i - 765) / 20;
-      if (c < 0) c = 0;
-      if (c > 255) c = 255;
-      mapLut[i] = static_cast<uint8_t>(c);
-    }
-  } else if (lo == 0 && hi == 255) {
-    // No-op rung (reset4): the clips pinned both ends of the scale the image
-    // already spans, so the stretch would map identity — 7/29 host-fixture
-    // sweep 2026-11-10. Skip the arithmetic (and its flip-floppery) entirely;
-    // the identity map is the exact result of (i - 0)·255/255.
-    LOG_INF("TIMGE", "STRETCH skip: no-op rung (lo=0 hi=255)");
-    for (int i = 0; i < 256; ++i) mapLut[i] = static_cast<uint8_t>(i);
-  } else {
-    const int range = hi - lo;
-    for (int i = 0; i < 256; ++i) {
-      int s = (i - lo) * 255 / range;
-      if (s < 0) s = 0;
-      if (s > 255) s = 255;
-      // Gamma stage defaults OFF (§2.2): the stretch already uses the full
-      // range; the panel's absolute-gray waveform owns perceptual matching.
-      if (kGammaEnabled) s = gammaLut[s];
-      mapLut[i] = static_cast<uint8_t>(s);
-    }
-  }
-  adaptive = true;
-  // Phase 1 did not diffuse: reset the error state and the serpentine.
-  if (err != nullptr && errNext != nullptr && errNext2 != nullptr) {
-    memset(err.get(), 0, (width + 4) * sizeof(int32_t));
-    memset(errNext.get(), 0, (width + 4) * sizeof(int32_t));
-    memset(errNext2.get(), 0, (width + 4) * sizeof(int32_t));
-  }
-  reverse = false;
-  row = 0;
-}
-
 bool ToneCacheWriter::begin(const char* p, const int w, const int h, const CacheIdentity& id) {
   snprintf(path, sizeof(path), "%s", p);
   width = w;
@@ -282,7 +123,7 @@ uint64_t cacheHash64(const ImageSpec& spec) {
   return hash;
 }
 
-char cacheRevisionLetter(const bool qualityTone, const bool clahe) { return qualityTone ? (clahe ? 'b' : 'a') : 'l'; }
+char cacheRevisionLetter(const bool qualityTone, const bool clahe) { return qualityTone ? (clahe ? 'h' : 'g') : 'l'; }
 
 CacheIdentity cacheIdentity(const ImageSpec& spec, const bool qualityTone, const bool clahe) {
   CacheIdentity id;
@@ -319,7 +160,24 @@ bool cacheNameFor(const ImageSpec& spec, const char* dir, const bool qualityTone
   // (2026-11-11) — panel-calibrated levels {0,48,112,255} (midpoints
   // {28,78,182}), white snap 240, serpentine Atkinson 1/8 diffusion,
   // coring-6/darkFloor sharpen (both letters never used in this file's
-  // history — swept).
+  // history — swept). 'c' (Sharp) and 'd' (Enhanced) are the edge-aware
+  // hybrid bake (amendment 7, 2026-11-11): 8/8 → 7/8 → 6/8 diffusion
+  // strength by symmetric local gradient, the kEdgeBarrier cross-cliff
+  // guard, smooth-region threshold dither, the causal prevRowMv context,
+  // and the static gamma/contrast LUTs ('a'/'b' only ever shipped in the
+  // merged PR #303 develop builds — swept). 'e' (Sharp) and 'f' (Enhanced)
+  // are the legacy-BMP-parity bake (amendment 9, 2026-11-11): the exact
+  // AtkinsonDitherer(originalThresholds=false) transfer — identity luma,
+  // cutoffs {30,55,150}, targets {15,35,90,210}, non-serpentine 6/8 — and
+  // the single-pass stream (no .g temp, no percentile stretch, no
+  // post-resize sharpen), sweeping 'c'/'d' (never shipped outside PR #316
+  // review builds). 'g' (Sharp) and 'h' (Enhanced) are the linear-light
+  // blue-noise ordered bake (amendment 10, 2026-11-13): 64x64 toroidal
+  // void-and-cluster thresholds + the linear-light quantizer LUT — and the
+  // JPEG front end moved to JPEGDEC in the same landing (jpegdec-front
+  // amendment; different decoder IDCT output must not resurrect stale
+  // caches), sweeping 'e'/'f' (never shipped outside PR #316 review
+  // builds).
 
   // Full 64-bit hash in the name: a truncated identity would let two records
   // of the same dimensions and generation share one file, and the header

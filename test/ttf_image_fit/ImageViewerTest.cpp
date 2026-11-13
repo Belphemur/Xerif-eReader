@@ -225,15 +225,14 @@ TEST(ImageViewerPath, CacheStreamFailureAfterPaintReportsOk) {
   spec.w = place.w;
   spec.h = place.h;
 
-  // Write-call ordering (process-global stub counters): the gray collect
-  // writes spec.h rows, then the cache stream writes the identity header +
-  // one row per remap row. Failing the SECOND cache-row write arms a
-  // MID-STREAM cache failure, after every gray row was collected.
+  // Write-call ordering (process-global stub counters): the single-pass
+  // cache stream writes the identity header, then one row per bake row.
+  // Failing the SECOND cache-row write arms a MID-STREAM cache failure,
+  // after the header and the first row were written.
   struct WriteFailGuard {
-    const int grayRows;
-    explicit WriteFailGuard(const int rows) : grayRows(rows) {
+    explicit WriteFailGuard(int) {
       HalFile::writeCallCount = 0;
-      HalFile::failWriteAtCall = grayRows + 2;  // gray rows + header + 1st cache row
+      HalFile::failWriteAtCall = 3;  // header + 1st cache row, fail the 2nd
     }
     ~WriteFailGuard() { HalFile::failWriteAtCall = 0; }
   } guard{place.h};

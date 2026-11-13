@@ -56,7 +56,10 @@ def source_reference(directory: Path) -> str:
     # Registry installs carry .piopm; git deps may not (PIO version dependent),
     # so name every git dep in lib_deps explicitly instead of guessing.
     GIT_DEP_REFERENCES = {
-        "JPEGDEC": "See the JPEGDEC URL and commit in platformio.ini.",
+        # JPEGDEC is a symlink dep into the SDK's vendored submodule (no URL in
+        # platformio.ini): name the submodule and its pinned commit instead.
+        "JPEGDEC": "Vendored as the JPEGDEC 1.8.5 submodule in the FreeInk SDK "
+        "(commit 0e879642e5e68624687f9ade16d799a091298ec8).",
         "PNGdec": "See the PNGdec URL and commit in platformio.ini.",
         "AnimatedGIF": "See the AnimatedGIF URL and commit in platformio.ini.",
         "NimBLE-Arduino": "See the NimBLE-Arduino URL and commit in platformio.ini.",
