@@ -23,7 +23,7 @@ add_executable(FibpLayoutBench
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/src/vendor/miniz_cores_impl.c
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/src/vendor/unibreak_impl.c
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/pngle/pngle.c
-  ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/src/vendor/tjpgd_impl.c
+  ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/src/vendor/jpegdec_impl.cpp
   ${FONT_FT_TEST_SOURCES}
 )
 
@@ -37,7 +37,7 @@ target_include_directories(FibpLayoutBench PRIVATE
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/miniz/include
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/pngle
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/stb
-  ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/tjpgd
+  ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/jpegdec/src
   ${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont/third_party/stb
   ${FONT_FT_TEST_INCLUDES}
 )

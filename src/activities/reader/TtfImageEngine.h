@@ -163,7 +163,7 @@ bool decodeGatesOk();
 // Decode-arena floor shared by the worker and the foreground cold paint
 // (owner-audit iteration 3, 2026-11-11): a deflated full-page JPEG needs
 // ~74–81 KiB inside the decode arena (inflate window + tinfl ~46 KiB,
-// skipBuf + TJpgDec ~9 KiB, srcW×16 band 15.5–22 KiB, RowScaler ~3.5 KiB);
+// JPEGDEC decoder heap ~17 KiB, srcW×16 band 15.5–22 KiB, RowScaler ~3.5 KiB);
 // 128 KiB covers it with margin so no decode steps down through the SDK's
 // arena retry. PSRAM-backed on device; the 5 MiB budget pins hold (the
 // budget measures the store + scaler scratch, this is a separate reserve).

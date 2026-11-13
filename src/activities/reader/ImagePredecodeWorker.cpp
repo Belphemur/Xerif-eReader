@@ -67,7 +67,7 @@ bool ImagePredecodeWorker::reserve() {
   }
   scratchBegan_ = true;
 
-  // SDK decode arena: probe + row-decode scratch (TJpgDec band, RowScaler
+  // SDK decode arena: probe + row-decode scratch (JPEGDEC band, RowScaler
   // accumulators). PSRAM. The control object lives BEFORE the allocatable
   // region: alloc() bumps from the buffer base, so a control object placed
   // at the base would be overwritten by the first decode scratch allocation.

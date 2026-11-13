@@ -2,8 +2,8 @@
 """Configure-time fixture generator for the TTF image fit suite (stdlib only).
 
 Builds a minimal EPUB carrying one PROGRESSIVE JPEG (DC-only first scan) —
-the format TJpgDec cannot decode, so the SDK's DC-path renderer is the only
-host-exercisable implementation — plus the gray pattern PNG/BMP twins. The
+whose DC-only path the SDK's renderer exercises host-side — plus the gray
+pattern PNG/BMP twins. The
 DC scan uses quantizer 8, so DC coefficient = 8*(block_avg - 128) exactly and
 the decoded gray equals the block average: tonal pins stay byte-exact.
 
