@@ -86,3 +86,33 @@ TEST(TtfWordSelect, SplitsRunsIntoWhitespaceTokens) {
   EXPECT_LT(data.boxes[0].x, data.boxes[1].x);
   EXPECT_EQ(data.boxes[0].height, chain.lineHeight(20));
 }
+
+// Spacing-knob replay (kept scope-cut feature): token geometry must match the
+// painted glyph positions — PagePaint adds word spacing on the space glyph and
+// character spacing on everything else. Pin the delta between the 0-spacing
+// walk and the spaced walk, and that spacing does not shift the FIRST token
+// (its pen starts at run.x with no preceding glyph).
+TEST(TtfWordSelect, SpacingKnobsReplayThePaintWalk) {
+  static const char kText[] = "alpha beta";
+  const auto page = makePage(kText, static_cast<uint16_t>(std::strlen(kText)));
+  SelectFace font;
+  const std::string& bytes = emberBytes();
+  if (bytes.empty()) GTEST_SKIP() << "Missing Amazon Ember fixture";
+  ASSERT_TRUE(loadSelectFace(font, bytes));
+  freeink::book::FontChain chain;
+  chain.add(&font, freeink::book::StyleNone);
+
+  freeink::book::TtfWordSelectData plain;
+  ASSERT_TRUE(freeink::book::buildTtfWordSelectData(page, chain, plain));
+  freeink::book::TtfWordSelectData spaced;
+  ASSERT_TRUE(freeink::book::buildTtfWordSelectData(page, chain, spaced, /*characterSpacingPx=*/2,
+                                                    /*wordSpacingPx=*/4));
+  ASSERT_EQ(plain.boxes.size(), spaced.boxes.size());
+  // First token: no glyph precedes it, so both walks start at run.x.
+  EXPECT_EQ(spaced.boxes[0].x, plain.boxes[0].x);
+  // Second token: one character-spacing advance per glyph of "alpha" (2x5)
+  // plus one word spacing on the inter-token space (4).
+  EXPECT_EQ(spaced.boxes[1].x - plain.boxes[1].x, 2 * 5 + 4);
+  // The token text/trim ranges are spacing-invariant.
+  EXPECT_EQ(spaced.boxes[1].textLength, plain.boxes[1].textLength);
+}

@@ -5,7 +5,7 @@
 // the fragments layout split across run boundaries (the
 // LayoutFirst/LastContinues pairing), and measures widths with the same
 // FontChain that rendered the page — everything the legacy SD-font selector
-// reads from TextBlock, rebuilt from run geometry + chapter char anchoring.
+// reads from TextBlock, rebuilt from run geometry.
 
 #if defined(CROSSPOINT_TTF_READER)
 
@@ -49,8 +49,12 @@ struct TtfWordSelectData {
 // Builds the payload from a valid page. Run text is only read during the
 // call — everything is copied out, so the reader's scratch mark can be
 // released as soon as this returns. `footnotes` is filled by the caller.
-// Returns false on OOM (payload left empty).
-bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectData& out);
+// The spacing knobs replay the paint walk exactly (PagePaint adds them per
+// decoded glyph, see the spacingFor lambda): token geometry must match painted
+// glyph positions or highlight/hit boxes drift whenever the reader applies
+// text spacing. Returns false on OOM (payload left empty).
+bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectData& out, int16_t characterSpacingPx = 0,
+                            int16_t wordSpacingPx = 0);
 
 }  // namespace book
 }  // namespace freeink

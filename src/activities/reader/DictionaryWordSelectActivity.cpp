@@ -17,6 +17,7 @@
 #include "HapticFeedback.h"
 #include "components/UITheme.h"
 #include "util/DictionarySelection.h"
+#include "util/InvertRegionsMerged.h"
 
 namespace {
 
@@ -720,20 +721,33 @@ bool DictionaryWordSelectActivity::drawHighlightWithSnapshot() {
   snapshotH = static_cast<int16_t>(hh);
   snapshotIdx = saved ? selected : -1;
 
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttfMode) {
+    // Engine glyphs cannot be re-drawn through the SD-font drawText, so the
+    // highlight is the pixel-wise inverse of the padded boxes (black box,
+    // white text — the legacy fillRect+drawText look). Segments merge first:
+    // padded boxes of adjacent fragments touch, and XOR would cancel the
+    // shared band (see invertRegionsMerged).
+    std::vector<Rect> segments;
+    segments.reserve(group.segmentCount);
+    for (uint16_t i = 0; i < group.segmentCount; i++) {
+      const WordBox& word = words[selectionSegments[group.segmentStart + i]];
+      const int wordX = std::max(0, static_cast<int>(word.x) - 2);
+      const int wordY = std::max(0, static_cast<int>(word.y) - 2);
+      const int wordRight = std::min(screenWidth, static_cast<int>(word.x) + word.width + 2);
+      const int wordBottom = std::min(screenHeight, static_cast<int>(word.y) + word.height + 2);
+      segments.emplace_back(wordX, wordY, wordRight - wordX, wordBottom - wordY);
+    }
+    invertRegionsMerged(renderer, segments);
+    return saved;
+  }
+#endif
   for (uint16_t i = 0; i < group.segmentCount; i++) {
     const WordBox& word = words[selectionSegments[group.segmentStart + i]];
     const int wordX = std::max(0, static_cast<int>(word.x) - 2);
     const int wordY = std::max(0, static_cast<int>(word.y) - 2);
     const int wordRight = std::min(screenWidth, static_cast<int>(word.x) + word.width + 2);
     const int wordBottom = std::min(screenHeight, static_cast<int>(word.y) + word.height + 2);
-#if defined(CROSSPOINT_TTF_READER)
-    if (ttfMode) {
-      // Outline only: the engine font draws the page, and redrawing a token
-      // through GfxRenderer's SD-font drawText would paint the wrong glyphs.
-      renderer.drawRect(wordX, wordY, wordRight - wordX, wordBottom - wordY, true);
-      continue;
-    }
-#endif
     renderer.fillRect(wordX, wordY, wordRight - wordX, wordBottom - wordY, true);
     const std::string selectedText(word.text + word.textOffset, word.textLength);
     renderer.drawText(fontId, word.x, word.y, selectedText.c_str(), false, word.style);
@@ -744,18 +758,26 @@ bool DictionaryWordSelectActivity::drawHighlightWithSnapshot() {
 void DictionaryWordSelectActivity::drawHighlightRange() const {
   if (selected < 0 || selected >= static_cast<int>(selections.size())) return;
   const auto& group = selections[selected];
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttfMode) {
+    // Pixel-inverse highlight — see drawHighlightWithSnapshot (segments merge
+    // first so adjacent fragments' padded boxes do not XOR-cancel).
+    std::vector<Rect> segments;
+    segments.reserve(group.segmentCount);
+    for (uint16_t i = 0; i < group.segmentCount; i++) {
+      const WordBox& word = words[selectionSegments[group.segmentStart + i]];
+      if (word.width <= 0) continue;
+      segments.emplace_back(std::max(0, static_cast<int>(word.x) - 2), std::max(0, static_cast<int>(word.y) - 2),
+                            word.width + 4, word.height + 4);
+    }
+    invertRegionsMerged(renderer, segments);
+    return;
+  }
+#endif
   for (uint16_t i = 0; i < group.segmentCount; i++) {
     const WordBox& word = words[selectionSegments[group.segmentStart + i]];
     const std::string selectedText(word.text + word.textOffset, word.textLength);
     if (word.width <= 0 || selectedText.empty()) continue;
-#if defined(CROSSPOINT_TTF_READER)
-    if (ttfMode) {
-      // Outline highlight — see drawHighlightWithSnapshot.
-      renderer.drawRect(std::max(0, static_cast<int>(word.x) - 2), std::max(0, static_cast<int>(word.y) - 2),
-                        word.width + 4, word.height + 4, true);
-      continue;
-    }
-#endif
     renderer.fillRect(std::max(0, static_cast<int>(word.x) - 2), std::max(0, static_cast<int>(word.y) - 2),
                       word.width + 4, lineHeight + 4, true);
     renderer.drawText(fontId, word.x, word.y, selectedText.c_str(), false, word.style);
