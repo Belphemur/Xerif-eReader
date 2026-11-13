@@ -216,7 +216,11 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
   // shortcut (see SHORT_PWRBTN). On the X4 Pro the frontlight double-click
   // window (resolved above at the snapshot) withholds an ambiguous release
   // from the served mask, so this mapping naturally sees only final releases.
-  if (homeAction == HomeButtonAction::Ignore && mapButton(Button::Power, &HalGPIO::wasReleased)) {
+  // The probe reads the SERVED mask, not the raw GPIO edge: async builds
+  // drained every queued edge into the masks at the top of update(), and a
+  // window-expiry delivery never exists as a live edge — the raw probe would
+  // never fire for a classified click.
+  if (homeAction == HomeButtonAction::Ignore && edgeSnapshot(Button::Power, /*pressed=*/false)) {
     switch (SETTINGS.shortPwrBtn) {
       case CrossPointSettings::PWR_BOOKMARK:
         homeAction = HomeButtonAction::Bookmark;
@@ -743,9 +747,12 @@ bool MappedInputManager::wasPressed(const Button button) const {
 }
 
 bool MappedInputManager::wasReleased(const Button button) const {
-  if (button == Button::Power && BoardConfig::isX4Pro() && SETTINGS.doublePwrBtn != CrossPointSettings::IGNORE) {
-    return false;  // Classified clicks are dispatched once through homeAction.
-  }
+  // Power on the X4 Pro: the double-click window classified at the snapshot
+  // serves each final short click exactly once into frameReleasedEdges
+  // (resolvePowerDoubleClickWindow) — an ambiguous first release is withheld,
+  // a double-click's second release is stripped and dispatched through
+  // consumePowerDoubleClick() instead. Release-driven consumers (main.cpp's
+  // sleep/refresh branches, reader shortcuts) read that served release here.
   if (button == Button::Confirm && remoteInput.button == RemoteButton::Confirm) return true;
   if (button == Button::Back && remoteInput.button == RemoteButton::Back) return true;
   if ((button == Button::NavNext || button == Button::Right) && remoteInput.button == RemoteButton::Next) return true;
