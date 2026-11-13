@@ -43,7 +43,6 @@ saved_draw = method("void EpubReaderActivity::drawClippingHighlights", "void Epu
 harness = r"""
 #include <algorithm>
 #include <array>
-#include <cstring>
 #include <cassert>
 #include <cstdint>
 #include <climits>
@@ -353,7 +352,6 @@ int loadLine(ClipSelectionActivity& activity, const std::vector<std::string>& lo
     auto& word = activity.words[first + i];
     word = {};
     word.text = logical[index].c_str();
-    word.textLength = static_cast<uint16_t>(logical[index].size());
     word.startOffset = starts[index];
     word.endOffset = index + 1 < starts.size() ? starts[index + 1] - 1 : offset - 1;
     word.x = i * 100;
@@ -588,26 +586,6 @@ int main() {
     expect(activity, 2, 2, "alpha");
     assert(activity.words[1].text == visualSecond);  // Export must not change navigation order.
   }
-  // HK7u regression: textLength is a span from textOffset, not an end
-  // offset — a token that trimmed leading punctuation keeps its tail.
-  {
-    const std::vector<std::string> trimmedCase{"(alpha)", "beta"};
-    const int nextRow = loadLine(activity, trimmedCase, false);
-    activity.words[0].text = "(alpha)";
-    activity.words[0].textOffset = 1;
-    activity.words[0].textLength = 5;
-    activity.words[1].text = "beta";
-    activity.words[1].textOffset = 0;
-    activity.words[1].textLength = 4;
-    // Same-row sequence (batch 0's start offsets overlap the trimmed batch);
-    // keep the separator check gapped by padding the anchors.
-    activity.words[0].startOffset = 100;
-    activity.words[0].endOffset = 104;
-    activity.words[1].startOffset = 106;
-    activity.words[1].endOffset = 109;
-    expect(activity, 0, 1, "alpha beta");
-    (void)nextRow;
-  }
   const std::vector<std::string> ltr{"alpha", "אחד", "שני", "beta"};
   loadLine(activity, ltr, false);
   expect(activity, 0, 3, "alpha אחד שני beta");
@@ -625,26 +603,21 @@ int main() {
   activity.words[1].startOffset = activity.words[1].endOffset = UINT32_MAX;
   expect(activity, 0, 1, "one two");
   activity.words[0].text = "discre-";
-  activity.words[0].textLength = static_cast<uint16_t>(std::strlen(activity.words[0].text));
   activity.words[0].startOffset = 0;
   activity.words[0].endOffset = 6;
   activity.words[1].text = "tionary";
-  activity.words[1].textLength = static_cast<uint16_t>(std::strlen(activity.words[1].text));
   activity.words[1].startOffset = 6;
   activity.words[1].endOffset = 13;
   activity.words[0].discretionaryHyphen = true;
   expect(activity, 0, 1, "discretionary");
   activity.words[0].text = "Café";
-  activity.words[0].textLength = static_cast<uint16_t>(std::strlen(activity.words[0].text));
   activity.words[0].endOffset = 5;
   activity.words[0].discretionaryHyphen = false;
   activity.words[1].text = "s";
-  activity.words[1].textLength = static_cast<uint16_t>(std::strlen(activity.words[1].text));
   activity.words[1].startOffset = 5;
   activity.words[1].endOffset = 6;
   expect(activity, 0, 1, "Cafés");
   activity.words[0].text = "Café-";
-  activity.words[0].textLength = static_cast<uint16_t>(std::strlen(activity.words[0].text));
   activity.words[0].discretionaryHyphen = true;
   expect(activity, 0, 1, "Cafés");
   activity.words[0].endOffset = 6;
@@ -654,14 +627,12 @@ int main() {
   expect(activity, 0, 1, "Café-s");
   const std::string oversized(CLIPPING_TEXT_MAX + 1, 'x');
   activity.words[0].text = oversized.c_str();
-  activity.words[0].textLength = static_cast<uint16_t>(std::strlen(activity.words[0].text));
   std::string text;
   assert(!activity.buildSelectedText(0, 0, text));
   std::string expected;
   for (int i = 0; i < 240; ++i) {
     activity.words[i] = {};
     activity.words[i].text = "word";
-    activity.words[i].textLength = static_cast<uint16_t>(std::strlen(activity.words[i].text));
     activity.words[i].startOffset = (239 - i) * 5;
     activity.words[i].endOffset = activity.words[i].startOffset + 4;
     if (i != 0) expected += ' ';

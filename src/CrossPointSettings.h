@@ -254,15 +254,10 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
 
   // Action for a long press on the reading surface (touch boards only).
   // Persisted uint8_t BY MENU-POSITION INDEX — APPEND ONLY (see appendEnumEmplace).
-  // Persisted by menu-position index and APPEND ONLY (a stored value keeps
-  // its meaning across builds; never renumber). TOUCH_LP_CLIP is the
-  // addendum 2026-11-09 Clipping entry; TOUCH_LP_IGNORE stays wide open —
-  // it has no consumer, so a screen long press does nothing at all.
   enum TOUCH_LONG_PRESS_ACTION {
     TOUCH_LP_DICTIONARY = 0,
     TOUCH_LP_IGNORE = 1,
     TOUCH_LP_FOOTNOTE = 2,
-    TOUCH_LP_CLIP = 3,
     TOUCH_LONG_PRESS_ACTION_COUNT
   };
 

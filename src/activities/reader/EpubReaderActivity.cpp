@@ -91,7 +91,6 @@
 #include "fontIds.h"
 #include "util/BookmarkUtil.h"
 #include "util/ButtonNavigator.h"
-#include "util/InvertRegionsMerged.h"
 #include "util/ScreenshotUtil.h"
 
 #if defined(CROSSPOINT_TTF_READER)
@@ -1322,8 +1321,7 @@ VocabularyContext EpubReaderActivity::ttfVocabularyContext(uint16_t ttfPage) {
 }
 #endif
 
-void EpubReaderActivity::openDictionaryWordSelect(int touchX, int touchY, TouchLongPressMode mode,
-                                                  std::string lookupText) {
+void EpubReaderActivity::openDictionaryWordSelect(int touchX, int touchY, TouchLongPressMode mode) {
   if (mode == TouchLongPressMode::Dictionary && SETTINGS.dictionaryName[0] == '\0') {
     pendingLookupSelection = {};
     showDictionaryMessage = true;
@@ -1334,7 +1332,51 @@ void EpubReaderActivity::openDictionaryWordSelect(int touchX, int touchY, TouchL
   }
 #if defined(CROSSPOINT_TTF_READER)
   if (ttf_) {
-    openTtfDictionarySelect(touchX, touchY, mode, std::move(lookupText), [this](const ActivityResult& result) {
+    // TTF word selection: prebuilt boxes from engine run geometry
+    // (TtfWordSelect). Run text lives in the runtime's scratch arena only
+    // for this block — buildTtfWordSelectData copies everything out, so the
+    // mark is released before the child activity runs.
+    RenderLock lock;  // the render task owns/uses the scratch arena
+    const size_t scratchMark = ttf_->scratch().mark();
+    const auto showTtfDictionaryError = [this] {
+      showDictionaryMessage = true;
+      dictionaryMessageTtf = true;
+      dictionaryMessageTime = millis();
+      requestUpdate();
+    };
+    freeink::book::Page page{};
+    if (!ttf_->readPage(static_cast<uint16_t>(currentSpineIndex), static_cast<uint16_t>(ttfPage), &page)) {
+      ttf_->scratch().release(scratchMark);
+      LOG_ERR("ERS", "TTF dictionary: page read failed (spine %d page %d)", currentSpineIndex, ttfPage);
+      showTtfDictionaryError();
+      return;
+    }
+    freeink::book::LayoutParams params;
+    ttf_->makeLayoutParams(renderer, params, automaticPageTurnActive);
+    freeink::book::TtfWordSelectData data;
+    if (params.font == nullptr ||
+        !freeink::book::buildTtfWordSelectData(page, *static_cast<freeink::book::FontChain*>(params.font), data,
+                                               params.characterSpacingPx, params.wordSpacingPx)) {
+      ttf_->scratch().release(scratchMark);
+      LOG_ERR("ERS", "TTF dictionary: word extraction failed");
+      showTtfDictionaryError();
+      return;
+    }
+    // The page's footnote list was captured during the last render (§3.5
+    // item 8); the selector resolves bare numeric markers against it.
+    data.footnotes = currentPageFootnotes;
+    ttf_->scratch().release(scratchMark);
+
+    const DictionaryWordSelectActivity::PageRenderFn renderFn{this, &EpubReaderActivity::renderTtfSelectorPage};
+    auto selector = makeUniqueNoThrow<DictionaryWordSelectActivity>(
+        renderer, mappedInput, std::move(data), renderFn, touchX, touchY, mode, std::string{},
+        ttfVocabularyContext(static_cast<uint16_t>(ttfPage)));
+    if (!selector) {
+      LOG_ERR("ERS", "OOM: dictionary word selector");
+      showTtfDictionaryError();
+      return;
+    }
+    startActivityForResult(std::move(selector), [this](const ActivityResult& result) {
       if (!result.isCancelled && std::holds_alternative<FootnoteResult>(result.data)) {
         navigateToHref(std::get<FootnoteResult>(result.data).href, /*savePosition=*/true);
       }
@@ -1368,275 +1410,10 @@ void EpubReaderActivity::openDictionaryWordSelect(int touchX, int touchY, TouchL
   });
 }
 
-#if defined(CROSSPOINT_TTF_READER)
-// The TTF branch of openDictionaryWordSelect, extracted so the clip
-// selection's Lookup action can share it (design doc ttf/2026-11-09 §F2):
-// one copy of the payload machinery, with the caller owning the result
-// callback. `vocabulary` null → the reader's own context for the current page.
-bool EpubReaderActivity::openTtfDictionarySelect(const int touchX, const int touchY, const TouchLongPressMode mode,
-                                                 std::string lookupText,
-                                                 std::function<void(const ActivityResult&)> onResult,
-                                                 const VocabularyContext* vocabulary) {
-  // Unset dictionary refuses regardless of lookupText: a clip-sourced phrase
-  // must not reach dict.open("") either — the reader owns the same
-  // no-dictionary feedback on every lookup surface.
-  if (mode == TouchLongPressMode::Dictionary && SETTINGS.dictionaryName[0] == '\0') {
-    pendingLookupSelection = {};
-    showDictionaryMessage = true;
-    dictionaryMessageTtf = false;
-    dictionaryMessageTime = millis();
-    requestUpdate();
-    return false;
-  }
-  // TTF word selection: prebuilt boxes from engine run geometry
-  // (TtfWordSelect). Run text lives in the runtime's scratch arena only
-  // for this block — buildTtfWordSelectData copies everything out, so the
-  // mark is released before the child activity runs.
-  RenderLock lock;  // the render task owns/uses the scratch arena
-  const size_t scratchMark = ttf_->scratch().mark();
-  const auto showTtfDictionaryError = [this] {
-    showDictionaryMessage = true;
-    dictionaryMessageTtf = true;
-    dictionaryMessageTime = millis();
-    requestUpdate();
-  };
-  freeink::book::Page page{};
-  if (!ttf_->readPage(static_cast<uint16_t>(currentSpineIndex), static_cast<uint16_t>(ttfPage), &page)) {
-    ttf_->scratch().release(scratchMark);
-    LOG_ERR("ERS", "TTF dictionary: page read failed (spine %d page %d)", currentSpineIndex, ttfPage);
-    showTtfDictionaryError();
-    return false;
-  }
-  freeink::book::LayoutParams params;
-  ttf_->makeLayoutParams(renderer, params, automaticPageTurnActive);
-  freeink::book::TtfWordSelectData data;
-  if (params.font == nullptr ||
-      !freeink::book::buildTtfWordSelectData(page, *static_cast<freeink::book::FontChain*>(params.font), data,
-                                             params.characterSpacingPx, params.wordSpacingPx)) {
-    ttf_->scratch().release(scratchMark);
-    LOG_ERR("ERS", "TTF dictionary: word extraction failed");
-    showTtfDictionaryError();
-    return false;
-  }
-  // The page's footnote list was captured during the last render (§3.5
-  // item 8); the selector resolves bare numeric markers against it.
-  data.footnotes = currentPageFootnotes;
-  ttf_->scratch().release(scratchMark);
-
-  const DictionaryWordSelectActivity::PageRenderFn renderFn{this, &EpubReaderActivity::renderTtfSelectorPage};
-  auto selector = makeUniqueNoThrow<DictionaryWordSelectActivity>(
-      renderer, mappedInput, std::move(data), renderFn, touchX, touchY, mode, std::move(lookupText),
-      vocabulary != nullptr ? *vocabulary : ttfVocabularyContext(static_cast<uint16_t>(ttfPage)));
-  if (!selector) {
-    LOG_ERR("ERS", "OOM: dictionary word selector");
-    showTtfDictionaryError();
-    return false;
-  }
-  startActivityForResult(std::move(selector), std::move(onResult));
-  return true;
-}
-#endif
-
-#if defined(CROSSPOINT_TTF_READER)
-// TTF clip/lookup selection (design doc ttf/2026-11-09 §F2). Mirrors the
-// legacy body below: read the selection window (3 pages), feed the shared
-// selector with word boxes, then translate the result — page jump, look
-// up, bookmark, or clipping with CHAPTER offsets instead of layout-bound
-// word indexes. Delete-on-tap of an existing clipping joins in the
-// saved-clip milestone.
-void EpubReaderActivity::startTtfClipSelection(const int initialX, const int initialY,
-                                               const ClipSelectionActivity::Mode mode,
-                                               const ClipSelectionActivity::Selection restoreSelection) {
-  if (!epub || ttfPage < 0) return;
-  const uint32_t chapterPages = ttfEstimatedPageCount();
-  const int pageNumber = ttfPage;
-  const uint16_t pageCount = chapterPages > 0 && chapterPages <= UINT16_MAX ? static_cast<uint16_t>(chapterPages) : 0;
-  const uint16_t spineIndex = static_cast<uint16_t>(currentSpineIndex);
-
-  RenderLock lock;  // the render task owns/uses the scratch arena
-  const size_t scratchMark = ttf_->scratch().mark();
-  // Soak finding 1 (UX half): every failure gate below used to die with a
-  // serial log only — a silent no-op from the user's viewpoint. Same toast
-  // surface the save/delete paths already use.
-  const auto showTtfClipFailed = [this] {
-    clippingMessage = StrId::STR_CLIPPING_FAILED;
-    showClippingMessage = true;
-    clippingMessageTime = millis();
-  };
-
-  // Delete-on-tap (design doc §F2): long-pressing an existing highlight
-  // removes it and never opens the selector — the legacy entry keeps order
-  // from clippingAtPoint on the first page; the TTF variant hits-test token
-  // boxes from the same payload builder.
-  if (initialX >= 0 && CLIPPINGS.hasClippings()) {
-    freeink::book::Page pageRead{};
-    if (ttf_->readPage(spineIndex, static_cast<uint16_t>(pageNumber), &pageRead)) {
-      freeink::book::LayoutParams tapParams;
-      ttf_->makeLayoutParams(renderer, tapParams, false);
-      const int clippingIndex =
-          ttfClippingAtPoint(pageRead, tapParams.font, tapParams.characterSpacingPx, tapParams.wordSpacingPx,
-                             static_cast<uint16_t>(pageNumber), initialX, initialY);
-      if (clippingIndex >= 0) {
-        ttf_->scratch().release(scratchMark);
-        const bool removed = CLIPPINGS.removeClippingAt(static_cast<size_t>(clippingIndex));
-        if (!removed) LOG_ERR("CLIP", "Failed to delete highlighted clipping %d", clippingIndex);
-        clippingMessage = removed ? StrId::STR_CLIPPING_REMOVED : StrId::STR_CLIPPING_DELETE_FAILED;
-        showClippingMessage = true;
-        clippingMessageTime = millis();
-        requestUpdate();
-        return;
-      }
-    }
-  }
-  std::vector<freeink::book::TtfWordSelectData> perPage;
-  perPage.reserve(CLIP_SELECTION_PAGE_WINDOW);
-  for (int pageOffset = 0; pageOffset < CLIP_SELECTION_PAGE_WINDOW; ++pageOffset) {
-    const int chapterPage = pageNumber + pageOffset;
-    if (pageCount > 0 && chapterPage >= pageCount) break;
-    freeink::book::Page page{};
-    if (!ttf_->readPage(spineIndex, static_cast<uint16_t>(chapterPage), &page)) {
-      if (perPage.empty()) {
-        LOG_ERR("CLIP", "Failed to load TTF page %d (spine %d) for clipping selection", chapterPage, spineIndex);
-        ttf_->scratch().release(scratchMark);
-        showTtfClipFailed();
-        requestUpdate();
-        return;
-      }
-      break;  // window truncated past the built prefix — like the legacy break
-    }
-    freeink::book::LayoutParams params;
-    ttf_->makeLayoutParams(renderer, params, false);
-    freeink::book::TtfWordSelectData data;
-    if (params.font == nullptr ||
-        !freeink::book::buildTtfWordSelectData(page, *static_cast<freeink::book::FontChain*>(params.font), data,
-                                               params.characterSpacingPx, params.wordSpacingPx)) {
-      LOG_ERR("ERS", "TTF clip selection: word extraction failed (page %d)", chapterPage);
-      break;
-    }
-    // buildTtfWordSelectData copies everything out, so the run text can be
-    // released; the data survived into the vector by move.
-    perPage.push_back(std::move(data));
-  }
-  ttf_->scratch().release(scratchMark);
-  if (perPage.empty()) {
-    LOG_ERR("CLIP", "No selectable TTF pages for clipping selection");
-    showTtfClipFailed();
-    requestUpdate();
-    return;
-  }
-
-  // Stays as a defensive gate (assignment now happens per render pass in
-  // renderBookTtf, so a user-visible trigger would mean no render ever ran).
-  if (buildViewportWidth == 0 || buildViewportHeight == 0) {
-    LOG_ERR("CLIP", "Cannot anchor clipping before the reader viewport is initialized");
-    showTtfClipFailed();
-    requestUpdate();
-    return;
-  }
-  const uint32_t layoutSignature =
-      readerRenderSpecSignature(SETTINGS.readerRenderSpec(buildViewportWidth, buildViewportHeight));
-
-  std::string chapterTitle;
-  const int tocIndex = epub->getTocIndexForSpineIndex(currentSpineIndex);
-  if (tocIndex >= 0) chapterTitle = epub->getTocItem(tocIndex).title;
-  std::string bookTitle = epub->getTitle();
-  std::string author = epub->getAuthor();
-
-  const ClipSelectionActivity::PageRenderFn renderFn{this, &EpubReaderActivity::renderTtfClipSelectorPage};
-  auto activity = makeUniqueNoThrow<ClipSelectionActivity>(renderer, mappedInput, std::move(perPage), renderFn,
-                                                           initialX, initialY, mode);
-  if (activity && restoreSelection.valid) activity->setInitialSelection(restoreSelection);
-  if (!activity) {
-    LOG_ERR("CLIP", "Failed to allocate clipping selection activity");
-    showTtfClipFailed();
-    requestUpdate();
-    return;
-  }
-  startActivityForResult(std::move(activity), [this, spineIndex, pageNumber, pageCount, layoutSignature,
-                                               bookTitle = std::move(bookTitle), author = std::move(author),
-                                               chapterTitle = std::move(chapterTitle)](const ActivityResult& result) {
-    if (result.isCancelled) {
-      requestUpdate();
-      return;
-    }
-    const auto& clipping = std::get<ClippingResult>(result.data);
-    const uint16_t startPage = static_cast<uint16_t>(pageNumber + clipping.startPageOffset);
-    const uint16_t endPage = static_cast<uint16_t>(pageNumber + clipping.endPageOffset);
-    // Page jump mirrors the legacy section->currentPage write: the TTF
-    // reader's position is ttfPage and getCurrentPosition() reads
-    // nextPageNumber (section is null), so BOTH must move before
-    // addBookmark()/lookup derive anything from the position; the remaining
-    // char anchors re-derive on the repaint that requestUpdate schedules.
-    if (endPage < pageCount) {
-      ttfPage = endPage;
-      nextPageNumber = endPage;
-    }
-    if (clipping.action == ClippingResult::Action::Bookmark) {
-      addBookmark();
-      showBookmarkMessage = true;
-      bookmarkMessageTime = millis();
-      requestUpdate();
-      return;
-    }
-    if (clipping.action == ClippingResult::Action::Lookup) {
-      lookupReturnSelection = lookupReturnSelectionFor(clipping);
-      VocabularyContext vocabulary;
-      vocabulary.title = bookTitle;
-      vocabulary.author = author;
-      const int lookupToc = epub ? epub->getTocIndexForSpineIndex(currentSpineIndex) : -1;
-      if (lookupToc >= 0) vocabulary.chapter = epub->getTocItem(lookupToc).title;
-      vocabulary.page = static_cast<uint16_t>(startPage + 1);
-      vocabulary.spine = spineIndex;
-      vocabulary.startOffset = clipping.startOffset;
-      ensureVocabularyMetadata();
-      if (vocabularyMetadata) {
-        vocabulary.series = vocabularyMetadata->series;
-        vocabulary.seriesIndex = vocabularyMetadata->seriesIndex;
-      }
-      openTtfDictionarySelect(
-          -1, -1, TouchLongPressMode::Dictionary, clipping.text,
-          [this](const ActivityResult& lookupResult) {
-            if (!lookupResult.isCancelled && !mappedInput.hasTouch()) {
-              pendingLookupSelection = lookupReturnSelection;
-              openDictionaryWordSelect();
-            }
-            requestUpdate();
-          },
-          &vocabulary);
-      return;
-    }
-    const auto addResult = CLIPPINGS.addClipping(
-        spineIndex, startPage, endPage, pageCount, clipping.startWordIndex, clipping.endWordIndex, clipping.wordCount,
-        chapterTitle.c_str(), UINT16_MAX, clipping.text, layoutSignature, clipping.startOffset, clipping.endOffset);
-    bool exported = false;
-    if (addResult == ClippingStore::AddResult::Added) {
-      exported = ClippingsManager::saveClipping(bookTitle, author, chapterTitle, startPage + 1, clipping.text);
-    }
-    clippingMessage = addResult == ClippingStore::AddResult::LimitReached ? StrId::STR_CLIPPING_LIMIT_REACHED
-                      : exported                                          ? StrId::STR_CLIPPING_SAVED
-                      : addResult == ClippingStore::AddResult::Added      ? StrId::STR_CLIPPING_EXPORT_FAILED
-                                                                          : StrId::STR_CLIPPING_FAILED;
-    showClippingMessage = true;
-    clippingMessageTime = millis();
-    requestUpdate();
-  });
-}
-#endif
-
 void EpubReaderActivity::startClipSelection(const int initialX, const int initialY,
                                             const ClipSelectionActivity::Mode mode) {
   const auto restoreSelection = pendingLookupSelection;
   pendingLookupSelection = {};
-#if defined(CROSSPOINT_TTF_READER)
-  if (ttf_) {
-    // TTF branch (design doc ttf/2026-11-09 §F2): the legacy body below reads
-    // legacy `Page`s from the Section; on the TTF path the same selector is
-    // fed per-page engine payloads instead (including the delete-on-tap
-    // check that the legacy body performs on its first page).
-    startTtfClipSelection(initialX, initialY, mode, restoreSelection);
-    return;
-  }
-#endif
   if (!section || !epub || section->currentPage < 0 || section->currentPage >= section->pageCount) return;
 
   const int pageNumber = section->currentPage;
@@ -2077,7 +1854,7 @@ void EpubReaderActivity::loop() {
   // v2.6.0 because it ran first and returned after consuming the event.
   const auto longPressRoute = resolveTouchLongPressRoute(SETTINGS.touchLongPressAction);
   static_assert(CrossPointSettings::TOUCH_LP_DICTIONARY == 0 && CrossPointSettings::TOUCH_LP_IGNORE == 1 &&
-                    CrossPointSettings::TOUCH_LP_FOOTNOTE == 2 && CrossPointSettings::TOUCH_LP_CLIP == 3,
+                    CrossPointSettings::TOUCH_LP_FOOTNOTE == 2,
                 "TouchLongPressRoute.h maps these persisted menu indexes");
   int selectionX = 0;
   int selectionY = 0;
@@ -3228,7 +3005,8 @@ EpubReaderActivity::ContentMargins EpubReaderActivity::assignBuildViewport() {
 
   if (automaticPageTurnActive &&
       (statusBarHeight == 0 || statusBarHeight == UITheme::getInstance().getProgressBarHeight())) {
-    margins.bottom += SETTINGS.screenMargin + statusBarHeight + UITheme::getInstance().getMetrics().statusBarVerticalMargin;
+    margins.bottom +=
+        SETTINGS.screenMargin + statusBarHeight + UITheme::getInstance().getMetrics().statusBarVerticalMargin;
   } else {
     margins.bottom += SETTINGS.screenMargin + statusBarHeight;
   }
@@ -4155,7 +3933,7 @@ void EpubReaderActivity::renderBookTtf() {
   // Soak finding 1: the TTF layout uses exactly the same oriented-margin
   // arithmetic as makeLayoutParams/renderBook(), and buildViewport must be
   // written by every render path that lays out a page (prerender and
-  // fast-display passes included) — startTtfClipSelection anchors against it.
+  // fast-display passes included).
   assignBuildViewport();
   freeink::book::LayoutParams params;
   ttf_->makeLayoutParams(renderer, params, automaticPageTurnActive);
@@ -4730,7 +4508,7 @@ void EpubReaderActivity::renderBookTtf() {
   ttfExtractFootnotes(page);
 
   renderer.clearScreen(0xFF);
-  paintTtfPage(page, params.font, params.characterSpacingPx, params.wordSpacingPx, ttfPage);
+  paintTtfPage(page, params.font, params.characterSpacingPx, params.wordSpacingPx);
 #ifdef READING_STATS_ENABLED
   // Engine-computed word count (ChapterLayout counts over the paragraph text
   // before run segmentation; justified runs carry no spaces — counting run
@@ -5025,13 +4803,9 @@ void EpubReaderActivity::ttfRunPreRenderPass(const freeink::book::LayoutParams& 
         page, *chain, renderer, ttfPreRendered.nextRun, ttfPreRendered.nextChar, &ttfPreRendered.nextRun,
         &ttfPreRendered.nextChar, kPreRenderSliceBudgetMs, params.characterSpacingPx, params.wordSpacingPx);
   } else {
-    // Prerender paints the NEXT page: anchor-less clip matching must use the
-    // page actually painted, not the reader's current position. Clip
-    // inversion is deferred to the pass below: paintTtfPage's own inversion
-    // would XOR against it and cancel the saved-clip highlights.
-    paintTtfPage(page, params.font, params.characterSpacingPx, params.wordSpacingPx, nextPage,
-                 /*invertSavedClips=*/false);
+    paintTtfPage(page, params.font, params.characterSpacingPx, params.wordSpacingPx);
   }
+  ttf_->scratch().release(scratchMark);
 
   if (complete) {
     if (grayParity) {
@@ -5039,22 +4813,11 @@ void EpubReaderActivity::ttfRunPreRenderPass(const freeink::book::LayoutParams& 
       // last step (same ordering paintTtfPage uses).
       freeink::book::PageRenderer::renderRules(page, makeFrameTarget(renderer));
     }
-    // Saved clips invert after the LAST slice so a fast turn serves the page
-    // with its highlights (the fast pass displays this framebuffer without
-    // repainting). The scratch mark is still held here: the highlight pass
-    // re-tokenizes page.runs[].text, which is only valid until release
-    // (TtfBookRuntime.h readPage contract). Selector repaints are unaffected
-    // — this is the reader's own prerender, and fast turns never serve
-    // selector pages.
-    ttfDrawClippingHighlights(page, params.font, params.characterSpacingPx, params.wordSpacingPx,
-                              static_cast<uint16_t>(nextPage));
-    ttf_->scratch().release(scratchMark);
     ttfPreRendered.pumping = false;
     ttfPreRendered.ready = true;
     LOG_DBG("ERS", "TTF prerendered page %d/%d (%u slice%s, %u runs)", nextPage, ttfPageCount - 1,
             ttfPreRendered.slicesUsed, ttfPreRendered.slicesUsed == 1 ? "" : "s", page.runCount);
   } else {
-    ttf_->scratch().release(scratchMark);
     // Resume next tick: the pass flag re-arms and requestUpdate schedules the
     // next slice. Input processed in between (the loop handles it before the
     // render) aborts the pump in ttfPageTurn — a press waits ≤ one slice.
@@ -5371,17 +5134,9 @@ void EpubReaderActivity::renderTtfImageGrayAbsolute(const freeink::book::Page& p
 }
 
 void EpubReaderActivity::paintTtfPage(const freeink::book::Page& page, void* font, const int16_t characterSpacingPx,
-                                      const int16_t wordSpacingPx, const uint16_t chapterPage,
-                                      const bool invertSavedClips) {
+                                      const int16_t wordSpacingPx) {
   if (!ttf_) return;
   paintCapturedPage(page, font, renderer, *ttf_, characterSpacingPx, wordSpacingPx);
-  // Saved clips invert after the page ink so the black box lands on top of
-  // the freshly painted glyphs. Only the framebuffer flips here — that is
-  // where the base ink lives; today's gray plane walks only re-add AA mask
-  // bits for the glyphs themselves.
-  if (invertSavedClips) {
-    ttfDrawClippingHighlights(page, font, characterSpacingPx, wordSpacingPx, chapterPage);
-  }
   // Image sighting (§5.2): AFTER the paint so the first view never waits on
   // it. The first paint after a cache (re)open or a chapter switch sights the
   // full current + next spine once per (spine, generation); the worker's
@@ -5394,163 +5149,22 @@ void EpubReaderActivity::paintTtfPage(const freeink::book::Page& page, void* fon
 }
 
 void EpubReaderActivity::renderTtfSelectorPage(void* ctx, GfxRenderer& renderer) {
-  static_cast<EpubReaderActivity*>(ctx)->paintTtfSelectorPage(0);
-}
-
-#if defined(CROSSPOINT_TTF_READER)
-void EpubReaderActivity::renderTtfClipSelectorPage(void* ctx, GfxRenderer& renderer, const uint16_t pageOffset) {
-  static_cast<EpubReaderActivity*>(ctx)->paintTtfSelectorPage(pageOffset);
-}
-#endif
-
-// One selector page repaint at chapter page ttfPage + offset (offset 0 = the
-// page the reader is on). The scratch mark discipline mirrors the word-select
-// entry: the page's run text lives in the scratch arena only for this call.
-void EpubReaderActivity::paintTtfSelectorPage(const uint16_t pageOffset) {
-  if (!ttf_) return;
-  const int chapterPage = static_cast<int>(ttfPage) + static_cast<int>(pageOffset);
-  if (chapterPage < 0) return;
-  const size_t scratchMark = ttf_->scratch().mark();
+  auto* self = static_cast<EpubReaderActivity*>(ctx);
+  if (!self->ttf_) return;
+  const size_t scratchMark = self->ttf_->scratch().mark();
   freeink::book::Page page{};
-  if (!ttf_->readPage(static_cast<uint16_t>(currentSpineIndex), static_cast<uint16_t>(chapterPage), &page)) {
-    ttf_->scratch().release(scratchMark);
-    LOG_ERR("ERS", "TTF selector page read failed (spine %d page %d)", currentSpineIndex, chapterPage);
+  if (!self->ttf_->readPage(static_cast<uint16_t>(self->currentSpineIndex), static_cast<uint16_t>(self->ttfPage),
+                            &page)) {
+    self->ttf_->scratch().release(scratchMark);
+    LOG_ERR("ERS", "TTF selector page read failed (spine %d page %d)", self->currentSpineIndex, self->ttfPage);
     return;
   }
   freeink::book::LayoutParams params;
-  ttf_->makeLayoutParams(renderer, params, false);
+  self->ttf_->makeLayoutParams(renderer, params, false);
   if (params.font != nullptr) {
-    // Selectors repaint WITHOUT the saved-clip inversion: their own highlight
-    // layer goes on top, so a selection inside a saved clip must not be
-    // XOR-cancelled against the clip box.
-    paintTtfPage(page, params.font, params.characterSpacingPx, params.wordSpacingPx, static_cast<uint16_t>(chapterPage),
-                 /*invertSavedClips=*/false);
+    self->paintTtfPage(page, params.font, params.characterSpacingPx, params.wordSpacingPx);
   }
-  ttf_->scratch().release(scratchMark);
-}
-
-// Token geometry for saved-clip work (ttfDrawClippingHighlights /
-// ttfClippingAtPoint): re-run the selectors' payload builder over the page
-// — the host-tested funnel — and match clips by char anchors. The payload
-// is caller-temporary: the run text lives in the scratch arena, so callers
-// hold their mark; the pool allocations here are transient per call.
-namespace {
-freeink::book::TtfWordSelectData tokenizedClippingPage(const freeink::book::Page& page, void* font,
-                                                       const int16_t characterSpacingPx, const int16_t wordSpacingPx) {
-  if (font == nullptr) return {};
-  freeink::book::TtfWordSelectData data;
-  if (!freeink::book::buildTtfWordSelectData(page, *static_cast<freeink::book::FontChain*>(font), data,
-                                             characterSpacingPx, wordSpacingPx)) {
-    return {};
-  }
-  return data;
-}
-}  // namespace
-
-void EpubReaderActivity::ttfDrawClippingHighlights(const freeink::book::Page& page, void* font,
-                                                   const int16_t characterSpacingPx, const int16_t wordSpacingPx,
-                                                   const uint16_t chapterPage) const {
-  if (!ttf_ || !CLIPPINGS.hasClippings()) return;
-  // Chapter early-out as the legacy pass, extended to the page's char range:
-  // skip tokenizing (metrics + pool allocs) unless some same-spine clipping's
-  // [startOffset, endOffset) can intersect this page's chapter range.
-  uint32_t pageCharStart = UINT32_MAX;
-  uint32_t pageCharEnd = 0;
-  bool anyChapterClipping = false;
-  for (size_t i = 0; i < CLIPPINGS.clippingCount(); ++i) {
-    const Clipping& clipping = *CLIPPINGS.clippingAt(i);
-    if (clipping.spineIndex == static_cast<uint16_t>(currentSpineIndex)) anyChapterClipping = true;
-  }
-  if (!anyChapterClipping) return;
-  for (uint16_t r = 0; r < page.runCount; ++r) {
-    pageCharStart = std::min(pageCharStart, page.runs[r].charStart);
-    pageCharEnd = std::max(pageCharEnd, page.runs[r].charStart + page.runs[r].charLen);
-  }
-  if (pageCharStart == UINT32_MAX) return;
-  bool pageCanMatch = false;
-  for (size_t i = 0; i < CLIPPINGS.clippingCount() && !pageCanMatch; ++i) {
-    const Clipping& clipping = *CLIPPINGS.clippingAt(i);
-    if (clipping.spineIndex != static_cast<uint16_t>(currentSpineIndex)) continue;
-    if (clipping.startOffset == UINT32_MAX || clipping.endOffset == UINT32_MAX) continue;
-    if (clipping.endOffset > pageCharStart && clipping.startOffset < pageCharEnd) pageCanMatch = true;
-  }
-  // Anchor-less clips (legacy/RTL) match via the page/word-index branch, which
-  // cannot be pre-filtered by char range: give them their (cheap) chance too.
-  for (size_t i = 0; i < CLIPPINGS.clippingCount() && !pageCanMatch; ++i) {
-    const Clipping& clipping = *CLIPPINGS.clippingAt(i);
-    if (clipping.spineIndex == static_cast<uint16_t>(currentSpineIndex) &&
-        (clipping.startOffset == UINT32_MAX || clipping.endOffset == UINT32_MAX))
-      pageCanMatch = true;
-  }
-  if (!pageCanMatch) return;
-  const auto data = tokenizedClippingPage(page, font, characterSpacingPx, wordSpacingPx);
-  if (data.boxes.empty()) {
-    LOG_DBG("CLIP", "TTF highlight pass: page tokenize failed");
-    return;
-  }
-  const uint32_t layoutSignature =
-      readerRenderSpecSignature(SETTINGS.readerRenderSpec(buildViewportWidth, buildViewportHeight));
-  const size_t started = millis();
-  size_t highlightedWords = 0;
-  const uint16_t currentPage = chapterPage;
-  // Coalescing: a two-px padding around each matched box makes adjacent
-  // words' boxes touch, and XOR would cancel the shared band. Collect the
-  // padded rects of matched words, then merge x-intervals whose padded
-  // rectangles overlap (same line band) and invert each merged rect once.
-  std::vector<Rect> matched;
-  for (const auto& tb : data.boxes) {
-    if (tb.charLen == 0 || tb.charStart == UINT32_MAX || tb.width <= 0) continue;
-    const uint32_t sourceStart = tb.charStart;
-    const uint32_t sourceEnd = tb.charStart + tb.charLen;
-    for (size_t index = 0; index < CLIPPINGS.clippingCount(); ++index) {
-      if (clippingContainsWord(*CLIPPINGS.clippingAt(index), static_cast<uint16_t>(currentSpineIndex), currentPage,
-                               static_cast<uint16_t>(cachedChapterTotalPageCount), layoutSignature, tb.selectionGroup,
-                               sourceStart, sourceEnd)) {
-        // Same padded band as the selection highlight (see the dictionary
-        // selector). Coordinates are page-logical screen space, clamped like
-        // the dictionary branch: negative edges become huge uint16_t inside
-        // invertRegion's aligned-rect walk.
-        matched.emplace_back(std::max(0, static_cast<int>(tb.x) - 2), std::max(0, static_cast<int>(tb.y) - 2),
-                             tb.width + 4, tb.height + 4);
-        ++highlightedWords;
-        break;
-      }
-    }
-  }
-  invertRegionsMerged(renderer, matched);
-  LOG_DBG("CLIP", "TTF highlight pass: boxes=%u highlighted=%u time=%lums", static_cast<unsigned>(data.boxes.size()),
-          static_cast<unsigned>(highlightedWords), millis() - started);
-}
-
-int EpubReaderActivity::ttfClippingAtPoint(const freeink::book::Page& page, void* font,
-                                           const int16_t characterSpacingPx, const int16_t wordSpacingPx,
-                                           const uint16_t chapterPage, const int x, const int y) const {
-  if (!ttf_ || !CLIPPINGS.hasClippings() || x < 0 || y < 0 || ttfPage < 0) return -1;
-  const auto data = tokenizedClippingPage(page, font, characterSpacingPx, wordSpacingPx);
-  if (data.boxes.empty()) {
-    LOG_DBG("CLIP", "TTF clip hit-test: page tokenize failed");
-    return -1;
-  }
-  const uint32_t layoutSignature =
-      readerRenderSpecSignature(SETTINGS.readerRenderSpec(buildViewportWidth, buildViewportHeight));
-  for (const auto& tb : data.boxes) {
-    // Same padded rect the highlight paints (±2 px on every edge), so a
-    // long-press on the padding of an isolated highlight deletes it instead
-    // of falling through to the selector.
-    if (tb.width <= 0 || x < tb.x - 2 || x >= static_cast<int>(tb.x) + tb.width + 2) continue;
-    const int limitY = static_cast<int>(tb.y) + tb.height + 2;
-    if (y < static_cast<int>(tb.y) - 2 || y >= limitY) continue;
-    if (tb.charLen == 0 || tb.charStart == UINT32_MAX) continue;
-    const uint32_t sourceStart = tb.charStart;
-    const uint32_t sourceEnd = tb.charStart + tb.charLen;
-    for (size_t index = 0; index < CLIPPINGS.clippingCount(); ++index) {
-      if (clippingContainsWord(*CLIPPINGS.clippingAt(index), static_cast<uint16_t>(currentSpineIndex), chapterPage,
-                               static_cast<uint16_t>(cachedChapterTotalPageCount), layoutSignature, tb.selectionGroup,
-                               sourceStart, sourceEnd))
-        return static_cast<int>(index);
-    }
-  }
-  return -1;
+  self->ttf_->scratch().release(scratchMark);
 }
 
 void EpubReaderActivity::stopImagePredecode() {

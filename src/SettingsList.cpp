@@ -176,8 +176,8 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
                            "previousPageGesture", StrId::STR_CAT_CONTROLS));
   }
   emit(SettingInfo::Enum(StrId::STR_TOUCH_LONG_PRESS, &CrossPointSettings::touchLongPressAction,
-                         {StrId::STR_DICTIONARY, StrId::STR_IGNORE, StrId::STR_FOOTNOTES, StrId::STR_CLIPPING},
-                         "touchLongPressAction", StrId::STR_CAT_CONTROLS));
+                         {StrId::STR_DICTIONARY, StrId::STR_IGNORE, StrId::STR_FOOTNOTES}, "touchLongPressAction",
+                         StrId::STR_CAT_CONTROLS));
   // The reader-menu gesture choice only makes sense where the menu stays
   // reachable without the tap and the bottom edge is free (the capacitive
   // Home key); everywhere else the bottom-edge up-swipe is Home and the

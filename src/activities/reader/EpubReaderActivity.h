@@ -7,10 +7,8 @@
 #include <Memory.h>
 
 #include <atomic>
-#include <functional>
 #include <memory>
 #include <optional>
-#include <string>
 #include <vector>
 
 #include "BookmarkEntry.h"
@@ -383,24 +381,12 @@ class EpubReaderActivity final : public ReaderActivity {
                                   size_t scratchMark);
   // Rasterizes an engine page through the active render mode (gray parity or
   // 1bpp): text + rubies + rules + images/placeholder. Shared by the reader's
-  // own page render and the selectors' repaint hooks. `chapterPage` anchors
-  // saved-clip matching to the page actually painted (selector window pages
-  // differ from the reader's ttfPage); `invertSavedClips=false` lets the
-  // selectors repaint a clean page — their own highlights layer on top, so a
-  // selection inside a saved clip must not XOR-cancel against the clip box.
-  void paintTtfPage(const freeink::book::Page& page, void* font, int16_t characterSpacingPx, int16_t wordSpacingPx,
-                    uint16_t chapterPage, bool invertSavedClips = true);
+  // own page render and the TTF dictionary selector's repaint hook.
+  void paintTtfPage(const freeink::book::Page& page, void* font, int16_t characterSpacingPx = 0,
+                    int16_t wordSpacingPx = 0);
   // Render hook handed to DictionaryWordSelectActivity: repaints the page the
   // selector was opened on (same spine/page members, reader frozen beneath).
   static void renderTtfSelectorPage(void* ctx, GfxRenderer& renderer);
-  // One selector page repaint at ttfPage + offset (offset 0 = the reader's
-  // page). Shared by both selector hooks below.
-  void paintTtfSelectorPage(uint16_t pageOffset);
-#if defined(CROSSPOINT_TTF_READER)
-  // Render hook handed to ClipSelectionActivity: the offset selects within
-  // the 3-page selection window (chapter page = ttfPage + offset).
-  static void renderTtfClipSelectorPage(void* ctx, GfxRenderer& renderer, uint16_t pageOffset);
-#endif
   bool ttfResolveTargetPage(int& targetOut, const freeink::book::LayoutParams& params, bool& needFullBuild);
   // Consume-on-paint (§3.2): clears the restore target and exactly the source
   // latch its origin names, plus any pending preview seed. Runs only after the
@@ -604,7 +590,7 @@ class EpubReaderActivity final : public ReaderActivity {
   // openDictionaryWordSelect so the activity never reads the mutable
   // SETTINGS.touchLongPressAction global.
   void openDictionaryWordSelect(int touchX = -1, int touchY = -1,
-                                TouchLongPressMode mode = TouchLongPressMode::Dictionary, std::string lookupText = {});
+                                TouchLongPressMode mode = TouchLongPressMode::Dictionary);
   // Lazily loads the book's sync metadata (series info) once per book, only
   // when vocabulary history is enabled. Shared by both word-select paths.
   void ensureVocabularyMetadata();
@@ -620,19 +606,6 @@ class EpubReaderActivity final : public ReaderActivity {
   void startClipSelection(int initialX = -1, int initialY = -1,
                           ClipSelectionActivity::Mode mode = ClipSelectionActivity::Mode::Clip);
   int clippingAtPoint(const Page& page, int x, int y) const;
-#if defined(CROSSPOINT_TTF_READER)
-  // TTF clip/lookup selection (design doc ttf/2026-11-09 §F2): reads the
-  // 3-page window from the TTF runtime and parks it in the shared selector.
-  void startTtfClipSelection(int initialX, int initialY, ClipSelectionActivity::Mode mode,
-                             ClipSelectionActivity::Selection restoreSelection);
-  // Shared TTF lookup funnel behind openDictionaryWordSelect's TTF branch:
-  // builds the page payload, hands it to DictionaryWordSelectActivity, and
-  // lets the caller own the result callback (clip selections chain a
-  // selection re-open on no-touch devices).
-  bool openTtfDictionarySelect(int touchX, int touchY, TouchLongPressMode mode, std::string lookupText,
-                               std::function<void(const ActivityResult&)> onResult,
-                               const VocabularyContext* vocabulary = nullptr);
-#endif
   void openClippings();
   void applyProgressChange(const ProgressChangeResult& progress);
   bool launchKOReaderSync();
@@ -648,17 +621,6 @@ class EpubReaderActivity final : public ReaderActivity {
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft);
   void drawClippingHighlights(const Page& page, int fontId, int orientedMarginTop, int orientedMarginLeft) const;
-#if defined(CROSSPOINT_TTF_READER)
-  // TTF variant (design doc ttf/2026-11-09 §F3): re-tokenizes the painted
-  // engine page through the same payload builder the selectors use, matches
-  // a clip via its char anchors (layout-independent) and flips each matched
-  // box with invertRegion. Runs inside paintTtfPage, after the page ink.
-  void ttfDrawClippingHighlights(const freeink::book::Page& page, void* font, int16_t characterSpacingPx,
-                                 int16_t wordSpacingPx, uint16_t chapterPage) const;
-  // Clipping whose matched box contains the reader point, or -1.
-  int ttfClippingAtPoint(const freeink::book::Page& page, void* font, int16_t characterSpacingPx, int16_t wordSpacingPx,
-                         uint16_t chapterPage, int x, int y) const;
-#endif
   void renderStatusBar() const;
   void applyOrientation(uint8_t orientation);
   // Long-press turn dispatch shared by the fresh-turn and pending-turn
