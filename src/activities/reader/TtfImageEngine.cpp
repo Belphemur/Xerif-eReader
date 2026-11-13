@@ -349,11 +349,19 @@ bool dpidBmpRowFn(void* user, const int srcY, uint8_t* out) {
   return c->bmp->readRowGray(srcY, out, c->bits);
 }
 
+// Host-test seam (review 2026-11-13): forces the DPID attach ladder to refuse
+// every rung so the ladder-exhaustion contracts are testable without a real
+// allocation failure. Never set in production.
+bool g_attachLadderFailForTest = false;
+
+void setAttachLadderFailForTest(const bool fail) { g_attachLadderFailForTest = fail; }
+
 // Attaches a DpidScaler to `ctx` for one decode, walking the degradation
 // ladder. false = even the tiny λ0 block could not be allocated (the caller
 // fails the decode; nothing has been written yet).
 bool attachScaler(DpidCtx& c, const int srcW, const int srcH, const int dstW, const int dstH, const bool clahe,
                   const bool randomAccess) {
+  if (g_attachLadderFailForTest) return false;
   DpidScaler::Plan p{srcW, srcH, dstW, dstH, clahe, true, randomAccess, false, c.dcFallback};
   size_t need = DpidScaler::scratchBytes(p);
   // 8-aligned block: the scaler carves uint64/uint32/uint16 views at internal
@@ -483,7 +491,7 @@ bool dpidGifRowFn(void* user, const int srcY, const uint8_t* gray) {
 // fully caller-owned: the production flow passes the writer + the paint
 // target, the re-decode paint fallback passes paint without a writer.
 DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const size_t size, BakeSinkCtx* sink,
-                           const bool clahe, bool* degradedOut = nullptr) {
+                           const bool clahe, bool* degradedOut = nullptr, bool* ladderFailedOut = nullptr) {
   if (sink == nullptr || sink->bake == nullptr || sink->toneRow == nullptr) return DecodeResult::Failed;
   BmpSource src;
   src.file.attach(data, size);
@@ -508,7 +516,13 @@ DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, const siz
   dpid.clahe = clahe;
   dpid.bmp = &src;
   dpid.bits = bits.get();
-  if (!attachScaler(dpid, srcW, srcH, dstW, dstH, clahe, true)) return DecodeResult::Failed;
+  if (!attachScaler(dpid, srcW, srcH, dstW, dstH, clahe, true)) {
+    // Every rung refused: memory failure, not a decode failure — a worker
+    // job defers instead of reporting silent success (review 2026-11-13,
+    // same contract as the GIF/JPEG branches).
+    if (ladderFailedOut != nullptr) *ladderFailedOut = true;
+    return DecodeResult::Failed;
+  }
   detachWriterIfDegraded(dpid, "ladder stepdown");
   if (degradedOut != nullptr) *degradedOut = dpid.degraded;
 
@@ -936,7 +950,10 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
       if (sink.aborted) aborted = true;
       planDegraded = dpid.attached && dpid.degraded;
     } else {
-      const DecodeResult bmpRes = decodeBmpRows(spec, image.get(), imageSize, &sink, clahe, &planDegraded);
+      bool bmpLadderFailed = false;
+      const DecodeResult bmpRes =
+          decodeBmpRows(spec, image.get(), imageSize, &sink, clahe, &planDegraded, &bmpLadderFailed);
+      if (bmpLadderFailed) ladderFailed = true;
       decoded = bmpRes == DecodeResult::Ok;
       aborted = bmpRes == DecodeResult::Busy;
     }

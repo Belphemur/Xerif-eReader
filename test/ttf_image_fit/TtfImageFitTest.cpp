@@ -42,7 +42,7 @@
 // through a BakeSinkCtx (TtfImageCache.h) — tone -> cache row -> paint.
 namespace ttfimg {
 DecodeResult decodeBmpRows(const ImageSpec& spec, const uint8_t* data, size_t size, BakeSinkCtx* sink, bool clahe,
-                           bool* degradedOut);
+                           bool* degradedOut, bool* ladderFailedOut = nullptr);
 }  // namespace ttfimg
 
 uint32_t g_fakeMillis = 0;
@@ -1131,6 +1131,72 @@ TEST(ImageBudgetGate, BudgetDecisionIsAConstantExpression) {
                 "small-board floor short");
   static_assert(!ttfimg::psramBudgetOk(0, 0), "no PSRAM defers");
   SUCCEED();
+}
+
+// ── DPID ladder exhaustion (review 2026-11-13) ──────────────────────────────
+// attachScaler refusing every rung is a MEMORY failure: a cache-only worker
+// job must defer (Failed), not report the silent no-op Ok. The seam
+// (setAttachLadderFailForTest) makes the ladder reachable without a real
+// allocation failure.
+
+struct AttachLadderFailGuard {
+  AttachLadderFailGuard() { ttfimg::setAttachLadderFailForTest(true); }
+  ~AttachLadderFailGuard() { ttfimg::setAttachLadderFailForTest(false); }
+};
+
+TEST(ImageBmpLadder, ExhaustedLadderReportsTheFailure) {
+  const auto bmp = makeBmp(64, 48, 137);
+  const auto spec = makeSpec(0, 0, 32, 24);
+  ttfimg::ToneBake4 bake(spec.w);
+  ASSERT_TRUE(bake.ok());
+  std::vector<uint8_t> toneRow(static_cast<size_t>(spec.w), 0);
+  ttfimg::BakeSinkCtx sink;
+  sink.bake = &bake;
+  sink.spec = &spec;
+  sink.toneRow = toneRow.data();
+
+  bool ladderFailed = false;
+  {
+    AttachLadderFailGuard guard;
+    EXPECT_EQ(ttfimg::decodeBmpRows(spec, bmp.data(), bmp.size(), &sink, false, nullptr, &ladderFailed),
+              ttfimg::DecodeResult::Failed);
+  }
+  EXPECT_TRUE(ladderFailed);
+
+  // Control (seam disarmed): the same decode succeeds and the out-param is
+  // not written — the report is the ladder's, not the decode's.
+  ladderFailed = false;
+  EXPECT_EQ(ttfimg::decodeBmpRows(spec, bmp.data(), bmp.size(), &sink, false, nullptr, &ladderFailed),
+            ttfimg::DecodeResult::Ok);
+  EXPECT_FALSE(ladderFailed);
+}
+
+TEST(ImageFitFallback, BmpLadderExhaustionDefersTheCacheOnlyJob) {
+  static uint8_t bookBuf[1 << 20];
+  static uint8_t scratchBuf[4 << 20];
+  freeink::book::Arena bookArena(bookBuf, sizeof(bookBuf));
+  freeink::book::Arena scratch(scratchBuf, sizeof(scratchBuf));
+  HostFileSource source;
+  ASSERT_TRUE(source.open(FIT_FIXTURES "/fit_fixtures.epub"));
+  freeink::book::Book book;
+  ASSERT_EQ(book.open(source, bookArena, scratch), freeink::book::BookStatus::Ok);
+  Epub epub;
+  epub.items["OEBPS/images/small.bmp"] = readFixtureFile(FIT_FIXTURES "/small.bmp");
+
+  FakeRenderer r;
+  auto& storage = HalStorage::getInstance();
+  storage.resetFiles();
+
+  ttfimg::ImageSpec spec = makeSpec(20, 600, 32, 24);
+  snprintf(spec.href, sizeof(spec.href), "OEBPS/images/small.bmp");
+  spec.generation = 11;
+  char cachePath[256];
+  ASSERT_TRUE(ttfimg::cacheNameFor(spec, "/books/epub_x/ficache", true, false, cachePath, sizeof(cachePath)));
+  AttachLadderFailGuard guard;
+  const auto res = ttfimg::decodeAndCache(spec, cachePath, source, book.zip(), scratch, &epub, &r, true, true, nullptr,
+                                          nullptr, /*paintToTarget=*/false);
+  EXPECT_EQ(res, ttfimg::DecodeResult::Failed) << "worker job must defer, not report the silent no-op Ok";
+  EXPECT_FALSE(ttfimg::hasValidCache(spec, "/books/epub_x/ficache", true, false));
 }
 
 // ── in-file cache identity header (fidelity campaign 2026-11-10) ────────────

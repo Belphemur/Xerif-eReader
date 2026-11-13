@@ -160,6 +160,10 @@ DecodeResult decodeAndCache(const ImageSpec& spec, const char* cachePath, freein
 // Full decode gates for a worker job (the #292 heap-gate precedents).
 bool decodeGatesOk();
 
+// Host-test seam: when armed, attachScaler refuses every rung, simulating a
+// DPID ladder exhausted under memory pressure. Never set in production.
+void setAttachLadderFailForTest(bool fail);
+
 // Decode-arena floor shared by the worker and the foreground cold paint
 // (owner-audit iteration 3, 2026-11-11): a deflated full-page JPEG needs
 // ~74–81 KiB inside the decode arena (inflate window + tinfl ~46 KiB,
