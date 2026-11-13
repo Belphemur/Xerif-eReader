@@ -8,10 +8,9 @@
 // paths (SDK row render, converters, BMP row decoder) stay in
 // TtfImageEngine.cpp — they pull the render stack.
 
-#include "BlueNoise64.h"
-
 #include <cstring>
 
+#include "BlueNoise64.h"
 #include "Epub/converters/DitherUtils.h"
 #include "TtfImageEngine.h"
 

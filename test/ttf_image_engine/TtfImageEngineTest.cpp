@@ -12,8 +12,8 @@
 #include <Arduino.h>
 #include <gtest/gtest.h>
 
-#include <cmath>
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -277,8 +277,8 @@ namespace {
 // kBlueNoiseLinearLut (double on both sides so no libm float rounding can
 // split a boundary case).
 struct LutExpect {
-  int k;      // base level (0..2)
-  int thresh; // ceil of the fractional position, 0..256
+  int k;       // base level (0..2)
+  int thresh;  // ceil of the fractional position, 0..256
 };
 
 LutExpect linearLightExpect(const int g) {
@@ -429,7 +429,8 @@ TEST(TiledToneRowMatchesScalarToneAcrossBoundaries, WidthsAndRowWraps) {
       ttfimg::ToneBake4 bake(w);
       ASSERT_TRUE(bake.ok());
       for (int y = 0; y < rows; ++y) {
-        for (int x = 0; x < w; ++x) scalar[static_cast<size_t>(y) * w + x] = bake.tone(x, gray[static_cast<size_t>(y) * w + x]);
+        for (int x = 0; x < w; ++x)
+          scalar[static_cast<size_t>(y) * w + x] = bake.tone(x, gray[static_cast<size_t>(y) * w + x]);
         bake.nextRow();
       }
     }

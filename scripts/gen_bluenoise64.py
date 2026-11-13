@@ -19,7 +19,9 @@ All math is IEEE-754 double, the same formula the host test
 (LinearLutBitExactAgainstFloatReference) re-derives with C `pow` — the
 runtime itself never computes a power. Run from the repo root:
 
-    python3 scripts/gen_bluenoise64.py
+    python3 scripts/gen_bluenoise64.py && bin/clang-format-fix
+(the generated table rows exceed clang-format's column limit, so finish
+with the repo's formatter pass before committing).
 """
 import os
 
