@@ -13,7 +13,6 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
-#include <iterator>
 #include <utility>
 
 #include "CrossPointSettings.h"
@@ -26,7 +25,6 @@
 #include "fontIds.h"
 #include "util/DictHtmlPages.h"
 #include "util/HtmlToPlainText.h"
-#include "vocabulary/VocabularyStore.h"
 
 namespace {
 
@@ -129,9 +127,8 @@ struct DictionaryDefinitionActivity::PlainSelectionLine {
 };
 
 // cppcheck-suppress constParameterReference // the lookup state holds the dictionary by non-const reference
-bool DictionaryDefinitionActivity::enableLookup(Dictionary& dictionary, std::string&& query,
-                                                const VocabularyContext& vocabulary) {
-  lookup = makeUniqueNoThrow<LookupState>(dictionary, vocabulary);
+bool DictionaryDefinitionActivity::enableLookup(Dictionary& dictionary, std::string&& query) {
+  lookup = makeUniqueNoThrow<LookupState>(dictionary);
   if (!lookup) LOG_ERR("DICT", "OOM: lookup history (%u bytes)", static_cast<unsigned>(sizeof(LookupState)));
   if (lookup) lookup->query = std::move(query);
   return lookup != nullptr;
@@ -250,55 +247,29 @@ bool DictionaryDefinitionActivity::closeButtonContains(const int x, const int y)
 }
 
 void DictionaryDefinitionActivity::openSearch() {
-  // Recent lookups ride into the search keyboard as touch chips; they are
-  // a view over the Vocabulary Notebook tail (addendum 2026-11-09) and are
-  // hidden entirely when the toggle is off or the notebook is empty — the
-  // shared keyboard serves other entries unchanged.
-  std::vector<std::string> recents;
-  if (SETTINGS.vocabularyHistoryEnabled) {
-    std::vector<NotebookEntry> rows;
-    if (VocabularyStore::loadRecent(rows, KeyboardEntryActivity::MAX_RECENT_CHIPS)) {
-      recents.reserve(rows.size());
-      std::transform(std::make_move_iterator(rows.begin()), std::make_move_iterator(rows.end()),
-                     std::back_inserter(recents), [](NotebookEntry&& row) { return std::move(row.word); });
-    }
-  }
-  auto search = makeUniqueNoThrow<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH), content.headword, 0,
-                                                         InputType::Text, std::move(recents));
-  if (!search) {
-    LOG_ERR("DICT", "OOM: search keyboard");
-    return;
-  }
-  startActivityForResult(std::move(search), [this](const ActivityResult& result) {
-    if (!result.isCancelled && std::holds_alternative<KeyboardResult>(result.data)) {
-      const auto& keyboard = std::get<KeyboardResult>(result.data);
-      if (!keyboard.text.empty()) {
-        if (lookup) {
-          // Same capacity guard as the selection path: the 16-entry navigation
-          // history is full after 16 forward lookups, and a further search
-          // would push past its end in navigateDefinition.
-          if (lookup->depth == lookup->history.size()) {
-            showMessage(StrId::STR_DICT_HISTORY_FULL);
-            clearBeforeNextRender = true;
-            requestUpdate();
+  startActivityForResult(
+      std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH), content.headword),
+      [this](const ActivityResult& result) {
+        if (!result.isCancelled && std::holds_alternative<KeyboardResult>(result.data)) {
+          const auto& keyboard = std::get<KeyboardResult>(result.data);
+          if (!keyboard.text.empty()) {
+            if (lookup) {
+              // In-popup recursion: navigateDefinition() runs on the next loop
+              // tick, keeping the lookup history under this activity.
+              lookup->pendingWord = keyboard.text;
+              requestUpdate();
+            } else {
+              // No lookup state (not-found fallback): hand the word back to the
+              // word-select parent, which owns the Dictionary.
+              setResult(ActivityResult(DictionarySearchResult{keyboard.text}));
+              finish();
+            }
             return;
           }
-          // In-popup recursion: navigateDefinition() runs on the next loop
-          // tick, keeping the lookup history under this activity.
-          lookup->pendingWord = keyboard.text;
-          requestUpdate();
-        } else {
-          // No lookup state (not-found fallback): hand the word back to the
-          // word-select parent, which owns the Dictionary.
-          setResult(ActivityResult(DictionarySearchResult{keyboard.text}));
-          finish();
         }
-        return;
-      }
-    }
-    clearBeforeNextRender = true;
-    requestUpdate();
-  });
+        clearBeforeNextRender = true;
+        requestUpdate();
+      });
 }
 
 // Styled path: lay the HTML definition out through the EPUB chapter parser
@@ -570,17 +541,6 @@ void DictionaryDefinitionActivity::navigateDefinition(const bool back) {
         break;
     }
     return;
-  }
-  // Record the notebook entry for an in-popup FORWARD lookup the moment the
-  // dictionary has it — the same contract the selector's performLookup uses
-  // (record when found; render failures don't retract). navigateDefinition
-  // bypasses the selector entirely, so without this the notebook never sees
-  // in-popup searches (CodeRabbit, PR #306). A BACK navigation re-shows an
-  // already-recorded word: no new record.
-  if (!back && SETTINGS.vocabularyHistoryEnabled &&
-      !VocabularyStore::append(lookup->vocabulary, lookup->pendingWord, next.headword, next.text,
-                               lookup->dictionary.definitionsAreHtml())) {
-    LOG_ERR("VOCAB", "Could not save successful dictionary lookup");
   }
   const bool forcePlain = back && !lookup->history[lookup->depth - 1].styled;
   if (!prepareDefinition(next, forcePlain)) {

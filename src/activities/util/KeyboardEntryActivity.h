@@ -2,15 +2,12 @@
 #include <FreeInkUIGfxRenderer.h>
 #include <GfxRenderer.h>
 
-#include <array>
 #include <atomic>
 #include <cstdint>
 #include <string>
 #include <utility>
-#include <vector>
 
 #include "activities/Activity.h"
-#include "components/themes/BaseTheme.h"
 #include "util/ButtonNavigator.h"
 
 enum class InputType { Text, Password, Url };
@@ -23,14 +20,12 @@ class KeyboardEntryActivity : public Activity {
  public:
   explicit KeyboardEntryActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                  std::string title = "Enter Text", std::string initialText = "",
-                                 const size_t maxLength = 0, InputType inputType = InputType::Text,
-                                 std::vector<std::string> recents = {})
+                                 const size_t maxLength = 0, InputType inputType = InputType::Text)
       : Activity("KeyboardEntry", renderer, mappedInput),
         title(std::move(title)),
         text(std::move(initialText)),
         maxLength(maxLength),
-        inputType(inputType),
-        recentQueries(std::move(recents)) {}
+        inputType(inputType) {}
 
   void onEnter() override;
   void onExit() override;
@@ -38,26 +33,12 @@ class KeyboardEntryActivity : public Activity {
   void render(RenderLock&&) override;
   bool preventAutoSleep() override { return true; }
 
-  // Chip-feed cap shared with the notebooks that load recency rows for
-  // this keyboard (one constant, one meaning).
-  static constexpr size_t MAX_RECENT_CHIPS = 8;
-
  private:
   std::string title;
   std::string text;
   size_t maxLength;
   InputType inputType;
   bool passwordVisible = false;
-
-  // Dictionary search recents (design doc ttf/2026-11-09 §F4). Empty for
-  // every other keyboard caller — zero layout contribution. Touch-only:
-  // chips render between the tips and the keyboard when vertical space;
-  // capped at 8 entries, two rows of four (the X4 Pro portrait does not
-  // offer 7 scrollable rows above a keyboard).
-  static constexpr size_t RECENT_CHIPS_PER_ROW = 4;
-  std::vector<std::string> recentQueries;
-  std::array<Rect, MAX_RECENT_CHIPS> recentChipRects{};
-  size_t recentChipCount = 0;
 
   ButtonNavigator buttonNavigator;
 
@@ -126,10 +107,6 @@ class KeyboardEntryActivity : public Activity {
   void onComplete(std::string finalText);
   void onCancel();
   bool cursorPositionFromPoint(int x, int y, size_t& position) const;
-  // Recent-query chips (§F4): drawn between the tips and the keyboard on
-  // touch devices; selecting one completes the entry with that query.
-  int recentChipAt(int x, int y) const;
-  void drawRecentChips(int fieldTopY);  // records hit rects during render
   std::string displayTextForCurrentState() const;
   // Advance of s[start, end) measured in place by temporarily null-terminating
   // at `end` — avoids a substr temporary per measurement.

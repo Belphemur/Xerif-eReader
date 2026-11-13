@@ -527,8 +527,8 @@ void DictionaryWordSelectActivity::performLookup(const std::string& raw, const s
     // Pass a copy of the actual lookup key — the same string the call above
     // resolved — because the callback below still reads lookupText to decide
     // whether to return straight to the reader.
-    if (!activity || !activity->enableLookup(dict, lookupText.empty() ? std::string(trimmed) : std::string(lookupText),
-                                             vocabulary)) {
+    if (!activity ||
+        !activity->enableLookup(dict, lookupText.empty() ? std::string(trimmed) : std::string(lookupText))) {
       LOG_ERR("DICT", "OOM: definition activity");
       popup = Popup::Error;
       popupMsg = StrId::STR_DICT_LOW_MEMORY;

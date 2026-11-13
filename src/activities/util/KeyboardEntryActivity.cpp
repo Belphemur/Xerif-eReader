@@ -429,75 +429,6 @@ int KeyboardEntryActivity::lineBreakEnd(std::string& s, const int start, const i
   return best < firstCharEnd ? firstCharEnd : best;
 }
 
-// Recent-query chips (§F4): rendered between the tips and the keyboard only
-// when a row fits, capped to two rows of four entries — tap completes the
-// entry with that query via the same submit path as the OK key. Touch-only
-// (button users type the word; the recents stay reachable next time).
-static constexpr const char* KB_RECENT_ELLIPSIS = "\xe2\x80\xa6";
-
-void KeyboardEntryActivity::drawRecentChips(const int fieldTopY) {
-  recentChipCount = 0;
-  recentChipRects = {};
-  if (recentQueries.empty() || !mappedInput.hasTouch() || cursorMode) return;
-
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const Rect content = UITheme::getContentArea(renderer);
-  const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
-  const int rowHeight = lineHeight + metrics.verticalSpacing;
-  // The band between the header and the input field: render() computes the
-  // field top with a multi-row blank reserve; chips may use it, bounded by
-  // the keyboard top.
-  const int top = metrics.topPadding + metrics.headerHeight;
-  const int kbTop = keyboardRect().y;
-  int rows = static_cast<int>((std::min(kbTop, fieldTopY) - top - metrics.verticalSpacing) / rowHeight);
-  if (rows <= 0) return;
-  if (rows > 2) rows = 2;
-
-  int idx = 0;
-  for (int row = 0; row < rows && idx < static_cast<int>(recentQueries.size()); ++row) {
-    int x = content.x;
-    const int y = top + row * rowHeight;
-    for (int col = 0; col < static_cast<int>(RECENT_CHIPS_PER_ROW) && idx < static_cast<int>(recentQueries.size());
-         ++col) {
-      const std::string& query = recentQueries[idx];
-      std::string label = query;
-      int width = renderer.getTextWidth(UI_12_FONT_ID, label.c_str());
-      // Truncated chip labels: cut a byte short until the text fits the
-      // column box, then widen the ellipsis.
-      int maxLabel = content.width / static_cast<int>(RECENT_CHIPS_PER_ROW) - metrics.menuSpacing;
-      if (width + metrics.menuSpacing > maxLabel) {
-        while (!label.empty() &&
-               renderer.getTextWidth(UI_12_FONT_ID, (label + KB_RECENT_ELLIPSIS).c_str()) > maxLabel) {
-          while (!label.empty() && (static_cast<uint8_t>(label.back()) & 0xC0) == 0x80) label.pop_back();
-          if (label.empty()) break;  // one wide glyph filled the entire label
-          label.pop_back();
-        }
-        label += KB_RECENT_ELLIPSIS;
-        width = renderer.getTextWidth(UI_12_FONT_ID, label.c_str());
-      }
-      const int boxWidth = width + metrics.menuSpacing * 2;
-      if (x + boxWidth > content.x + content.width) break;
-      if (idx < static_cast<int>(MAX_RECENT_CHIPS)) {
-        recentChipRects[idx] = Rect{x, y, boxWidth, rowHeight};
-        renderer.drawRect(x, y, boxWidth, rowHeight, true);
-        renderer.drawText(UI_12_FONT_ID, x + metrics.menuSpacing, y + (rowHeight - lineHeight) / 2, label.c_str());
-      }
-      x += boxWidth + metrics.menuSpacing;
-      ++idx;
-      if (idx >= static_cast<int>(MAX_RECENT_CHIPS)) break;
-    }
-  }
-  recentChipCount = idx;
-}
-
-int KeyboardEntryActivity::recentChipAt(const int x, const int y) const {
-  for (size_t i = 0; i < recentChipCount; ++i) {
-    const Rect& chip = recentChipRects[i];
-    if (x >= chip.x && x < chip.x + chip.width && y >= chip.y && y < chip.y + chip.height) return static_cast<int>(i);
-  }
-  return -1;
-}
-
 bool KeyboardEntryActivity::cursorPositionFromPoint(const int x, const int y, size_t& position) const {
   // Key taps are the overwhelmingly common case; they land on the keyboard,
   // never the text field, so skip the wrap/measure work entirely.
@@ -511,15 +442,8 @@ bool KeyboardEntryActivity::cursorPositionFromPoint(const int x, const int y, si
   const Rect content = UITheme::getContentArea(renderer);
 
   const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
-  // Recents chips (§F4) claim one row of the blank band above the field; the
-  // field shifts down so a row always exists even on themes whose fixed
-  // reserve is too small to fit one on its own. The tips/keyboard gap
-  // absorbs it (their own guards degrade drawing when tight).
-  const int recentsReserve = recentQueries.empty() || !mappedInput.hasTouch()
-                                 ? 0
-                                 : renderer.getLineHeight(UI_12_FONT_ID) + metrics.verticalSpacing;
   const int inputStartY = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing +
-                          metrics.verticalSpacing * 4 + metrics.keyboardVerticalOffset + recentsReserve;
+                          metrics.verticalSpacing * 4 + metrics.keyboardVerticalOffset;
 
   int availableWidth = content.width;
   if (gpio.deviceIsX3()) {
@@ -634,19 +558,6 @@ void KeyboardEntryActivity::loop() {
     touchRouter.reset();
     requestUpdate();
     return;
-  }
-
-  // Recent-query chips sit above the keyboard; a tap completes the entry
-  // with the chip's query through the normal submit path.
-  int chipTappedX = 0;
-  int chipTappedY = 0;
-  if (!cursorMode && mappedInput.wasScreenTapped(chipTappedX, chipTappedY)) {
-    const int chip = recentChipAt(chipTappedX, chipTappedY);
-    if (chip >= 0) {
-      haptic_feedback::touchAction();
-      onComplete(recentQueries[static_cast<size_t>(chip)]);
-      return;
-    }
   }
 
   if (!cursorMode && interactionsReady) {
@@ -836,13 +747,8 @@ void KeyboardEntryActivity::render(RenderLock&&) {
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, title.c_str());
 
   const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
-  // Same recents reserve as cursorPositionFromPoint (see it); the two
-  // computations must stay in lock-step or taps miss the field.
-  const int recentsReserve = recentQueries.empty() || !mappedInput.hasTouch()
-                                 ? 0
-                                 : renderer.getLineHeight(UI_12_FONT_ID) + metrics.verticalSpacing;
   const int inputStartY = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing +
-                          metrics.verticalSpacing * 4 + metrics.keyboardVerticalOffset + recentsReserve;
+                          metrics.verticalSpacing * 4 + metrics.keyboardVerticalOffset;
   int inputHeight = 0;
 
   std::string displayText = displayTextForCurrentState();
@@ -989,8 +895,6 @@ void KeyboardEntryActivity::render(RenderLock&&) {
       renderer.drawText(UI_12_FONT_ID, toggleX, toggleY, toggleLabel, true);
     }
   }
-
-  drawRecentChips(inputStartY);
 
   if (hintVisible && cursorMode && !text.empty()) {
     const int hintLh = renderer.getLineHeight(SMALL_FONT_ID);

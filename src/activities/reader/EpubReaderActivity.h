@@ -634,7 +634,6 @@ class EpubReaderActivity final : public ReaderActivity {
                                const VocabularyContext* vocabulary = nullptr);
 #endif
   void openClippings();
-  void openVocabulary();
   void applyProgressChange(const ProgressChangeResult& progress);
   bool launchKOReaderSync();
   unsigned long confirmLongPressThreshold() const;
