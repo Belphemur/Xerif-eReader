@@ -194,14 +194,66 @@ class DevVersionStampTest(unittest.TestCase):
         # Branch dropped, sha kept.
         self.assertEqual(fit("1.2.3-dev-feat-x-y-0123456789abcd"), b"1.2.3-dev-0123456789abcd" + b"\x00" * 8)
         # Branch dropped first, then the base truncated on the right; tail intact.
-        overlong = "b" * 30 + "-dev-" + "c" * 20 + "-0123456789abcd"
-        self.assertEqual(fit(overlong), b"b" * 12 + b"-dev-0123456789abcd" + b"\x00")
+        overlong = "9" * 30 + "-dev-" + "c" * 20 + "-0123456789abcd"
+        self.assertEqual(fit(overlong), b"9" * 12 + b"-dev-0123456789abcd" + b"\x00")
         # Already-dropped form with an over-long base: base truncated, tail intact.
-        self.assertEqual(fit("b" * 40 + "-dev-0123456789abcd"),
-                         b"b" * 12 + b"-dev-0123456789abcd" + b"\x00")
+        self.assertEqual(fit("9" * 40 + "-dev-0123456789abcd"),
+                         b"9" * 12 + b"-dev-0123456789abcd" + b"\x00")
         # No -dev- marker: refuse rather than guess.
         with self.assertRaises(SystemExit):
             fit("x" * 40)
+
+    def test_fit_refuses_mixed_stderr_capture(self):
+        # The PR lane once captured git_branch.py with 2>&1; a derivation
+        # warning glued the WARNING line onto the stamp and fit_version then
+        # truncated the head into "WARNING [git_bran-dev-<sha>". It must
+        # fail instead, leaving no partial stamp.
+        contaminated = ('WARNING [git_branch.py]: git command failed (exit 128): '
+                        "fatal: bad revision; SHA suffix will be \"unknown\"\n"
+                        "2.16.1-dev-pr-42-0123456789abcd")
+        with self.assertRaises(SystemExit):
+            self.fit_version(contaminated)
+
+    def test_fit_refuses_embedded_newline(self):
+        with self.assertRaises(SystemExit):
+            self.fit_version("2.16.1-dev-pr-42-0123456789abcd\nextra")
+
+    def test_fit_refuses_non_stamp_dev_shape(self):
+        # Any -dev- string whose head is not the numeric release base is
+        # contamination, even when it fits and carries no newline.
+        with self.assertRaises(SystemExit):
+            self.fit_version("WARNING [git_branch.py]: oops-dev-0123456789abcd")
+
+    def test_fit_accepts_two_segment_capture(self):
+        # The GOOD capture: base + -dev- + branch + sha (the branch component
+        # present), which must stamp unchanged when it fits.
+        self.assertEqual(self.fit_version("2.16.1-dev-pr-42-0123456789abcd"),
+                         b"2.16.1-dev-pr-42-0123456789abcd" + b"\x00")
+
+    def test_is_dev_version_shape(self):
+        spec = importlib.util.spec_from_file_location("patch_dev_version", PATCH)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertTrue(module.is_dev_version("2.16.1-dev-pr-42-0123456789abcd"))
+        self.assertTrue(module.is_dev_version("0.0.0-dev-develop-32c5038a4"))
+        self.assertFalse(module.is_dev_version(
+            "WARNING [git_branch.py]: x\n2.16.1-dev-pr-42-0123456789abcd"))
+        self.assertFalse(module.is_dev_version("2.16.1-dev-pr-42-0123456789abcd\n"))
+        self.assertFalse(module.is_dev_version("garbage-dev-0123456789abcd"))
+        # Plain release versions (no -dev- marker) are not dev versions.
+        self.assertFalse(module.is_dev_version("2.16.1"))
+
+    def test_check_version_flag_gates_the_stamp_shape(self):
+        good = subprocess.run(
+            [sys.executable, str(PATCH), "--check-version",
+             "2.16.1-dev-pr-42-0123456789abcd"], capture_output=True, text=True)
+        self.assertEqual(good.returncode, 0, good.stderr)
+        bad = subprocess.run(
+            [sys.executable, str(PATCH), "--check-version",
+             "WARNING [git_branch.py]: x\n2.16.1-dev-pr-42-0123456789abcd"],
+            capture_output=True, text=True)
+        self.assertEqual(bad.returncode, 1, bad.stderr)
+        self.assertIn("not a dev version", bad.stderr)
 
     def fit_version(self, value):
         spec = importlib.util.spec_from_file_location("patch_dev_version", PATCH)

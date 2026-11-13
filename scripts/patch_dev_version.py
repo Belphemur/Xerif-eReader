@@ -33,6 +33,7 @@ an unstamped release shows the prebuilt core's constant, not 2.X.Y).
 
 import argparse
 import hashlib
+import re
 import struct
 import sys
 
@@ -43,6 +44,13 @@ MAGIC = 0xABCD5432
 MIN_IMAGE_SIZE = VERSION_OFFSET + VERSION_FIELD_SIZE  # 0x50
 HASH_APPENDED_OFFSET = 0x17
 DEV_MARK = "-dev-"
+# The only valid shape of a dev-version string: a numeric release base, the
+# -dev- marker, then a printable-ASCII tail (branch + sha, no whitespace).
+# git_branch.py warns on stderr, so a CI capture that mixed stderr in (e.g.
+# "WARNING [git_branch.py]: ...\n2.16.1-dev-abc") can never match; the guard
+# exists so such a blob is refused, never truncated into a valid-looking
+# stamp.
+DEV_VERSION_RE = re.compile(r"-?[0-9.]+-dev-[\x21-\x7e]+")
 # ESP app-image layout: 24-byte image header, then segCount 8-byte segment
 # headers, each followed by its data. The XOR checksum byte sits at the last
 # byte of the 16-byte alignment padding after the final segment. These mirror
@@ -110,14 +118,33 @@ def read_field(image: str) -> str:
     return data[VERSION_OFFSET:MIN_IMAGE_SIZE].split(b"\x00", 1)[0].decode("ascii", "replace")
 
 
+def is_dev_version(value: str) -> bool:
+    """True when value is exactly one dev-stamp string (<base>-dev-<tail>).
+
+    The WHOLE string must match, so an embedded newline or any other
+    contamination makes this False. Exposed for callers (CI capture gates)
+    that validate a derived version before stamping with it.
+    """
+    return DEV_VERSION_RE.fullmatch(value) is not None
+
+
 def fit_version(value: str) -> bytes:
     """Fit the whole dev-version string into the 31-byte field, NUL-padded.
 
-    Over-length strings first drop the branch component (the segment between
-    -dev- and the final -<sha> tail); if the result still does not fit, the
-    base is truncated on the right. The -dev-<sha> tail is never cut — build
-    identity is the guarantee.
+    Refuses loudly anything that is not a version string: a capture that
+    mixed stderr in (newline or WARNING text) or a -dev- string outside the
+    stamp shape must fail here, never be truncated into a valid-looking
+    stamp. Over-length strings then drop the branch component (the segment
+    between -dev- and the final -<sha> tail); if the result still does not
+    fit, the base is truncated on the right. The -dev-<sha> tail is never
+    cut — build identity is the guarantee.
     """
+    if "\n" in value or "\r" in value or "WARNING [" in value:
+        fail(f"version string {value!r} is contaminated (embedded newline or "
+             "WARNING text); refusing to stamp")
+    if DEV_MARK in value and not is_dev_version(value):
+        fail(f"version string {value!r} does not match the dev-stamp shape "
+             "<base>-dev-<tail>; refusing to fit")
     if len(value) <= VERSION_FIELD_SIZE - 1:
         return value.encode("ascii")[:VERSION_FIELD_SIZE - 1].ljust(VERSION_FIELD_SIZE, b"\x00")
 
@@ -195,14 +222,26 @@ def validate(image: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--image", required=True, help="firmware.bin to patch in place")
+    parser.add_argument("--image", help="firmware.bin to patch in place")
     parser.add_argument("--version", help="full dev-version string, e.g. the output of "
                         "scripts/git_branch.py --print-dev-version")
     parser.add_argument("--verify", action="store_true",
                         help="print the image's current version field instead of stamping")
     parser.add_argument("--validate", action="store_true",
                         help="run the full image verification (checksum + digest) and exit non-zero on failure")
+    parser.add_argument("--check-version", metavar="VERSION",
+                        help="validate VERSION is a dev-stamp string and exit; no image is read")
     args = parser.parse_args()
+
+    if args.check_version is not None:
+        if args.version or args.verify or args.validate:
+            parser.error("--check-version takes no other flags")
+        if not is_dev_version(args.check_version):
+            fail(f"not a dev version: {args.check_version!r}")
+        return
+
+    if not args.image:
+        parser.error("--image is required for --version/--verify/--validate")
 
     if args.validate:
         if args.version or args.verify:
