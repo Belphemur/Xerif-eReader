@@ -245,15 +245,19 @@ jobs:
           # develop build. The FULL head sha feeds the derivation (the
           # 7-char SHORT_SHA in the asset name would not re-shorten
           # identically); --branch overrides the checkout's develop branch
-          # with the PR head branch. On a derivation failure the asset
-          # publishes unstamped — the device falls back to the asset name.
+          # with the PR head branch. The capture takes STDOUT ONLY — the
+          # derivation's warnings go to stderr and must never be glued onto
+          # the stamp — and --check-version refuses any capture that is not
+          # a dev-stamp string. On a derivation failure or a non-stamp
+          # capture the asset publishes unstamped — the device falls back
+          # to the asset name; it is never stamped with garbage.
           if pr_version="$(python3 scripts/git_branch.py --print-dev-version \
-              "${HEAD_SHA}" --branch "${HEAD_BRANCH}" 2>&1)"; then
+              "${HEAD_SHA}" --branch "${HEAD_BRANCH}")" \
+              && python3 scripts/patch_dev_version.py --check-version "${pr_version}"; then
             python3 scripts/patch_dev_version.py --image "${asset}" --version "${pr_version}"
             python3 scripts/patch_dev_version.py --image "${asset}" --verify
           else
             echo "::warning::could not derive the PR dev version; publishing unstamped"
-            echo "${pr_version}"
           fi
           # Same publish gate as the dev channel: the PR asset must pass the
           # full image verifier before it may reach the rolling release.
