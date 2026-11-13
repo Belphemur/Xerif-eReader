@@ -923,3 +923,107 @@ amendments 1–8 are untouched.
 5. **Cache letters.** Sharp/Enhanced bump `'c'`/`'d'` → `'e'`/`'f'`
    (sweeping the amendment-7 bakes; never shipped outside PR #316 review
    builds), `'l'` untouched.
+
+##### Amendment 10 (2026-11-13, JPEG front-end unification — TJpgDec removed, JPEGDEC vendored)
+
+Both briefs in the 2026-11-13 combined directive named this landing
+"Amendment 10"; the two amendments are numbered sequentially as applied
+(jpegdec-front first, then the blue-noise bake as Amendment 11).
+
+`ImageRenderer`'s baseline JPEG decode and the progressive DC-only fallback
+decode through **JPEGDEC** now; `third_party/tjpgd/` and
+`src/vendor/tjpgd_impl.c` are deleted (deletion over deprecation; zero
+`tjpgd`/`jd_prepare`/`jd_decomp` references remain in code). Rationale: the
+quality path still showed JPEG blockiness the legacy JPEGDEC path did not,
+and the surviving suspect after the Stage-B/C split was the TJpgDec front
+end (MCU-grid decode/dither rounding).
+
+- **Vendoring**: JPEGDEC is a git submodule —
+  `libs/book/FreeInkBook/third_party/jpegdec` →
+  `https://github.com/bitbank2/JPEGDEC.git` pinned to upstream release tag
+  **1.8.5** (`0e879642e5e68624687f9ade16d799a091298ec8`), registered in the
+  SDK `.gitmodules` like FreeType. `src/vendor/jpegdec_impl.cpp` compiles it
+  for device and host builds. The firmware's `platformio.ini` JPEGDEC libdep
+  now points at the same vendored submodule (`symlink://`) instead of the
+  retired 1.2.7 registry pin — `JpegToFramebufferConverter`'s header is
+  byte-identical between the two pins, and the binary keeps exactly one
+  JPEGDEC implementation.
+- **Contracts preserved**: streaming `ImageRowFn` rows top→bottom, one
+  `SourceDimsFn` report before the first row, `scaleReduced` flag, the
+  1.5× pre-scale margin (mapped to `JPEG_SCALE_HALF/QUARTER/EIGHTH`),
+  draw-callback abort, EIGHT_BIT_GRAYSCALE Y-only luma. `RowScaler` /
+  `DpidScaler` / the bake / the app-side `dcFallback` contracts unchanged.
+  `ZipEntryReader` gains `seek()` so JPEGDEC's header scan can skip large
+  marker segments past its 2 KiB stream buffer (deflated entries rewind the
+  inflate state; stored entries are random access).
+- **Memory**: the JPEGDEC object (~17 KiB decode state) lives on the heap
+  (PSRAM-preferred), never on the caller arena — a caller arena too small
+  for a decode band must still afford the decoder. The caller arena holds
+  only the decode band (srcW×16) + scaler state; `testJpegScaleArenaRetry`
+  re-accounts for the split (4 KiB now forces the scale-2 band retry).
+- **Progressive unchanged**: full-fidelity decode stays in
+  `libs/assets/ProgressiveJpeg`; the DC fallback moves to JPEGDEC's first
+  scan. 00004 keeps its full-res progressive decode (never a 1/8 thumbnail).
+- **Host parity**: the real fixtures (`fixtures/images`, committed)
+  decode through the new front end with dims/rows/sample pins byte-identical
+  to the TJpgDec-era reference probe except ONE documented pixel (00006 row
+  274, col 127: 249 vs 254 — a near-white paper pixel one IDCT rounding step
+  apart).
+- **Host-only JPEGFilter fix**: upstream's x86 SSE marker filter desyncs
+  some entropy streams (reproduced on the `wide_scaling_test.jpg` fixture;
+  identical behavior on upstream 1.2.7 — not a 1.8.5 regression; the ESP32
+  device build never compiles the SSE filter). `jpegdec_impl.cpp` defines
+  `NO_SIMD` for host builds so the host decode path is byte-identical to the
+  device's scalar one.
+
+##### Amendment 11 (2026-11-13, linear-light blue-noise bake — ToneBake4 stateless, pictureDetail removed)
+
+Across a 293-round blind A/B visual tournament over the manga/light-novel/
+photo/gradient corpus (`00001..00029`), **64×64 Void-and-Cluster
+blue-noise ordered dithering in linear light** beat the Atkinson bake
+(11–0) and the legacy engine (8–0) and matched offline Direct Binary
+Search. `ToneBake4` is rewritten accordingly:
+
+- **Exact linear-light math** (`scripts/gen_bluenoise64.py`, IEEE-754
+  double): v(g) = 255·(g/255)^2.2 against the panel's four nominal encoded
+  reflectances L_k = 255·(85k/255)^2.2; interval k with fractional position
+  s(g); the ordered threshold nz comes from the toroidal pattern. For every
+  integer nz: s(g) > nz ⟺ thresh(g) > nz with thresh = clamp(⌈s⌉, 0, 256),
+  so the runtime quantizer is branchless — `(entry >> 9) + (nz < (entry &
+  0x1FF))` from `kBlueNoiseLinearLut[256]` (512 bytes). Palette anchors
+  {0, 85, 170, 255} quantize to the solid levels {0, 1, 2, 3}. No tone
+  mapping cutoffs, no error targets, no diffusion error state at all —
+  the bake's mean reflectance IS the image's mean reflectance.
+- **ESP32-S3 profile**: `kBlueNoise64[64][64]` + the LUT are 32-byte
+  aligned (L1 data-cache line size) in one translation unit (Flash
+  `.rodata`, single copy); each 64-pixel row slice spans exactly two cache
+  lines; `toneRow` steps in 64-pixel tiles with no `(x & 63)` masking in
+  the inner loop. Zero heap (the bake is a stack value: vtable pointer +
+  width + row counter), zero float, zero divide, zero branches.
+- **Stateless**: `tone(x, gray)` is a pure table lookup; `toneRow`
+  advances the row counter itself (the sink calls it once per row);
+  `resetError()` clears the row counter for the re-decode paint fallback
+  contract. Worker/foreground/placement parity holds by construction.
+- **Host pins** (`TtfImageEngineTest`, replacing the amendment-9
+  Atkinson-parity suite): `BlueNoise64StatisticalAndToroidalInvariants`
+  (every value 16× per tile; lag-1 correlations negative including the
+  toroidal wrap), `LinearLutBitExactAgainstFloatReference` (exhaustive
+  65536 (g,nz) pairs against the double reference), 
+  `PaletteAnchorsAreSolidAndLinearRampIsMonotone` (solid anchors; the full
+  ramp's reconstructed reflectance monotone and within a threshold step of
+  (g/255)^2.2), `TiledToneRowMatchesScalarToneAcrossBoundaries` (widths
+  1..799 across >2 row wraps; `resetError()` restarts clean). The texture
+  suite pins exact per-tile duties (thresh/256) and linear-light tone
+  correctness; `SinglePassBake` pins the published `'g'` letter.
+- **Cache letters**: Sharp/Enhanced bump `'e'`/`'f'` → `'g'`/`'h'`
+  (sweeping the amendment-9 parity bakes; never shipped outside PR #316
+  review builds), `'l'` untouched.
+- **`pictureDetail` removed** (owner directive): the Sharp/Enhanced CLAHE
+  selector (SettingsList ENUM row, JSON field, `STR_PICTURE_DETAIL*`
+  strings) is gone — the quality path has ONE bake, the DPID
+  detail-preserving resize stays always-on, and the CLAHE stage stays off
+  (`clahe = false` at all four call sites; the `clahe` flag and the
+  `'g'`/`'h'` letters remain so the degraded-rung ladder contracts and the
+  DPID disabled-gate byte-identity keep working unchanged). The only
+  alternate path is the untouched `imageDecodeQuality = 0` legacy revert
+  (`FloydSteinberg4`, letter `'l'`).

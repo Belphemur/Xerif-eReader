@@ -480,7 +480,7 @@ TEST(ProgressiveBudget, StorePlusAppScratchFitsTheBudget) {
 TEST(ImageFitSdk, ArenaRetryDecodePaintsUncachedAndFullArenaPublishes) {
   static uint8_t bookBuf[1 << 20];
   static uint8_t openScratch[64 * 1024];
-  static uint8_t smallScratch[26 * 1024];
+  static uint8_t smallScratch[18 * 1024];
   HostFileSource source;
   ASSERT_TRUE(source.open(FIT_FIXTURES "/fit_fixtures.epub"));
   freeink::book::Arena bookArena(bookBuf, sizeof(bookBuf));
@@ -498,10 +498,11 @@ TEST(ImageFitSdk, ArenaRetryDecodePaintsUncachedAndFullArenaPublishes) {
   // the JPEG decoder starts, which would mask the band-sized arena margin.
   ASSERT_EQ(book.zip().find(spec.href)->method, 0);
 
-  // Arena sizing (SDK renderJpeg, this fixture): the preferred full-res pick
-  // needs skipBuf 1K + work 8K + band 1200*16 + scaler state ~3.4K + srcRow
-  // 1.2K ≈ 34 KiB; the retried scale-1 pick (600x750) ≈ 23 KiB. 26 KiB
-  // forces the retry without failing the decode outright.
+  // Arena sizing (SDK renderJpeg, this fixture): the JPEGDEC decoder itself
+  // lives on the heap, so the caller arena holds only the decode band
+  // (1200*16 = 19.2 KiB) + scaler state (dstW*7 ≈ 5 KiB) ≈ 24 KiB for the
+  // preferred full-res pick; the retried scale-1 pick (600x750) ≈ 15 KiB.
+  // 18 KiB forces the retry without failing the decode outright.
   {
     storage.resetFiles();
     spec.generation = 21;
@@ -550,7 +551,7 @@ TEST(ImageFitSdk, DegradedWorkerDecodeFailsForRetryWithoutCaching) {
   // debris may survive.
   static uint8_t bookBuf[1 << 20];
   static uint8_t openScratch[64 * 1024];
-  static uint8_t smallScratch[26 * 1024];
+  static uint8_t smallScratch[18 * 1024];
   HostFileSource source;
   ASSERT_TRUE(source.open(FIT_FIXTURES "/fit_fixtures.epub"));
   freeink::book::Arena bookArena(bookBuf, sizeof(bookBuf));
@@ -566,7 +567,7 @@ TEST(ImageFitSdk, DegradedWorkerDecodeFailsForRetryWithoutCaching) {
   snprintf(spec.href, sizeof(spec.href), "OEBPS/images/baseline_stored.jpg");
   spec.generation = 31;
 
-  // 26 KiB forces the SDK's arena-retry step-down (same fixture/arena as
+  // 18 KiB forces the SDK's arena-retry step-down (same fixture/arena as
   // ArenaRetryDecodePaintsUncachedAndFullArenaPublishes) — the dims hook
   // reports scaleReduced and the decode is degraded.
   storage.resetFiles();
@@ -843,10 +844,11 @@ TEST(SinglePassBake, CacheStreamRowsArriveInRasterOrder) {
   sink.toneRow = toneRow.data();
   ASSERT_EQ(ttfimg::decodeBmpRows(spec, data.data(), data.size(), &sink, false, nullptr), ttfimg::DecodeResult::Ok);
   ASSERT_TRUE(writer.finalize());
-  // The published file parses: header + 16 rows of 8 bytes, letter 'e'.
+  // The published file parses: header + 16 rows of 8 bytes, letter 'g'
+  // (the linear-light blue-noise quality bake).
   const std::string& bytes = storage.files[cache];
   ASSERT_EQ(bytes.size(), ttfimg::kCacheHeaderBytes + (32 + 3) / 4 * 16u);
-  EXPECT_EQ(static_cast<char>(bytes[2]), 'e');
+  EXPECT_EQ(static_cast<char>(bytes[2]), 'g');
   // Row tone histogram straight from the 2-bit payload (MSB-first, 4 px/B).
   const auto rowLevelCounts = [&bytes, &spec](const int y) {
     int counts[4] = {0, 0, 0, 0};

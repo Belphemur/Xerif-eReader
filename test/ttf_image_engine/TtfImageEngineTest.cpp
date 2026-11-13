@@ -12,9 +12,12 @@
 #include <Arduino.h>
 #include <gtest/gtest.h>
 
+#include <cmath>
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "Epub/Epub/blocks/ImageDecodeGate.h"
 #include "HalStorage.h"
@@ -74,14 +77,12 @@ TEST(CacheIdentity, PolicyLetterSeparatesBakes) {
   ASSERT_TRUE(ttfimg::cacheNameFor(makeSpec(1, 10, 20, 100, 80), kDir, true, true, c, sizeof(c)));
   EXPECT_STRNE(a, b);
   EXPECT_STRNE(a, c);
-  // 'e' = Sharp, 'f' = DPID + CLAHE (Enhanced), 'l' = legacy: the
-  // legacy-BMP-parity bake (amendment 9, 2026-11-11) invalidated every
-  // prior bake — the exact AtkinsonDitherer(originalThresholds=false)
-  // transfer (identity luma, cutoffs {30,55,150}, targets {15,35,90,210},
-  // non-serpentine 6/8) and the single-pass stream.
-  EXPECT_NE(strstr(a, "/ie"), nullptr);
+  // 'g' = Sharp, 'h' = DPID + CLAHE (Enhanced), 'l' = legacy: the
+  // linear-light blue-noise bake + JPEGDEC front end (amendment 10,
+  // 2026-11-13) invalidated every prior bake.
+  EXPECT_NE(strstr(a, "/ig"), nullptr);
   EXPECT_NE(strstr(b, "/il"), nullptr);
-  EXPECT_NE(strstr(c, "/if"), nullptr);
+  EXPECT_NE(strstr(c, "/ih"), nullptr);
 }
 
 TEST(CacheIdentity, RefusesOverlongDir) {
@@ -267,26 +268,31 @@ TEST(ToneBake, QuantizesToFourLevels) {
   EXPECT_GE(mid, 1);
 }
 
-// ── ToneBake4: legacy-BMP parity (amendment 9) ───────────────────────────
+// ── the blue-noise bake pins (amendment 10) ──────────────────────────────
 
 namespace {
 
-// Drives the legacy AtkinsonDitherer exactly the way JpegToBmpConverter
-// does (left-to-right, nextRow() per row) and returns the per-row 2-bit
-// tones — the reference side of the parity pins.
-std::vector<uint8_t> legacyBakeRows(const int w, const int h, const std::vector<uint8_t>& gray) {
-  AtkinsonDitherer ditherer(w);
-  std::vector<uint8_t> tones(gray.size(), 0);
-  std::vector<uint8_t> row(static_cast<size_t>(w));
-  for (int y = 0; y < h; ++y) {
-    for (int x = 0; x < w; ++x) row[x] = ditherer.processPixel(gray[static_cast<size_t>(y) * w + x], x);
-    ditherer.nextRow();
-    std::copy(row.begin(), row.end(), tones.begin() + static_cast<std::ptrdiff_t>(y) * w);
-  }
-  return tones;
+// Reference: the linear-light blue-noise quantizer, re-derived with C double
+// pow — the exact formula scripts/gen_bluenoise64.py used to build
+// kBlueNoiseLinearLut (double on both sides so no libm float rounding can
+// split a boundary case).
+struct LutExpect {
+  int k;      // base level (0..2)
+  int thresh; // ceil of the fractional position, 0..256
+};
+
+LutExpect linearLightExpect(const int g) {
+  const double v = 255.0 * std::pow(g / 255.0, 2.2);
+  const double lv[4] = {0.0, 255.0 * std::pow(85.0 / 255.0, 2.2), 255.0 * std::pow(170.0 / 255.0, 2.2), 255.0};
+  int k = 0;
+  while (k < 2 && v >= lv[k + 1]) ++k;
+  const double s = (v - lv[k]) / (lv[k + 1] - lv[k]) * 256.0;
+  int thresh = static_cast<int>(std::ceil(s));
+  thresh = thresh < 0 ? 0 : (thresh > 256 ? 256 : thresh);
+  return {k, thresh};
 }
 
-// Bakes the same rows through ToneBake4's toneRow (the production path).
+// Bakes rows through ToneBake4's toneRow (the production path).
 std::vector<uint8_t> ttfBakeRows(const int w, const int h, const std::vector<uint8_t>& gray) {
   ttfimg::ToneBake4 bake(w);
   EXPECT_TRUE(bake.ok());
@@ -301,73 +307,156 @@ std::vector<uint8_t> ttfBakeRows(const int w, const int h, const std::vector<uin
 
 }  // namespace
 
-TEST(LegacyAtkinsonParityOnSampleImage, SmoothWallFadeIsByteIdentical) {
-  // A 00005-shaped page: a smooth 90..250 wall fade over 120 rows (the
-  // tonal balance the owner approved on the legacy engine). Both engines
-  // must agree byte-for-byte on every 2-bit pixel.
-  const int w = 96;
-  const int h = 120;
-  std::vector<uint8_t> gray(static_cast<size_t>(w) * h);
-  for (int y = 0; y < h; ++y) {
-    const uint8_t g = static_cast<uint8_t>(90 + (y * 160) / (h - 1));
-    std::fill(gray.begin() + static_cast<size_t>(y) * w, gray.begin() + static_cast<size_t>(y + 1) * w, g);
-  }
-  const auto legacy = legacyBakeRows(w, h, gray);
-  const auto ttf = ttfBakeRows(w, h, gray);
-  EXPECT_EQ(0, memcmp(legacy.data(), ttf.data(), legacy.size()));
-}
-
-TEST(LegacyAtkinsonParityOnSampleImage, AntiAliasedTextPageIsByteIdentical) {
-  // A 00006-shaped page: white paper (255) with anti-aliased black text
-  // strokes sweeping 0..160 across the row, plus light midtone shading.
-  const int w = 128;
-  const int h = 64;
-  std::vector<uint8_t> gray(static_cast<size_t>(w) * h, 255);
-  for (int y = 8; y < 56; ++y) {
-    for (int x = 4; x < 124; ++x) {
-      // A sweep of stroke-edge values: ink, anti-aliased shoulders, paper.
-      const int t = (x - 4) * 160 / 119;
-      gray[static_cast<size_t>(y) * w + x] = static_cast<uint8_t>(t < 128 ? 255 - t : 255 - (255 - t) / 2);
+TEST(BlueNoise64StatisticalAndToroidalInvariants, EveryValueUsed16TimesAndCorrelationsNegative) {
+  // Toroidal void-and-cluster signature: every rank value 0..255 appears
+  // exactly 16 times per tile, and the lag-1 correlations — horizontal,
+  // vertical, AND across the toroidal wrap (col 63 → 0, row 63 → 0) — are
+  // strictly negative. Positive or near-zero lag-1 correlation would mean
+  // white-noise clumping or a Bayer-like periodicity; a seam at the wrap
+  // would show as a positive wrap correlation.
+  int histogram[256] = {};
+  for (int y = 0; y < 64; ++y) {
+    for (int x = 0; x < 64; ++x) {
+      const int v = ttfimg::kBlueNoise64[y][x];
+      ASSERT_GE(v, 0);
+      ASSERT_LE(v, 255);
+      ++histogram[v];
     }
   }
-  const auto legacy = legacyBakeRows(w, h, gray);
-  const auto ttf = ttfBakeRows(w, h, gray);
-  EXPECT_EQ(0, memcmp(legacy.data(), ttf.data(), legacy.size()));
-}
+  for (int v = 0; v < 256; ++v) EXPECT_EQ(histogram[v], 16) << "value " << v;
 
-TEST(LegacyAtkinsonParityOnSampleImage, MidtoneShadingIsByteIdentical) {
-  // Flat midtone fields bracketing each legacy cutoff (29/30/54/55/149/
-  // 150) plus a woven-shading ramp — the exact-value pins against
-  // AtkinsonDitherer.
-  const int w = 64;
-  const int h = 8;
-  std::vector<uint8_t> gray;
-  for (const int v : {0, 20, 29, 30, 40, 54, 55, 60, 100, 128, 149, 150, 151, 160, 202, 203, 210, 250, 255}) {
-    for (int r = 0; r < h; ++r) gray.insert(gray.end(), static_cast<size_t>(w), static_cast<uint8_t>(v));
-  }
-  const auto legacy = legacyBakeRows(w, h, gray);
-  const auto ttf = ttfBakeRows(w, h, gray);
-  EXPECT_EQ(0, memcmp(legacy.data(), ttf.data(), legacy.size()));
-}
-
-TEST(LegacyAtkinsonParityOnSampleImage, QuantizerBoundariesMatchTheLegacyThresholds) {
-  // Fresh-bake per-pixel picks: a fresh bake carries no error, so the
-  // adjusted value IS the source gray — the legacy cutoffs {30, 55, 150}
-  // and targets {15, 35, 90, 210} must show through exactly.
-  const auto pick = [](const uint8_t g) {
-    ttfimg::ToneBake4 bake(8);
-    return bake.tone(0, g);
+  auto lag1 = [](auto atWrapped, const long long total) {
+    const double mean = static_cast<double>(total) / (64 * 64);
+    double num = 0.0, den = 0.0;
+    for (int y = 0; y < 64; ++y) {
+      for (int x = 0; x < 64; ++x) {
+        const double a = static_cast<double>(ttfimg::kBlueNoise64[y][x]) - mean;
+        num += a * (static_cast<double>(atWrapped(y, x)) - mean);
+        den += a * a;
+      }
+    }
+    return num / den;
   };
-  EXPECT_EQ(pick(0), 0);
-  EXPECT_EQ(pick(29), 0);  // < 30
-  EXPECT_EQ(pick(30), 1);  // 30..54 → target 35
-  EXPECT_EQ(pick(54), 1);
-  EXPECT_EQ(pick(55), 2);  // 55..149 → target 90
-  EXPECT_EQ(pick(100), 2);
-  EXPECT_EQ(pick(149), 2);
-  EXPECT_EQ(pick(150), 3);  // >= 150 → target 210 (highlight headroom)
-  EXPECT_EQ(pick(203), 3);  // clean paper: no harsh snap below 203
-  EXPECT_EQ(pick(255), 3);
+  const double h = lag1([](int y, int x) { return ttfimg::kBlueNoise64[y][(x + 1) & 63]; }, 4096 * 127);
+  const double vCorr = lag1([](int y, int x) { return ttfimg::kBlueNoise64[(y + 1) & 63][x]; }, 4096 * 127);
+  EXPECT_LT(h, -0.10) << "horizontal lag-1 correlation";
+  EXPECT_LT(vCorr, -0.10) << "vertical lag-1 correlation";
+  // The wrap pairs ARE part of those walks: at(63, x)'s neighbor is
+  // at(0, x) through the &63 index, so a pattern with a tile-edge seam would
+  // push these correlations up. Assert the wrap rows directly too.
+  double wrapNum = 0.0;
+  for (int x = 0; x < 64; ++x) {
+    const double a = static_cast<double>(ttfimg::kBlueNoise64[63][x]) - 126.5625;
+    wrapNum += a * (static_cast<double>(ttfimg::kBlueNoise64[0][x]) - 126.5625);
+  }
+  EXPECT_LT(wrapNum / 64.0, 0.0) << "row 63 → 0 wrap must not correlate positively";
+}
+
+TEST(LinearLutBitExactAgainstFloatReference, All65536Pairs) {
+  // Exhaustive: for every gray g and noise value nz, the packed LUT entry
+  // quantizes exactly like the float reference s(g) > nz.
+  for (int g = 0; g < 256; ++g) {
+    const LutExpect expect = linearLightExpect(g);
+    const uint16_t entry = ttfimg::kBlueNoiseLinearLut[g];
+    ASSERT_EQ(entry >> 9, expect.k) << "gray " << g;
+    ASSERT_EQ(entry & 0x1FF, expect.thresh) << "gray " << g;
+    for (int nz = 0; nz < 256; ++nz) {
+      const int lutTone = (entry >> 9) + (nz < (entry & 0x1FFu) ? 1 : 0);
+      const double v = 255.0 * std::pow(g / 255.0, 2.2);
+      const double lv[4] = {0.0, 255.0 * std::pow(85.0 / 255.0, 2.2), 255.0 * std::pow(170.0 / 255.0, 2.2), 255.0};
+      int k = 0;
+      while (k < 2 && v >= lv[k + 1]) ++k;
+      const double s = (v - lv[k]) / (lv[k + 1] - lv[k]) * 256.0;
+      const int refTone = k + (s > static_cast<double>(nz) ? 1 : 0);
+      ASSERT_EQ(lutTone, refTone) << "gray " << g << " nz " << nz;
+    }
+  }
+}
+
+TEST(PaletteAnchorsAreSolidAndLinearRampIsMonotone, FullTilePerGray) {
+  // The four palette anchors bake 100% solid across a full 64x64 tile (zero
+  // speckle on exact palette tones and clean paper), and across g = 0..255
+  // the tile's reconstructed linear reflectance is monotonically
+  // non-decreasing, tracking (g/255)^2.2 within 1/240 of full scale (~the
+  // half-step of the widest panel interval).
+  const double lv[4] = {0.0, 255.0 * std::pow(85.0 / 255.0, 2.2), 255.0 * std::pow(170.0 / 255.0, 2.2), 255.0};
+  const int anchors[4] = {0, 85, 170, 255};
+  for (const int a : anchors) {
+    ttfimg::ToneBake4 bake(64);
+    ASSERT_TRUE(bake.ok());
+    int levelCount[4] = {0, 0, 0, 0};
+    for (int y = 0; y < 64; ++y) {
+      std::vector<uint8_t> grayRow(64, static_cast<uint8_t>(a));
+      std::vector<uint8_t> toneRow(64, 0);
+      bake.toneRow(grayRow.data(), toneRow.data());
+      for (const uint8_t t : toneRow) ++levelCount[t];
+    }
+    EXPECT_EQ(levelCount[a / 85], 64 * 64) << "anchor " << a << " not solid";
+  }
+  double prevMean = -1.0;
+  for (int g = 0; g <= 255; ++g) {
+    ttfimg::ToneBake4 bake(64);
+    ASSERT_TRUE(bake.ok());
+    double linearSum = 0.0;
+    for (int y = 0; y < 64; ++y) {
+      std::vector<uint8_t> grayRow(64, static_cast<uint8_t>(g));
+      std::vector<uint8_t> toneRow(64, 0);
+      bake.toneRow(grayRow.data(), toneRow.data());
+      for (const uint8_t t : toneRow) linearSum += lv[t];
+    }
+    const double mean = linearSum / (64 * 64);
+    EXPECT_GE(mean, prevMean) << "reflectance decreased at gray " << g;
+    prevMean = mean;
+    const double target = 255.0 * std::pow(g / 255.0, 2.2);
+    EXPECT_NEAR(mean, target, 255.0 / 240.0) << "gray " << g << " mean " << mean << " target " << target;
+  }
+}
+
+TEST(TiledToneRowMatchesScalarToneAcrossBoundaries, WidthsAndRowWraps) {
+  // toneRow() must be byte-identical to the scalar tone(x, gray) + nextRow()
+  // walk for every width (including the 64-pixel tile boundary and odd
+  // tails) and across more than two vertical 64-row wraps; resetError()
+  // restarts cleanly at row 0.
+  for (const int w : {1, 63, 64, 65, 128, 440, 480, 799}) {
+    const int rows = 150;
+    std::vector<uint8_t> gray(static_cast<size_t>(w) * rows);
+    for (int y = 0; y < rows; ++y) {
+      for (int x = 0; x < w; ++x) gray[static_cast<size_t>(y) * w + x] = static_cast<uint8_t>((x * 7 + y * 13) & 0xFF);
+    }
+    // Scalar reference.
+    std::vector<uint8_t> scalar(static_cast<size_t>(w) * rows);
+    {
+      ttfimg::ToneBake4 bake(w);
+      ASSERT_TRUE(bake.ok());
+      for (int y = 0; y < rows; ++y) {
+        for (int x = 0; x < w; ++x) scalar[static_cast<size_t>(y) * w + x] = bake.tone(x, gray[static_cast<size_t>(y) * w + x]);
+        bake.nextRow();
+      }
+    }
+    // Tiled production path.
+    std::vector<uint8_t> tiled(static_cast<size_t>(w) * rows);
+    {
+      ttfimg::ToneBake4 bake(w);
+      ASSERT_TRUE(bake.ok());
+      std::vector<uint8_t> rowBuf(static_cast<size_t>(w));
+      for (int y = 0; y < rows; ++y) {
+        bake.toneRow(&gray[static_cast<size_t>(y) * w], rowBuf.data());
+        std::copy(rowBuf.begin(), rowBuf.end(), tiled.begin() + static_cast<std::ptrdiff_t>(y) * w);
+      }
+    }
+    EXPECT_EQ(0, memcmp(scalar.data(), tiled.data(), scalar.size())) << "width " << w;
+    // resetError restart: after rows were baked, a reset bake equals a fresh
+    // one on the same rows.
+    ttfimg::ToneBake4 restarted(w);
+    ASSERT_TRUE(restarted.ok());
+    std::vector<uint8_t> rowBuf(static_cast<size_t>(w));
+    restarted.toneRow(&gray[0], rowBuf.data());
+    restarted.toneRow(&gray[static_cast<size_t>(w)], rowBuf.data());
+    restarted.resetError();
+    std::vector<uint8_t> again(static_cast<size_t>(w));
+    for (int x = 0; x < w; ++x) again[x] = restarted.tone(x, gray[x]);
+    EXPECT_EQ(0, memcmp(again.data(), &scalar[0], again.size())) << "width " << w << " reset row";
+  }
 }
 
 TEST(ToneBake4, IsDeterministicAcrossRuns) {
@@ -440,24 +529,39 @@ TEST(ToneBake4, ErrorStateResetsForTheRepaintFallback) {
   EXPECT_EQ(0, memcmp(row, row2, sizeof(row)));
 }
 
-TEST(ToneBake4, FlatFieldsBakeTheirLegacyLevel) {
-  // Legacy character: a flat field far from every cutoff carries (almost)
-  // no diffusion error and bakes SOLID; the woven dither only appears where
-  // |adjusted − target| accumulates past the >>3 shift. Pinned against the
-  // legacy ditherer itself — parity makes the reference authoritative.
-  for (const int v : {0, 20, 40, 60, 100, 128, 160, 203, 250}) {
-    const int w = 96;
-    const int h = 24;
+TEST(ToneBake4, FlatFieldsDitherTheirLinearLightDuty) {
+  // Ordered-dither character: only the four palette anchors bake solid;
+  // every other flat field dithers its bracketing pair at the exact
+  // linear-light duty thresh(g)/256 (full 64x64 tiles), and the emitted
+  // linear-light mean tracks the input's (g/255)^2.2 reflectance within a
+  // single threshold-quantization step.
+  const double lv[4] = {0.0, 255.0 * std::pow(85.0 / 255.0, 2.2), 255.0 * std::pow(170.0 / 255.0, 2.2), 255.0};
+  for (const int v : {0, 20, 40, 60, 85, 100, 128, 160, 170, 203, 250, 255}) {
+    const int w = 128;
+    const int h = 64;
     std::vector<uint8_t> gray(static_cast<size_t>(w) * h, static_cast<uint8_t>(v));
-    const auto legacy = legacyBakeRows(w, h, gray);
     const auto ttf = ttfBakeRows(w, h, gray);
-    ASSERT_EQ(0, memcmp(legacy.data(), ttf.data(), legacy.size())) << "gray " << v;
-    // Tone-correctness: the emitted mean tracks the input within the
-    // legacy quantizer's own span (level target ± accumulated diffusion).
-    long long emitted = 0;
-    for (const uint8_t t : legacy) emitted += t == 0 ? 15 : (t == 1 ? 35 : (t == 2 ? 90 : 210));
-    const double mean = static_cast<double>(emitted) / legacy.size();
-    EXPECT_NEAR(mean, static_cast<double>(v), 45.0) << "gray " << v << " mean emitted " << mean;
+    const LutExpect expect = linearLightExpect(v);
+    if (expect.thresh == 0 || expect.thresh == 256) {
+      // Anchor: one solid level.
+      const uint8_t solid = static_cast<uint8_t>(expect.k + (expect.thresh == 256 ? 1 : 0));
+      int others = 0;
+      for (const uint8_t t : ttf) {
+        if (t != solid) ++others;
+      }
+      EXPECT_EQ(others, 0) << "gray " << v << " anchor not solid";
+    } else {
+      int nLow = 0;
+      for (const uint8_t t : ttf) {
+        if (t == expect.k) ++nLow;
+      }
+      EXPECT_EQ(nLow, (256 - expect.thresh) * (w * h) / 256) << "gray " << v << " duty";
+    }
+    double linearSum = 0.0;
+    for (const uint8_t t : ttf) linearSum += lv[t];
+    const double mean = linearSum / ttf.size();
+    const double target = 255.0 * std::pow(v / 255.0, 2.2);
+    EXPECT_NEAR(mean, target, 1.1) << "gray " << v << " mean " << mean << " target " << target;
   }
 }
 

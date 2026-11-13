@@ -25,9 +25,10 @@ namespace {
 // construction.
 void paintTtfPageImages(const freeink::book::Page& page, freeink::book::TtfBookRuntime& ttf, GfxRenderer& renderer) {
   const bool qualityTone = SETTINGS.imageDecodeQuality != 0;
-  // Picture detail (DPID design §Contract 4): CLAHE gate rides with the
-  // quality tone policy.
-  const bool clahe = qualityTone && SETTINGS.pictureDetail != 0;
+  // The Sharp/Enhanced CLAHE selector was removed with the linear-light
+  // blue-noise bake (design 2026-11-13): one quality bake, DPID resize
+  // always on, CLAHE stage off.
+  const bool clahe = false;
   if (!qualityTone) {
     // Revert switch: the previous image paint path verbatim.
     const freeink::book::BookStatus st = freeink::book::PageRenderer::renderImages(

@@ -123,7 +123,7 @@ uint64_t cacheHash64(const ImageSpec& spec) {
   return hash;
 }
 
-char cacheRevisionLetter(const bool qualityTone, const bool clahe) { return qualityTone ? (clahe ? 'f' : 'e') : 'l'; }
+char cacheRevisionLetter(const bool qualityTone, const bool clahe) { return qualityTone ? (clahe ? 'h' : 'g') : 'l'; }
 
 CacheIdentity cacheIdentity(const ImageSpec& spec, const bool qualityTone, const bool clahe) {
   CacheIdentity id;
@@ -171,7 +171,13 @@ bool cacheNameFor(const ImageSpec& spec, const char* dir, const bool qualityTone
   // cutoffs {30,55,150}, targets {15,35,90,210}, non-serpentine 6/8 — and
   // the single-pass stream (no .g temp, no percentile stretch, no
   // post-resize sharpen), sweeping 'c'/'d' (never shipped outside PR #316
-  // review builds).
+  // review builds). 'g' (Sharp) and 'h' (Enhanced) are the linear-light
+  // blue-noise ordered bake (amendment 10, 2026-11-13): 64x64 toroidal
+  // void-and-cluster thresholds + the linear-light quantizer LUT — and the
+  // JPEG front end moved to JPEGDEC in the same landing (jpegdec-front
+  // amendment; different decoder IDCT output must not resurrect stale
+  // caches), sweeping 'e'/'f' (never shipped outside PR #316 review
+  // builds).
 
   // Full 64-bit hash in the name: a truncated identity would let two records
   // of the same dimensions and generation share one file, and the header

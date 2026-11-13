@@ -8,7 +8,7 @@
 // paths (SDK row render, converters, BMP row decoder) stay in
 // TtfImageEngine.cpp — they pull the render stack.
 
-#include <BitmapHelpers.h>  // the legacy AtkinsonDitherer (shared quantizer/diffusion)
+#include "BlueNoise64.h"
 
 #include <cstring>
 
@@ -30,53 +30,69 @@ constexpr bool absoluteGrayImageRoute(const bool pageHasImages, const bool quali
   return pageHasImages && qualityTone && !deviceIsX3 && controllerUc8279 && absoluteSupported;
 }
 
-// ToneBake4 (design 2026-11-08 §5.2; legacy-BMP parity amendment 9): the
-// quality path's 4-level tone bake is the EXACT pixel transfer of the legacy
-// engine's AtkinsonDitherer (lib/GfxRenderer/BitmapHelpers.h,
-// originalThresholds=false) — the bake the owner approved on the X4 Pro for
-// baseline EPUB illustrations (calm woven shading, clean paper highlights,
-// crisp anti-aliased type):
-//   - identity 0..255 luma — no histogram, no percentile stretch, no
-//     gamma/contrast LUT (the legacy USE_BRIGHTNESS=false contract),
-//   - cutoffs {30, 55, 150} and error targets {15, 35, 90, 210} (target 210
-//     keeps highlight headroom, so paper tapers to clean white without a
-//     harsh snap or highlight speckle),
-//   - deterministic left-to-right 6/8 Atkinson diffusion — (adjusted −
-//     target) >> 3 into right, right+1, below-left, below, below-right and
-//     two rows down — over three int16 error rows of width+4, zero noise,
-//     zero serpentine.
-// The math is SHARED, not re-implemented (DRY): the bake embeds the legacy
-// ditherer class itself, and the parity pin test bakes synthetic reference
-// pages through both and asserts byte-identical 2-bit output. Single-pass by
+// ToneBake4 (design 2026-11-08 §5.2; linear-light blue-noise amendment 10):
+// the quality path's 4-level tone bake is 64x64 toroidal Void-and-Cluster
+// blue-noise ORDERED dithering in linear light — the bake that won the
+// owner's 293-round blind A/B tournament over the corpus (11-0 vs the
+// Atkinson bake, 8-0 vs the legacy engine):
+//   - linear-light threshold: source gray g → v = 255·(g/255)^2.2 against
+//     the panel's 4 nominal reflectances {0, 85, 170, 255} — exactly the
+//     levels the panel actually renders, so the bake's mean reflectance is
+//     the image's mean reflectance (no tone-mapping cutoffs, no error
+//     targets, no diffusion error state at all),
+//   - the ordered threshold is kBlueNoise64[y & 63][x & 63]: stateless per
+//     pixel, fully deterministic, seamless at 64-pixel boundaries,
+//   - quantization through kBlueNoiseLinearLut: zero float, zero divide,
+//     zero branch on the hot path.
+// Zero-heap and sizeof-bounded (the vtable pointer + width + row counter);
+// the whole bake lives on the caller's stack frame. Single-pass by
 // construction: no whole-image statistics precede row 0, so the decode
 // streams destination rows straight through toneRow into the cache writer
-// and the paint (amendment 9 — the .g SD temp and the percentile two-phase
-// bake of the pre-parity iterations are gone). Error state still runs
-// row-sequentially over IMAGE-LOCAL columns, so a completed .pxc encodes the
-// image's tone alone and worker/foreground/placement parity holds by
-// construction.
+// and the paint. Rows arrive in raster order over image-local columns, so
+// worker/foreground/placement parity holds by construction — and
+// resetError() is a no-op kept for the re-decode paint fallback contract.
 struct ToneBake4 : ToneBaker {
-  explicit ToneBake4(const int w) : width(w), ditherer_(w) {}
-  bool ok() const { return ditherer_.isValid(); }
-  // Error-state reset for the re-decode paint fallbacks (storage/decode
-  // failure doctrine): a fallback repaint must start from a clean plane —
-  // rows may have been baked before the failure.
-  void resetError() { ditherer_.reset(); }
-  // x is image-local (0-based). Returns the quantized 4-level tone.
-  uint8_t tone(const int x, const int gray) override { return ditherer_.processPixel(gray, x); }
-  void nextRow() override { ditherer_.nextRow(); }
-  // Row bake: visits the row left-to-right (the legacy scan — every row,
-  // non-serpentine) and advances the error state itself.
+  explicit ToneBake4(const int w) noexcept : width(w) {}
+  bool ok() const noexcept { return width > 0; }
+  // Stateless bake: nothing accumulates, so the re-decode paint fallback's
+  // clean-plane requirement holds without touching state.
+  void resetError() noexcept { row_ = 0; }
+  // x is image-local (0-based; masked unsigned so x < 0 is well-defined).
+  // Returns the quantized 4-level tone.
+  uint8_t tone(const int x, const int gray) override {
+    const uint8_t g = static_cast<uint8_t>(gray < 0 ? 0 : (gray > 255 ? 255 : gray));
+    const uint8_t nz = kBlueNoise64[static_cast<unsigned>(row_) & 63u][static_cast<unsigned>(x) & 63u];
+    return blueNoiseQuantize(g, nz);
+  }
+  void nextRow() override { ++row_; }
+  // Row bake: the ESP32-S3 fast path — hoist the 64-byte noise row slice
+  // (two 32B L1 cache lines) and step in 64-pixel tiles so the inner loop
+  // has no (x & 63) masking and no loop-carried dependencies. Advances the
+  // row itself (one call per row replaces the per-pixel loop + nextRow()).
   void toneRow(const uint8_t* gray, uint8_t* tones) override {
-    if (!ok() || width <= 0) return;
-    for (int x = 0; x < width; ++x) tones[x] = ditherer_.processPixel(gray[x], x);
-    ditherer_.nextRow();
+    if (width <= 0) return;
+    const uint8_t* nz = kBlueNoise64[static_cast<unsigned>(row_) & 63u];
+    int x = 0;
+    for (; x + 64 <= width; x += 64) {
+      const uint8_t* gTile = gray + x;
+      uint8_t* tTile = tones + x;
+      for (int i = 0; i < 64; ++i) {
+        const uint16_t entry = kBlueNoiseLinearLut[gTile[i]];
+        tTile[i] = static_cast<uint8_t>((entry >> 9) + (static_cast<uint16_t>(nz[i]) < (entry & 0x1FFu)));
+      }
+    }
+    for (int i = 0; x < width; ++x, ++i) {
+      const uint16_t entry = kBlueNoiseLinearLut[gray[x]];
+      tones[x] = static_cast<uint8_t>((entry >> 9) + (static_cast<uint16_t>(nz[i]) < (entry & 0x1FFu)));
+    }
+    ++row_;
   }
   const int width;
 
  private:
-  ::AtkinsonDitherer ditherer_;
+  int row_ = 0;  // count of toneRow()/nextRow() completions; masked & 63
 };
+static_assert(sizeof(ToneBake4) <= 32, "the bake must stay a stack-sized value (zero heap)");
 
 // Retained verbatim for A/B on device and as the revert switch's reference
 // bake (design 2026-11-08 §5.2); the quality decodes use ToneBake4.

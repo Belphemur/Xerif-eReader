@@ -265,9 +265,10 @@ bool ImagePredecodeWorker::abortTrampoline(void* ctx) {
 
 void ImagePredecodeWorker::processJob(const ttfimg::ImageSpec& spec) {
   const bool qualityTone = SETTINGS.imageDecodeQuality != 0;  // §5.6 revert switch
-  // Picture detail (DPID design §Contract 4): CLAHE gate rides with the
-  // quality tone policy — only meaningful when the quality bake runs.
-  const bool clahe = qualityTone && SETTINGS.pictureDetail != 0;
+  // The Sharp/Enhanced CLAHE selector was removed with the linear-light
+  // blue-noise bake (design 2026-11-13): one quality bake, DPID resize
+  // always on, CLAHE stage off.
+  const bool clahe = false;
   char cachePath[256];
   if (!ttfimg::cacheNameFor(spec, cacheDir_, qualityTone, clahe, cachePath, sizeof(cachePath))) {
     LOG_DBG("IPR", "Cache path overflow: %s", spec.href);

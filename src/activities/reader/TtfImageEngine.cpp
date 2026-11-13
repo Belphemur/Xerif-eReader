@@ -292,7 +292,7 @@ struct DpidCtx {
   BakeSinkCtx* sink = nullptr;  // the single-pass bake sink (tone/cache/paint)
   const ttfimg::ImageSpec* spec = nullptr;
   const freeink::book::ImageInfo* info = nullptr;  // probe result (progressive frame dims)
-  bool clahe = false;                              // pictureDetail == Enhanced
+  bool clahe = false;  // CLAHE stage off — see QuickPageRelayout.cpp (design 2026-11-13)
   bool attached = false;                           // dims hook ran; begin() succeeded
   bool dimsFired = false;                          // the source dims hook ran (GIF converter)
   // True when the decode's ladder stepped down from the requested rung —
