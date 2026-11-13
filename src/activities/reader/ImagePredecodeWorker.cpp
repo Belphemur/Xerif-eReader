@@ -158,12 +158,16 @@ bool ImagePredecodeWorker::enqueue(const ttfimg::ImageSpec& spec) {
         other.w == spec.w && other.h == spec.h) {
       // Refresh in place with the authoritative sighting (fresh generation —
       // dropping the new sighting would leave a record the dequeue discards
-      // as stale), but keep the HIGHER deferral count: the sighting's fresh
-      // record would reset a deferred job's retry budget on every re-sight,
-      // letting an image under steady memory pressure defer forever
-      // (review 2026-11-11).
+      // as stale), but keep the HIGHER deferral count WITHIN one generation:
+      // the sighting's fresh record would reset a deferred job's retry budget
+      // on every re-sight, letting an image under steady memory pressure
+      // defer forever (review 2026-11-11). A generation change replaces the
+      // job entirely — its spent budget belongs to the old layout, so the
+      // refreshed record starts from its own sighting's count (review
+      // 2026-11-13).
       ttfimg::ImageSpec updated = spec;
-      if (other.deferrals > updated.deferrals) updated.deferrals = other.deferrals;
+      if (other.generation == updated.generation && other.deferrals > updated.deferrals)
+        updated.deferrals = other.deferrals;
       other = updated;
       refreshed = true;
       break;
