@@ -3042,14 +3042,18 @@ void EpubReaderActivity::renderBook() {
   orientedMarginLeft += SETTINGS.screenMargin;
   orientedMarginRight += SETTINGS.screenMargin;
 
-  const uint8_t statusBarHeight = UITheme::getInstance().getStatusBarHeight();
+  const uint8_t statusBarHeight = UITheme::getReaderStatusBarHeight();
 
   if (automaticPageTurnActive &&
       (statusBarHeight == 0 || statusBarHeight == UITheme::getInstance().getProgressBarHeight())) {
     orientedMarginBottom +=
         SETTINGS.screenMargin + statusBarHeight + UITheme::getInstance().getMetrics().statusBarVerticalMargin;
   } else {
-    orientedMarginBottom += SETTINGS.screenMargin + statusBarHeight;
+    // statusBarOffsetY lowers the status line toward the edge; the text follows it down.
+    const int statusLane = SETTINGS.statusBarSpec().textLaneVisible(true)
+                               ? std::max(0, statusBarHeight - BoardConfig::ACTIVE.statusBarOffsetY)
+                               : statusBarHeight;
+    orientedMarginBottom += SETTINGS.screenMargin + statusLane;
   }
 
   const uint16_t viewportWidth = renderer.getScreenWidth() - orientedMarginLeft - orientedMarginRight;
@@ -5799,6 +5803,7 @@ void EpubReaderActivity::rememberCurrentContentOffset() {
 void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int orientedMarginTop,
                                         const int orientedMarginRight, const int orientedMarginBottom,
                                         const int orientedMarginLeft) {
+  const ReaderUtils::ReaderRefreshScope readerRefresh;
   const auto t0 = millis();
   const int fontId = SETTINGS.getReaderFontId();
   ImageBlock::clearRenderFailures();
@@ -5846,9 +5851,10 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const bool needsTextGrayscale = SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH;
 #endif
   const bool needsAnyGrayscale = needsTextGrayscale || (pageHasImages && !BoardConfig::isEegoA4());
-  const bool absoluteImageGrayscale = pageHasImages && !gpio.deviceIsX3() &&
-                                      display.getController() == HalDisplay::Controller::UC8279 &&
-                                      renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
+  const bool absoluteImageGrayscale =
+      pageHasImages && !gpio.deviceIsX3() &&
+      (display.getController() == HalDisplay::Controller::UC8279 || BoardConfig::isPicco()) &&
+      renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
   const auto grayscale = renderer.grayscaleCapabilities(absoluteImageGrayscale ? HalDisplay::GrayscaleMode::Absolute
                                                                                : HalDisplay::GrayscaleMode::Overlay);
   const bool tiledGrayscale = needsAnyGrayscale && grayscale.stripUploads;
@@ -5900,7 +5906,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
       return;
     }
-    LOG_DBG("ERS", "UC8279 image page: absolute quality waveform");
+    LOG_DBG("ERS", "Image page: absolute grayscale waveform");
     pagesUntilFullRefresh = 1;
   } else if (pageHasImages) {
     // Image pages use one base refresh before the grayscale pass. FAST leaves
@@ -5997,7 +6003,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       for (int y = 0; y < gh; y += STRIP_ROWS) {
         const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
         renderer.beginStripTarget(buf + static_cast<size_t>(y) * gwBytes, y, rows);
-        renderer.clearScreen(0x00);
+        renderer.clearScreen(absoluteImageGrayscale ? 0xFF : 0x00);
         renderGrayscalePass();
         renderer.endStripTarget();
       }
@@ -6037,8 +6043,8 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       }
       const auto tGrayWrite = millis();
 
-      renderer.setRenderMode(GfxRenderer::BW);
       renderer.displayGrayBuffer();
+      renderer.setRenderMode(GfxRenderer::BW);
       const auto tGrayDisplay = millis();
 
       renderer.cleanupGrayscaleWithFrameBuffer();
@@ -6097,12 +6103,13 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
                 "gray_display=%lums cleanup=%lums total=%lums",
                 tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tGrayBoth - tDisplay,
                 tGrayDisplay - tGrayBoth, tCleanup - tGrayDisplay, tEnd - t0);
+
       } else {
         renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
         for (int y = 0; y < gh; y += STRIP_ROWS) {
           const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
           renderer.beginStripTarget(scratch.get(), y, rows);
-          renderer.clearScreen(0x00);
+          renderer.clearScreen(absoluteImageGrayscale ? 0xFF : 0x00);
           renderGrayscalePass();
           renderer.endStripTarget();
           renderer.writeGrayscalePlaneStrip(true, scratch.get(), y, rows);
@@ -6113,15 +6120,15 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
         for (int y = 0; y < gh; y += STRIP_ROWS) {
           const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
           renderer.beginStripTarget(scratch.get(), y, rows);
-          renderer.clearScreen(0x00);
+          renderer.clearScreen(absoluteImageGrayscale ? 0xFF : 0x00);
           renderGrayscalePass();
           renderer.endStripTarget();
           renderer.writeGrayscalePlaneStrip(false, scratch.get(), y, rows);
         }
         const auto tGrayMsb = millis();
 
-        renderer.setRenderMode(GfxRenderer::BW);
         renderer.displayGrayBuffer();
+        renderer.setRenderMode(GfxRenderer::BW);
         const auto tGrayDisplay = millis();
 
         renderer.cleanupGrayscaleWithFrameBuffer();
@@ -6154,7 +6161,10 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
 
       if (!renderer.storeBwBuffer()) {
         LOG_ERR("ERS", "Failed to store BW buffer for grayscale render; skipping grayscale this page");
-        if (absoluteImageGrayscale) renderer.setRenderMode(GfxRenderer::BW);
+        if (absoluteImageGrayscale) {
+          renderer.setRenderMode(GfxRenderer::BW);
+          ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
+        }
 #ifdef BOOK_PROFILE
         logOverflowSummary();
 #endif
