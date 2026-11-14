@@ -35,8 +35,10 @@ ResumeBind bindPendingEntry(const OtaDevVersionEntry* entries, int count, const 
                             const uint8_t digest[32], int* outIndex);
 
 // Picker/progress-row label for a manifest entry, preferred order:
-//  - dev builds: the stamped firmware version (build identity), then the
-//    compact "dev <sha>" label, then the raw asset name;
+//  - dev builds: "<base>-<sha>" — no -dev segment at all (owner decision
+//    2026-11-14, §22: the full stamp overflowed the portrait row and forced
+//    the compact date out; display-only), then the compact "dev <sha>"
+//    label, then the raw asset name;
 //  - PR builds: a "pr <num> <sha>" label ALWAYS wins over the version — the
 //    PR number is what distinguishes a PR entry from a develop build at a
 //    glance (steer 2026-11-09); older manifests without a parseable name

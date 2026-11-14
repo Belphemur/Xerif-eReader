@@ -276,6 +276,17 @@ void entryLabel(const OtaDevVersionEntry& entry, char* out, size_t cap) {
     return;
   }
   if (entry.version[0]) {
+    // Owner decision 2026-11-14: dev rows show "<base>-<sha>" — no -dev
+    // segment at all. The full stamp pushed the label past the portrait row
+    // and forced the compact date out (§22); the sha is the build identity
+    // the stamp guarantees. Display-only: the stamp itself, the manifest,
+    // and the asset names are unchanged.
+    DevStamp stamp;
+    if (parseDevStamp(entry.version, &stamp)) {
+      snprintf(out, cap, "%.*s-%.*s", static_cast<int>(stamp.baseLen), stamp.base, static_cast<int>(stamp.shaLen),
+               stamp.sha);
+      return;
+    }
     snprintf(out, cap, "%s", entry.version);
   } else if (!devNameLabel(entry.name, out, cap)) {
     snprintf(out, cap, "%s", entry.name);
