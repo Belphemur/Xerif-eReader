@@ -37,3 +37,6 @@ flake.*
 # CTest runtime artifacts
 test/Testing/Temporary/
 .cppcheck-build/
+
+# CTest scratch artifacts at the repo root
+/Testing/
