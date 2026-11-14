@@ -47,7 +47,8 @@ inline uint32_t decodeCp(const char* text, const uint16_t to, uint16_t& i) {
 
 }  // namespace
 
-bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectData& out) {
+bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectData& out,
+                            const int16_t characterSpacingPx, const int16_t wordSpacingPx) {
   out.boxes.clear();
   out.footnotes.clear();
 
@@ -111,15 +112,19 @@ bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectDat
   out.boxes.reserve(tokenCount);
   char* write = reinterpret_cast<char*>(arena.get());
 
-  // Width of a byte range inside a run: plain advance walk with kerning, the
-  // same convention PagePaint uses when it draws the run.
-  auto measure = [&fonts](const char* text, uint16_t from, uint16_t to, uint16_t sizePx, uint8_t styleFlags) {
+  // Width of a byte range inside a run: advance + kerning + the reader's
+  // spacing knobs replayed exactly like the paint walk (PagePaint's spacingFor:
+  // word spacing rides the space glyph, character spacing everything else), so
+  // token geometry matches painted glyph positions. Justify slack lives in
+  // run.x and needs no replay here.
+  auto measure = [&](const char* text, uint16_t from, uint16_t to, uint16_t sizePx, uint8_t styleFlags) {
     int32_t w = 0;
     uint32_t prev = 0;
     for (uint16_t i = from; i < to;) {
       const uint32_t cp = decodeCp(text, to, i);
       if (prev != 0) w += fonts.kerning(prev, cp, sizePx, styleFlags);
       w += fonts.advance(cp, sizePx, styleFlags);
+      w += cp == ' ' ? wordSpacingPx : characterSpacingPx;
       prev = cp;
     }
     return w;
@@ -153,7 +158,6 @@ bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectDat
     }
     penX += measure(run.text, measuredTo, token.start, run.sizePx, run.styleFlags);
     measuredTo = token.start;
-
     // Selection group: a continuation head joins the carried group; any
     // other token starts a fresh logical word. A pairing mismatch (head
     // without carry, carry without head — neither should happen) leaves the

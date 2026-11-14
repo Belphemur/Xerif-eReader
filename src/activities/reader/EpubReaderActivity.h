@@ -243,6 +243,23 @@ class EpubReaderActivity final : public ReaderActivity {
   BookReadingStats achievementStatsPreview(uint32_t* pendingReadingSeconds = nullptr) const;
 #endif
 
+  // Oriented content margins in screen pixels (oriented viewable TRBL +
+  // screen margin + status-bar/auto-turn bottom rule) — the box both render
+  // engines paint into.
+  struct ContentMargins {
+    int top = 0;
+    int right = 0;
+    int bottom = 0;
+    int left = 0;
+  };
+  // The content viewport the CURRENT render was built for. Each render path
+  // calls it on its layout pass (renderBook() legacy, renderBookTtf() TTF);
+  // clip anchoring and the render-spec signature read the members. One
+  // arithmetic block for both engines so they cannot drift apart. Returns the
+  // margins it used (legacy render paints through them; TTF lays out from
+  // makeLayoutParams).
+  ContentMargins assignBuildViewport();
+
   uint16_t buildViewportWidth = 0;
   uint16_t buildViewportHeight = 0;
   bool partialRebuildStartFailed = false;

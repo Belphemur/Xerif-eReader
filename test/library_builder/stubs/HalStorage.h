@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+inline constexpr int O_RDONLY = 0;
 inline constexpr int O_WRONLY = 1, O_CREAT = 2, O_TRUNC = 4, O_APPEND = 8, O_RDWR = 16, O_AT_END = 32;
 
 namespace fake {
@@ -158,12 +159,20 @@ class HalFile {
   int available() const { return node ? static_cast<int>(node->bytes.size() - std::min(pos, node->bytes.size())) : -1; }
   size_t size() const { return fileSize(); }
   void flush() {}
+  // Parity with the real HalFile contract: completion of a write batch.
+  bool sync() { return true; }
   bool truncate(const size_t size) {
     if (!node || fake::fail(fake::failTruncate) || size > node->bytes.size()) return false;
     node->bytes.resize(size);
     pos = std::min(pos, size);
     return true;
   }
+  // Single-byte read (HalFile stream convention).
+  int read() {
+    uint8_t byte = 0;
+    return read(&byte, 1) == 1 ? byte : -1;
+  }
+  bool write(uint8_t data) { return write(&data, 1) == 1; }
   int read(void* out, size_t size) {
     fake::reads++;
     if (size == 0) return 0;
