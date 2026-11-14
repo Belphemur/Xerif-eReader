@@ -134,10 +134,11 @@ TEST(DevOtaPolicyLabel, PrEntriesLeadWithThePrNumber) {
 TEST(DevOtaPolicyLabel, PrLabelFallsBackToVersionWhenNameUnparseable) {
   OtaDevVersionEntry e{};
   strncpy(e.name, "custom-asset.bin", sizeof(e.name) - 1);
+  // A parseable stamp version falls to the dev rules — the §22 short form.
   strncpy(e.version, "2.15.0-dev-772d2c5", sizeof(e.version) - 1);
   char label[48] = {};
   dev_ota::entryLabel(e, label, sizeof(label));
-  EXPECT_STREQ(label, "2.15.0-dev-772d2c5");
+  EXPECT_STREQ(label, "2.15.0-772d2c5");
 }
 
 TEST(DevOtaPolicyLabel, DevEntryPrefersVersionThenCompactTag) {
@@ -147,10 +148,52 @@ TEST(DevOtaPolicyLabel, DevEntryPrefersVersionThenCompactTag) {
   dev_ota::entryLabel(e, label, sizeof(label));
   EXPECT_STREQ(label, "dev af2169b62e08");  // unstamped, older manifest
 
+  // §22 (owner decision 2026-11-14): a stamped dev version renders as
+  // "<base>-<sha>" — no -dev segment at all, in the DISPLAY only.
   strncpy(e.version, "2.15.0-dev-develop-af2169b6", sizeof(e.version) - 1);
   dev_ota::entryLabel(e, label, sizeof(label));
-  EXPECT_STREQ(label, "2.15.0-dev-develop-af2169b6");
+  EXPECT_STREQ(label, "2.15.0-af2169b6");
+
+  // fit_version's own branch-dropped stamp shortens the same way.
+  strncpy(e.version, "2.16.1-dev-f4de183b", sizeof(e.version) - 1);
+  dev_ota::entryLabel(e, label, sizeof(label));
+  EXPECT_STREQ(label, "2.16.1-f4de183b");
+
+  ASSERT_STREQ(strstr(label, "dev"), nullptr) << "the short display form never carries a dev token";
+
+  // Garbage/unstamped versions print verbatim — never a placeholder.
+  strncpy(e.version, "6671d0b", sizeof(e.version) - 1);
+  dev_ota::entryLabel(e, label, sizeof(label));
+  EXPECT_STREQ(label, "6671d0b");
+
+  // Branch-dropped-shaped garbage tail (non-hex) stays verbatim too.
+  strncpy(e.version, "2.16.1-dev-develop-notash", sizeof(e.version) - 1);
+  dev_ota::entryLabel(e, label, sizeof(label));
+  EXPECT_STREQ(label, "2.16.1-dev-develop-notash");
 }
+
+TEST(DevOtaPolicyLabel, ShortDevLabelFitsBesideTheCompactDate) {
+  // §22 fit arithmetic at the real UI_12 medium metrics the picker renders
+  // with (DevOtaActivity render comment: a 28-char label measures 352 px,
+  // the compact date 132 px, portrait row usable width 440 px). The short
+  // display form (base + sha, branch dropped) must leave room for the
+  // right-aligned date plus the 4 px gap guard.
+  OtaDevVersionEntry e{};
+  strncpy(e.name, "xerif-dev-f4de183b-x4pro.bin", sizeof(e.name) - 1);
+  strncpy(e.version, "2.16.1-dev-develop-f4de183b", sizeof(e.version) - 1);
+  char label[48] = {};
+  dev_ota::entryLabel(e, label, sizeof(label));
+  ASSERT_STREQ(label, "2.16.1-f4de183b");
+
+  constexpr double kUi12PxPerChar = 352.0 / 28.0;
+  const double labelPx = strlen(label) * kUi12PxPerChar;
+  const char date[] = "11-14 18:58";  // compactDevDate shape: 11 chars
+  const double datePx = strlen(date) * kUi12PxPerChar;
+  EXPECT_LE(labelPx + datePx + 4, 440.0);
+}
+
+// (entryLabel's §22 display-shape tests live above; UnrecognizedAssetShowsRawName
+// covers the no-version verbatim fallback.)
 
 TEST(DevOtaPolicyLabel, UnrecognizedAssetShowsRawName) {
   OtaDevVersionEntry e{};
@@ -416,6 +459,18 @@ TEST(DevOtaPolicySlotStamp, GrammarDecodesBaseBranchSha) {
   EXPECT_EQ(dropped.branch, nullptr);
   EXPECT_EQ(dropped.shaLen, 7);
   EXPECT_EQ(strncmp(dropped.sha, "9d9494e", 7), 0);
+}
+
+TEST(DevOtaPolicySlotStamp, SlotRowValueKeepsTheFullStampShapes) {
+  // §22 regression pin: the display-only label change must not leak into
+  // the slot chooser — its shapes are governed by §20 and keep the branch
+  // whenever the row is wide enough.
+  char out[64]{};
+  int num = 0;
+  dev_ota::slotRowValue("2.16.1-dev-develop-f4de183b", nullptr, 0, stubMeasure, nullptr, 100000, nullptr, num, out,
+                        sizeof(out));
+  EXPECT_STREQ(out, "2.16.1-dev-develop-f4de183b");
+  EXPECT_EQ(num, -1);
 }
 
 TEST(DevOtaPolicySlotStamp, PrCrossReferenceRendersThePickerBadge) {

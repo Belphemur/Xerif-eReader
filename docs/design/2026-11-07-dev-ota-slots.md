@@ -579,3 +579,37 @@ defects and one contract hardening:
 
 Pinned in `DevOtaPolicyResumeRoute` (kind × slot matrix: worker
 completions, DevChannel re-entry, §16 stale).
+
+### 22. Dev picker rows show base + build sha, no -dev segment (2026-11-14)
+
+**Decision (owner photo report, X4 Pro).** The dev picker's rows rendered
+the full manifest version string (`2.16.1-dev-develop-f4de183b`, 27 chars)
+in body font, and the compact local date was then dropped by the row fit
+check in `DevOtaActivity` (§12's arithmetic: a 28-char label at 352 px plus
+the 132 px date cannot both fit a 440 px portrait row — "the version
+wins"). The build instant was invisible on every recent develop row.
+
+**Change (display-only).** For a dev (non-PR) entry whose version parses
+as a stamp (`parseDevStamp`, the one §20 grammar), `entryLabel` now emits
+the short display form: base + `-` + the trailing sha, with NO `-dev`
+segment at all (`2.16.1-f4de183b`; owner correction 2026-11-14). The
+branch and the `-dev-` marker are dropped from the display; the sha is
+the build identity the stamp guarantees. PR entries keep their
+`pr <num> <sha>` badge unchanged (`entryLabel` checks the PR name first,
+as before), and unrecognized or unstamped versions keep the verbatim
+fallback. The manifest, the asset names, and the image stamps are
+untouched; §20's slot chooser (`slotRowValue`) keeps its own fit-driven
+shapes and still shows the full stamp when the row is wide enough.
+
+**Fit note.** The typical develop stamp shortens to 15 chars
+(`2.16.1-f4de183b`), which at the §12 UI_12 medium metrics
+(~12.6 px/char) measures ~189 px; with the 11-char compact date
+(~139 px) plus the 4 px gap guard the row needs ~332 px of the 440 px
+usable width — both fit. A pathological long-base/long-sha stamp can
+still overflow and lose the date; that remains the render site's existing
+fit guard (label wins, as documented there), and no render-site code
+changed.
+
+Pinned in `DevOtaPolicyLabel` (short form, fit arithmetic at the real
+metrics, PR badge, verbatim fallbacks, and the §20 `slotRowValue`
+regression pin).
