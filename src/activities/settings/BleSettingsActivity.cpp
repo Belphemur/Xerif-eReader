@@ -60,6 +60,10 @@ void BleSettingsActivity::loop() {
   // Change edge: captures the loop task after pairing/link service processing,
   // which onEnter() cannot observe.
   logLoopTaskHwm("ble_pair_service");
+  // A scan finds devices one at a time, and each fast repaint drives the
+  // screen's black pixels again; status repaints come at most every 5 s.
+  if (millis() - lastStatusRepaintMs < 5000) return;
+  lastStatusRepaintMs = millis();
   refresh();
   requestUpdate();
 }
