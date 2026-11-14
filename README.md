@@ -92,10 +92,17 @@ upstream and periodically synced from it.
 - **Dictionary on long-press or touch.** Long-press a word (or tap it on touch devices)
   to get the definition via [StarDict](docs/dictionary.md). No menu detour. The
   long-press action is configurable (dictionary, footnote, …).
+- **Word highlight on long-press** (TTF fonts): the pressed word is drawn
+  inverted in place, so you always see exactly which word the long-press
+  action will act on before it opens.
 - **Time left in the current chapter.** A live "47 min left" estimate in the status bar,
   computed from your real reading speed (220 wpm baseline, 15-sample trimmed mean,
   80–900 wpm clamps — Kindle's algorithm). Show it left, right, or hide it.
 - **Formats**: native handling for `.epub`, `.xtc/.xtch`, `.txt`, and `.bmp`.
+- **Image viewer built in.** JPEG and PNG images from the file browser render
+  with a dedicated e-ink pipeline: detail-preserving downscale and edge-aware
+  processing that keeps text and line art sharp, plus blue-noise dithering for
+  smooth grayscale. Full-quality page images, no washed-out screenshots.
 - **Tilt page turn** (X3 and Sticky).
 
 ### 📊 Reading statistics
@@ -208,6 +215,7 @@ releases. All fonts carry the SIL Open Font License (OFL).
 ### 📡 Wireless
 
 - File transfer web UI and WebSocket fast uploads
+- Browse Files shows a **Show File Extensions** setting to toggle extensions on or off in the file browser
 - EPUB Optimizer
 - Web settings UI/API (edit many device settings from the browser)
 - WebDAV handler
