@@ -185,9 +185,12 @@ TEST(DevOtaPolicyLabel, ShortDevLabelFitsBesideTheCompactDate) {
   dev_ota::entryLabel(e, label, sizeof(label));
   ASSERT_STREQ(label, "2.16.1-f4de183b");
 
-  constexpr double kUi12PxPerChar = 352.0 / 28.0;
+  constexpr double kUi12PxPerChar = 352.0 / 28.0;  // §12's measured real metric
   const double labelPx = strlen(label) * kUi12PxPerChar;
-  const char date[] = "11-14 18:58";  // compactDevDate shape: 11 chars
+  // The date through the SAME helper the render path uses — no hard-coded
+  // format assumption in the test.
+  char date[16] = {};
+  ASSERT_TRUE(dev_ota::compactDevDate("2026-11-14T18:58:00+00:00", 0, date, sizeof(date)));
   const double datePx = strlen(date) * kUi12PxPerChar;
   EXPECT_LE(labelPx + datePx + 4, 440.0);
 }
