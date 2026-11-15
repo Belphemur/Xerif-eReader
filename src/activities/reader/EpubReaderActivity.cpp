@@ -1257,12 +1257,12 @@ bool EpubReaderActivity::anyButtonPressed() const {
   return false;
 }
 
-void EpubReaderActivity::backgroundBuildTick() {
+bool EpubReaderActivity::backgroundBuildTick() {
   RenderLock lock(RenderLock::Mode::Try);
   // Not under an open toolbar or panel: those repaint straight onto the page in the framebuffer.
-  if (!lock.ownsLock() || overlay != Overlay::None || !backgroundBuildWanted()) return;
+  if (!lock.ownsLock() || overlay != Overlay::None || !backgroundBuildWanted()) return false;
   // A button is down or a page turn is queued: the next loop frames act on it first.
-  if (buttonContactClosed() || anyButtonPressed() || pendingManualTurn != 0 || !buildTickHeapGate()) return;
+  if (buttonContactClosed() || anyButtonPressed() || pendingManualTurn != 0 || !buildTickHeapGate()) return false;
   // A build step can lend the framebuffer (image probes), which hands it back white while the
   // panel still shows the page; redraw so nothing is later painted over the blank buffer.
   const uint32_t loansBefore = renderer.frameBufferLoanCount();
@@ -1270,6 +1270,7 @@ void EpubReaderActivity::backgroundBuildTick() {
   if (renderer.frameBufferLoanCount() != loansBefore) {
     pageBufferStale = true;
     requestUpdate();
+    return true;
   }
   if (!built) {
     LOG_ERR("ERS", "Background section build failed");
@@ -1277,7 +1278,9 @@ void EpubReaderActivity::backgroundBuildTick() {
     nextPageNumber = section->currentPage;
     section.reset();
     requestUpdate();
-  } else if (section->isBuildComplete()) {
+    return true;
+  }
+  if (section->isBuildComplete()) {
     // A target the render pass left pending because the index was still
     // partial (the readable-page yield) is applied now that the finished
     // index can satisfy it; applyDeferredReposition() otherwise only guesses
@@ -1290,7 +1293,66 @@ void EpubReaderActivity::backgroundBuildTick() {
       pendingPageJump.reset();
       repositioned = true;
     }
-    if (applyDeferredReposition() || repositioned) requestUpdate();
+    if (applyDeferredReposition() || repositioned) {
+      requestUpdate();
+      return true;
+    }
+  }
+  return false;
+}
+
+void EpubReaderActivity::idlePrewarmTick() {
+  RenderLock lock(RenderLock::Mode::Try);
+  if (!lock.ownsLock()) return;
+
+  if (!section || section->isBuilding() || !renderer.hasFrameBuffer() || overlay != Overlay::None ||
+      lastRenderCompleteMs == 0 || ESP.getFreeHeap() <= RENDER_MIN_FREE_HEAP ||
+      ESP.getMaxAllocHeap() <= BACKGROUND_BUILD_MIN_MAX_ALLOC) {
+    return;
+  }
+  if (idlePrewarmSpine != currentSpineIndex || idlePrewarmPage != section->currentPage) {
+    idlePrewarmSpine = currentSpineIndex;
+    idlePrewarmPage = section->currentPage;
+    idlePrewarmOffset = 0;
+  }
+  auto* fcm = renderer.getFontCacheManager();
+  if (!fcm) return;
+  const int maxLookahead = fcm->getIdleLookaheadPages(SETTINGS.getReaderFontId());
+  if (idlePrewarmOffset >= maxLookahead) return;
+
+  // Single-page SD (.cpfont) reader fonts use a 400ms post-render debounce to protect
+  // the SD card and avoid bus contention during rapid page turns (especially backward).
+  // Multi-page TTF vector fonts on PSRAM prewarm immediately (0ms).
+  const unsigned long debounceMs = (maxLookahead > 1) ? 0UL : 400UL;
+  if (debounceMs > 0 && millis() - lastRenderCompleteMs <= debounceMs) {
+    return;
+  }
+
+  float nx = 0.0f;
+  float ny = 0.0f;
+  if (buttonContactClosed() || anyButtonPressed() || pendingManualTurn != 0 ||
+      (gpio.hasTouch() && gpio.isTouchHeldAt(nx, ny))) {
+    return;
+  }
+
+  const int targetPage = section->currentPage + idlePrewarmOffset + 1;
+  if (targetPage >= static_cast<int>(section->pageCount)) {
+    idlePrewarmOffset = maxLookahead;
+    return;
+  }
+
+  if (const auto p = section->loadPage(targetPage)) {
+    const auto t0 = millis();
+    auto scope = fcm->createPrewarmScope(true);
+    p->render(renderer, SETTINGS.getReaderFontId(), 0, 0);
+    if (!scope.endScanAndPrewarm()) {
+      idlePrewarmOffset = maxLookahead;
+      return;
+    }
+    LOG_DBG("ERS", "Idle prewarm: page %d in %lums", targetPage, millis() - t0);
+    ++idlePrewarmOffset;
+  } else {
+    idlePrewarmOffset = maxLookahead;
   }
 }
 
@@ -1686,64 +1748,7 @@ void EpubReaderActivity::loop() {
   // edge is still pending.
   const bool inputPriority = mappedInput.rawInputPriority();
 
-  constexpr unsigned long IDLE_PREWARM_DEBOUNCE_MS = 400;
-  constexpr unsigned long IDLE_PREWARM_RETRY_BACKOFF_MS = 5000;
-  if (!inputPriority && millis() >= idlePrewarmRetryAt) {
-    RenderLock lock(RenderLock::Mode::Try);
-    if (lock.ownsLock() && overlay == Overlay::None && section && !section->isBuilding() && renderer.hasFrameBuffer() &&
-        lastRenderCompleteMs != 0 && millis() - lastRenderCompleteMs > IDLE_PREWARM_DEBOUNCE_MS &&
-        ESP.getFreeHeap() > RENDER_MIN_FREE_HEAP && ESP.getMaxAllocHeap() > BACKGROUND_BUILD_MIN_MAX_ALLOC &&
-        (idlePrewarmSpine != currentSpineIndex || idlePrewarmPage != section->currentPage)) {
-      const int nextPage = section->currentPage + 1;
-      if (nextPage >= static_cast<int>(section->pageCount)) {
-        // Last page of the chapter: nothing to prewarm; stop re-checking.
-        idlePrewarmSpine = currentSpineIndex;
-        idlePrewarmPage = section->currentPage;
-      } else if (const auto p = section->loadPage(nextPage)) {
-        if (auto* fcm = renderer.getFontCacheManager()) {
-          // The prewarm pass paints the NEXT page into the live framebuffer
-          // only to scan its glyphs for the font cache; it never pushes the
-          // panel. But sleep entry (the "Entering sleep" popup, Quick
-          // Resume), a manual refresh, and screenshots all display the
-          // framebuffer without a re-render — leave page N+1 in there and
-          // the user sees the book flip a page as the device goes to sleep.
-          // storeBwBuffer() snapshots the frame in 8 KB chunks (no
-          // contiguous block) so it can be restored once the scan is done.
-          // The overlay==None guard above also protects an open toolbar's
-          // own stored snapshot from being freed by this store.
-          if (renderer.storeBwBuffer()) {
-            const auto t0 = millis();
-            auto scope = fcm->createPrewarmScope();
-            p->render(renderer, SETTINGS.getReaderFontId(), 0, 0);
-            scope.endScanAndPrewarm();
-            // Nothing was pushed to the panel since the store, so the
-            // controller's differential baseline already matches the
-            // restored frame — no baseline resync needed.
-            renderer.restoreBwBuffer(false);
-            // Mark only on success: a failed snapshot is retried after the
-            // backoff instead of being silently skipped for this page.
-            idlePrewarmSpine = currentSpineIndex;
-            idlePrewarmPage = section->currentPage;
-            idlePrewarmRetryAt = 0;
-            LOG_DBG("ERS", "Idle prewarm: page %d in %lums", nextPage, millis() - t0);
-          } else {
-            idlePrewarmRetryAt = millis() + IDLE_PREWARM_RETRY_BACKOFF_MS;
-          }
-        } else {
-          // No font cache manager: the prewarm cannot run at all this
-          // session; mark done so we stop rechecking.
-          idlePrewarmSpine = currentSpineIndex;
-          idlePrewarmPage = section->currentPage;
-        }
-      } else {
-        // loadPage() failed (SD hiccup): retry after the backoff instead of
-        // re-attempting the SD load on every loop tick.
-        idlePrewarmRetryAt = millis() + IDLE_PREWARM_RETRY_BACKOFF_MS;
-      }
-    }
-  }
-
-  if (!inputPriority) {
+  {
     RenderLock lock(RenderLock::Mode::Try);
     // Never next to the radio: once the reader reaches the watermark, the build starts in
     // renderBook(), which stops the radio first.
@@ -2091,9 +2096,12 @@ void EpubReaderActivity::loop() {
   }
 
   const auto turn = ReaderUtils::detectPageTurnSteps(mappedInput, touch);
-  if (!turn.prev && !turn.next) {
-    // Nothing to act on in this frame: build more of the chapter.
-    backgroundBuildTick();
+  const bool turnRequested = turn.prev || turn.next || touch.prev || touch.next;
+  if (!turnRequested) {
+    // Nothing to act on in this frame: build more of the chapter or prewarm ahead.
+    if (!backgroundBuildTick()) {
+      idlePrewarmTick();
+    }
     return;
   }
 
@@ -3074,6 +3082,7 @@ void EpubReaderActivity::renderBook() {
     // Chapter changed or first load — clear stale prefetch
     nextSectionPrefetch.reset();
     nextSectionSpineIndex = -1;
+    idlePrewarmOffset = 0;
     const auto filepath = epub->getSpineItem(currentSpineIndex).href;
     LOG_DBG("ERS", "Loading file: %s, index: %d", filepath.c_str(), currentSpineIndex);
     section = std::unique_ptr<Section>(new Section(epub, currentSpineIndex, renderer));

@@ -20,7 +20,10 @@ class FontCacheManager {
   // loaded. Everything faults back in on demand. For heap-critical transitions
   // (e.g. web-server + WiFi startup); see SdCardFont::releaseResidentCaches().
   void releaseSdFontCaches();
-  void prewarmCache(int fontId, const char* utf8Text, uint8_t styleMask = 0x0F, bool accumulate = true);
+  bool prewarmCache(int fontId, const char* utf8Text, uint8_t styleMask = 0x0F, bool accumulate = true);
+  // Recommended lookahead depth for idle prewarming. TTF fonts on PSRAM
+  // accumulate glyphs across multiple pages; single-page SD fonts use 1.
+  int getIdleLookaheadPages(int fontId) const;
   void logStats(const char* label = "render");
   void resetStats();
 
@@ -34,9 +37,9 @@ class FontCacheManager {
   // RAII scope for two-pass prewarm pattern
   class PrewarmScope {
    public:
-    explicit PrewarmScope(FontCacheManager& manager);
+    explicit PrewarmScope(FontCacheManager& manager, bool accumulate = false);
     ~PrewarmScope();
-    void endScanAndPrewarm();
+    bool endScanAndPrewarm();
     PrewarmScope(PrewarmScope&& other) noexcept;
     PrewarmScope& operator=(PrewarmScope&&) = delete;
     PrewarmScope(const PrewarmScope&) = delete;
@@ -45,8 +48,9 @@ class FontCacheManager {
    private:
     FontCacheManager* manager_;
     bool active_ = true;
+    bool accumulate_ = false;
   };
-  PrewarmScope createPrewarmScope();
+  PrewarmScope createPrewarmScope(bool accumulate = false);
 
  private:
   const std::map<int, EpdFontFamily>& fontMap_;

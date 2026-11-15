@@ -175,3 +175,13 @@ TEST(FontCacheManagerTest, ScanOverflowDropsExcessCodepointsWithoutLooping) {
   EXPECT_EQ(0x01, font.prewarmCalls[0].styleMask);
   EXPECT_EQ(static_cast<unsigned char>(0x81), static_cast<unsigned char>(font.prewarmCalls[0].text[1]));
 }
+
+TEST(FontCacheManagerTest, IdleLookaheadDefaultsToOneForNonTtfFonts) {
+  const std::map<int, EpdFontFamily> noBuiltinFonts;
+  const std::map<int, SdCardFont*> noSdFonts;
+  // Fork shape: the TtfEpdFont map member was deleted with the engine — the
+  // 2-arg ctor is the only one; under no CROSSPOINT_VECTOR_FONTS the depth is 1.
+  FontCacheManager manager(noBuiltinFonts, noSdFonts);
+
+  EXPECT_EQ(1, manager.getIdleLookaheadPages(7));
+}
