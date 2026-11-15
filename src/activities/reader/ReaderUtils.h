@@ -110,7 +110,7 @@ inline PageTurnResult detectPageTurnSteps(const MappedInputManager& input,
   counts.tiltNext = tiltNext;
   counts.tiltPrev = tiltPrev;
   counts.powerTurn = SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN &&
-                     input.wasReleased(MappedInputManager::Button::Power);
+                     input.wasPowerSingleClick();
   counts.homeNextPage = input.homeButtonAction() == HomeButtonAction::NextPage;
   const bool prev = tiltPrev || pageButtonTriggered(MappedInputManager::Button::PageBack) ||
                     pageButtonTriggered(prevButton) || touch.prev;

@@ -111,6 +111,10 @@ using BookStatusProbe = const char* (*)(freeink::book::BookStatus);
 // A wake hold must never become an in-app power-button action.  Boot may continue
 // while the button is held; swallow the one release that ends that wake gesture.
 static bool wakePowerReleasePending = false;
+// The same contact should also be suppressed inside the upstream #4407
+// wake/restart state machine (beginPowerInput) so its release cannot
+// dispatch there either. Consumed at the beginPowerInput call.
+static bool wakeSwallowSuppress = false;
 
 // Fonts
 // 14 pt stays outside OMIT_FONTS: the always-available default reader font.
@@ -167,6 +171,7 @@ constexpr uint32_t SILENT_REBOOT_TARGET_HOTSPOT = 4;
 constexpr uint32_t SILENT_REBOOT_TARGET_BLE_SETTINGS = 5;
 constexpr uint32_t SILENT_REBOOT_TARGET_MAX = SILENT_REBOOT_TARGET_BLE_SETTINGS;
 constexpr uint32_t SILENT_REBOOT_LIGHT_ON = 1U << 0;
+constexpr uint32_t SILENT_REBOOT_SUPPRESS_POWER = 1U << 1;
 
 // How the device is coming back to life, resolved once at boot. Both resume
 // flows suppress the splash and leave the panel holding its pre-boot frame; a
@@ -233,6 +238,7 @@ static void idleDisplayWhileAwake() {
 static void armSilentReboot(const uint32_t target) {
   silentRebootTarget = target;
   silentRebootPayload = Frontlight.isOn() ? SILENT_REBOOT_LIGHT_ON : 0;
+  if (mappedInputManager.suppressPowerAfterRestart()) silentRebootPayload |= SILENT_REBOOT_SUPPRESS_POWER;
   silentRebootMagic = SILENT_REBOOT_MAGIC;
 }
 
@@ -993,6 +999,7 @@ void setup() {
   const uint32_t snapshotTarget =
       (isSilentReboot && silentRebootTarget <= SILENT_REBOOT_TARGET_MAX) ? silentRebootTarget : 0;
   const bool silentRebootLightOn = isSilentReboot && (silentRebootPayload & SILENT_REBOOT_LIGHT_ON) != 0;
+  const bool suppressRestartPower = isSilentReboot && (silentRebootPayload & SILENT_REBOOT_SUPPRESS_POWER) != 0;
   silentRebootMagic = 0;
   silentRebootTarget = 0;
   silentRebootPayload = 0;
@@ -1170,6 +1177,11 @@ void setup() {
   if (WakeReleaseSwallow::shouldArm(wakeupReason == HalGPIO::WakeupReason::PowerButton, wakePowerHeld,
                                     isSilentReboot)) {
     wakePowerReleasePending = true;
+    // Arm upstream #4407's state machine for the same contact: its begin()
+    // runs at the end of setup(), and a suppressed hold makes both the wake
+    // press's release and a hold-through-boot non-dispatchable there too
+    // (the two swallows guard the same gesture at different boot stages).
+    wakeSwallowSuppress = true;
     LOG_DBG("MAIN", "Wake-release swallow armed: reason=%d powerHeldAtInputStart=%d", static_cast<int>(wakeupReason),
             wakePowerHeld ? 1 : 0);
   }
@@ -1212,6 +1224,18 @@ void setup() {
     default:
       break;
   }
+
+  // Restore the light only after accepting the wake, so rejected wakes stay dark.
+  // Brightness and warmth are always restored. A normal wake starts with the
+  // light off unless Restore Light on Wake is enabled; silent maintenance
+  // reboots replay the live state captured at restart, so they neither go dark
+  // nor light up against the user's wake preference. A slide switch bound to
+  // the light decides it from its position instead.
+  const bool restoreLightOn = isSilentReboot ? silentRebootLightOn
+                              : slideSwitchOwnsLight()
+                                  ? gpio.isToggleSwitchOn()
+                                  : (SETTINGS.frontlightOn != 0 && SETTINGS.frontlightRestoreOnWake != 0);
+  Frontlight.begin(SETTINGS.frontlightBrightness, SETTINGS.frontlightWarmth, restoreLightOn);
 
   LOG_DBG("MAIN", "Starting CrossPoint version " CROSSPOINT_VERSION);
 
@@ -1355,7 +1379,10 @@ void setup() {
     gpio.discardQueuedButtonEdges();
   }
 
-  allowSleepAt = millis() + 2000;
+  mappedInputManager.beginPowerInput((wakeSwallowSuppress && !wakePowerReleasePending) || !isSilentReboot || suppressRestartPower,
+                                     mappedInputManager.isPowerHeld());
+  wakeSwallowSuppress = false;
+  allowSleepAt = millis() + (isSilentReboot ? 0 : 2000);
 }
 
 // Design §6: keep OTA-image verification pending past initArduino() so the
@@ -1764,6 +1791,7 @@ void loop() {
     screenshotComboActive = true;
     if (screenshotButtonsReleased) {
       screenshotButtonsReleased = false;
+      mappedInputManager.consumePowerGesture();
       {
         RenderLock lock;
         ScreenshotUtil::takeScreenshot(renderer);
@@ -1787,6 +1815,20 @@ void loop() {
     screenshotComboActive = false;
   }
 
+  if (mappedInputManager.wasPowerReleaseConsumed()) {
+    // Upstream #4407: a release the wake/restart state machine already judged
+    // is consumed — sleep only if that hold itself crossed the sleep
+    // threshold, otherwise nothing else this tick may see the release again.
+    mappedInputManager.resetPowerButtonInput();
+    if (!mappedInputManager.powerSleepRequested()) return;
+  }
+
+  if (mappedInputManager.powerSleepClick()) {
+    // Upstream's classified SLEEP verdict (X4 Pro click classifier).
+    enterDeepSleep();
+    return;
+  }
+
   // Consume the second X4 Pro power-button release so it does not also run a
   // configured short-power action after toggling the frontlight. The window
   // itself (arming, expiry → powerConfirmClickFrame) lives in the manager;
@@ -1803,21 +1845,13 @@ void loop() {
     return;
   }
 
-  // A hold that woke the device must be released before it can count as a new
-  // in-app long press. Otherwise a user who keeps holding after wake would put
-  // the device straight back to sleep once allowSleepAt expires.
-  static bool powerReleasedSinceWake = false;
-  if (!mappedInputManager.isPressed(MappedInputManager::Button::Power)) powerReleasedSinceWake = true;
-
   // On X4 Pro with SLEEP, a press still within the click window is a
   // double-click candidate — let it be released and evaluated by the click
   // tracking below instead of powering off on button-down.
   const bool x4ProAwaitingClickWindow =
       mappedInputManager.isPowerClickHoldCandidate() && SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP;
 
-  if (!x4ProAwaitingClickWindow && powerReleasedSinceWake && millis() >= allowSleepAt &&
-      mappedInputManager.isPressed(MappedInputManager::Button::Power) &&
-      gpio.getPowerButtonHeldTime() > SETTINGS.getPowerButtonDuration()) {
+  if (!x4ProAwaitingClickWindow && millis() >= allowSleepAt && mappedInputManager.powerSleepRequested()) {
     // If the screenshot combination is potentially being pressed, don't power off
     if (mappedInputManager.isPressed(MappedInputManager::Button::Down)) {
       return;
@@ -1841,21 +1875,29 @@ void loop() {
     return;
   }
 
+  // A completed long hold stays consumed even when sleep is temporarily blocked.
+  if (mappedInputManager.wasPowerReleaseConsumed()) return;
+
 #if FREEINK_DEVICE_PAPERMONO
   // Paper Mono reports the PMIC power button as a one-tick click, so the held
   // path above cannot fire. With the Ignore binding, keep sleeping on the
   // click: the GPIO boards' Ignore short-click no-op has no Paper Mono
   // equivalent because a click is the only power-button event it can report.
-  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::IGNORE && millis() >= allowSleepAt &&
-      mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
+  if ((SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP ||
+       SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::IGNORE) &&
+      millis() >= allowSleepAt && mappedInputManager.wasPowerSingleClick()) {
     enterDeepSleep();
     return;
   }
 #endif
 
   // Refresh screen when power button is short-pressed with FORCE_REFRESH setting.
-  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FORCE_REFRESH &&
-      mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
+  if (mappedInputManager.homeButtonAction() == HomeButtonAction::ToggleFrontlight) {
+    toggleFrontlight();
+  }
+  if (mappedInputManager.homeButtonAction() == HomeButtonAction::Refresh ||
+      (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FORCE_REFRESH &&
+       mappedInputManager.wasPowerSingleClick())) {
     LOG_DBG("MAIN", "Manual screen refresh triggered");
     if (!activityManager.handleForcedRefresh()) {
       RenderLock lock;

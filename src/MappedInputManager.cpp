@@ -194,6 +194,17 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
     powerConfirmPressArmed = true;
   }
 #endif
+  // Shared keys are physically held before the SDK emits logical Power
+  // (upstream #4407 port): the wake/restart qualification state machine.
+  const bool powerHeld = gpio.isPressed(HalGPIO::BTN_POWER);
+  const bool powerReleased = gpio.wasReleased(HalGPIO::BTN_POWER);
+  const bool sharedConfirmRelease =
+      BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalConfirmPowerHold &&
+      gpio.wasReleased(HalGPIO::BTN_CONFIRM);
+  // Shared keys are physically held before the SDK emits logical Power.
+  powerButtonInput.update(isPowerHeld(), powerReleased || sharedConfirmRelease,
+                          (powerHeld || powerReleased) ? gpio.getPowerButtonHeldTime() : 0,
+                          SETTINGS.getPowerButtonDuration());
   const bool pagePressed =
       SETTINGS.vibration == CrossPointSettings::VIBRATION_TOUCH_PAGE && gpio.wasCapacitivePagePressed();
   HalHaptics::feedback(SETTINGS.vibration != CrossPointSettings::VIBRATION_OFF, pagePressed, SETTINGS.hapticIntensity);
@@ -212,6 +223,54 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
       HalHaptics::feedback(SETTINGS.vibration != CrossPointSettings::VIBRATION_OFF, true, SETTINGS.hapticIntensity);
     }
   }
+  powerSleepFrame = false;
+  powerSingleClickFrame = false;
+  const bool classifyPower = BoardConfig::isX4Pro() && SETTINGS.doublePwrBtn != CrossPointSettings::IGNORE;
+  if (classifyPower && !gpio.isPressed(HalGPIO::BTN_DOWN) && !powerButtonInput.suppressesHold() &&
+      !wasPowerReleaseConsumed()) {
+    const auto click = powerButtonClickInput.update(millis(), gpio.isPressed(HalGPIO::BTN_POWER),
+                                                    wasShortPowerReleased(), gpio.getPowerButtonHeldTime());
+    powerSingleClickFrame = click == PowerButtonClickInput::Click::Single;
+    if (click != PowerButtonClickInput::Click::None) {
+      const auto action = click == PowerButtonClickInput::Click::Double ? SETTINGS.doublePwrBtn : SETTINGS.shortPwrBtn;
+      switch (action) {
+        case CrossPointSettings::IGNORE:
+          break;
+        case CrossPointSettings::SLEEP:
+          powerSleepFrame = true;
+          break;
+        case CrossPointSettings::PAGE_TURN:
+          homeAction = HomeButtonAction::NextPage;
+          break;
+        case CrossPointSettings::FORCE_REFRESH:
+          homeAction = HomeButtonAction::Refresh;
+          break;
+        case CrossPointSettings::FOOTNOTES:
+          homeAction = HomeButtonAction::Footnotes;
+          break;
+        case CrossPointSettings::PWR_CONFIRM:
+          homeAction = HomeButtonAction::Confirm;
+          break;
+        case CrossPointSettings::CREATE_CLIPPING:
+          homeAction = HomeButtonAction::CreateClipping;
+          break;
+        case CrossPointSettings::PWR_BOOKMARK:
+          homeAction = HomeButtonAction::Bookmark;
+          break;
+        case CrossPointSettings::PWR_SYNC:
+          homeAction = HomeButtonAction::Sync;
+          break;
+        case CrossPointSettings::PWR_READER_MENU:
+          homeAction = HomeButtonAction::ReaderMenu;
+          break;
+        case CrossPointSettings::PWR_FRONTLIGHT:
+          homeAction = HomeButtonAction::ToggleFrontlight;
+          break;
+      }
+    }
+  } else {
+    powerButtonClickInput.reset();
+  }
   // Touch boards without a home key: a short power click can carry a reader
   // shortcut (see SHORT_PWRBTN). On the X4 Pro the frontlight double-click
   // window (resolved above at the snapshot) withholds an ambiguous release
@@ -220,8 +279,7 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
   // drained every queued edge into the masks at the top of update(), and a
   // window-expiry delivery never exists as a live edge — the raw probe would
   // never fire for a classified click.
-  if (homeAction == HomeButtonAction::Ignore && edgeSnapshot(Button::Power, /*pressed=*/false)) {
-    switch (SETTINGS.shortPwrBtn) {
+  if (!classifyPower && homeAction == HomeButtonAction::Ignore && edgeSnapshot(Button::Power, /*pressed=*/false)) {
       case CrossPointSettings::PWR_BOOKMARK:
         homeAction = HomeButtonAction::Bookmark;
         break;
@@ -255,6 +313,14 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
       deferredHomeAction = HomeButtonAction::Ignore;
       deferredHomeGesture = HomeButtonGesture::None;
     }
+  }
+  if (deferHomeButtonAction) {
+    // Blocking transfer: a SLEEP verdict raised while the pump owns dispatch
+    // is parked and re-published on the first main-loop dispatch after.
+    deferredPowerSleepFrame = deferredPowerSleepFrame || powerSleepFrame;
+  } else {
+    powerSleepFrame = powerSleepFrame || deferredPowerSleepFrame;
+    deferredPowerSleepFrame = false;
   }
   uint8_t heldButtons = 0;
   for (uint8_t value = 0; value <= static_cast<uint8_t>(Button::ScreenDown); ++value) {
@@ -713,11 +779,11 @@ bool MappedInputManager::wasPowerConfirmClick() const {
   // Wait out the X4 Pro's frontlight double-click window before treating its
   // first release as Confirm. With the shortcut disabled (doublePwrBtn ==
   // Ignore), and on other touch boards, the release counts directly — from
-  // the SNAPSHOT (soak-fix7): a direct gpio.wasReleased would find the edge
-  // already consumed by the snapshot loop (double-read loses it) and always
-  // report false.
+  // the SERVED SNAPSHOT (soak-fix7): the served release bit is qualified by
+  // upstream #4407's wake/restart state machine, so a wake or consumed
+  // release never counts as Confirm either.
   if (BoardConfig::isX4Pro() && SETTINGS.doublePwrBtn != CrossPointSettings::IGNORE) return powerConfirmClickFrame;
-  return edgeSnapshot(Button::Power, /*pressed=*/false) &&
+  return wasShortPowerReleased() &&
          gpio.getPowerButtonHeldTime() <= SETTINGS.getPowerButtonDuration();
 }
 #endif

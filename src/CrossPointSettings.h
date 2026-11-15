@@ -11,6 +11,7 @@
 
 #include "BoardFeatures.h"
 #include "util/HomeButtonInput.h"
+#include "util/PowerButtonInput.h"
 
 // Forward declaration: the live offset resolver lives in lib/hal/HalTimeZone.cpp
 // (which pulls in the AceTime database). Declaring it here keeps CrossPointSettings.h

@@ -96,6 +96,15 @@ class HalGPIO {
   // True when the power button was physically held at input init (see the
   // member comment). False on emulated (host) builds: no input hardware.
   bool powerButtonHeldAtInputStart() const { return powerButtonHeldAtInputStart_; }
+  // Upstream #4407: the physical contact level behind the shared
+  // Confirm/Power pin, before the SDK's debounce emits logical Power.
+  bool isPowerButtonPhysicallyPressed() const {
+#if CROSSPOINT_EMULATED == 0
+    return inputMgr.isPowerButtonPhysicallyPressed();
+#else
+    return isPressed(BTN_POWER);
+#endif
+  }
   bool wasPressed(uint8_t buttonIndex) const;
   bool wasAnyPressed() const;
   bool wasReleased(uint8_t buttonIndex) const;
