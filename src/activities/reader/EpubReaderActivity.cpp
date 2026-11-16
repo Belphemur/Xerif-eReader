@@ -970,12 +970,12 @@ bool EpubReaderActivity::loadBook() {
   uint16_t savedPage = 0;
   uint16_t savedPageCount = 0;
   uint32_t savedOffset = 0;
+  bool progressLoaded = false;
 #if defined(CROSSPOINT_TTF_READER)
   if (ttf_) {
     bool ttfHasGeneration = false;
-    const bool progressLoaded =
-        progressManager.openBookTtf(epub->getCachePath().c_str(), savedSpine, savedPage, savedPageCount,
-                                    ttfSavedCharOffset, ttfSavedGeneration, ttfHasGeneration);
+    progressLoaded = progressManager.openBookTtf(epub->getCachePath().c_str(), savedSpine, savedPage, savedPageCount,
+                                                 ttfSavedCharOffset, ttfSavedGeneration, ttfHasGeneration);
     if (progressLoaded) {
       const int spineCount = epub->getSpineItemsCount();
       // Design §3, §10 amendment 11: the charOffset anchor is authoritative
@@ -1027,7 +1027,7 @@ bool EpubReaderActivity::loadBook() {
   } else
 #endif
   {
-    const bool progressLoaded =
+    progressLoaded =
         progressManager.openBook(epub->getCachePath().c_str(), savedSpine, savedPage, savedPageCount, savedOffset);
     if (progressLoaded) {
       const int spineCount = epub->getSpineItemsCount();
@@ -1053,7 +1053,9 @@ bool EpubReaderActivity::loadBook() {
     }
   }
 
-  if (currentSpineIndex == 0) {
+  // Only a book with no saved position starts at the text reference; a reader
+  // who paged back into spine 0 stays there.
+  if (!progressLoaded && currentSpineIndex == 0) {
     int textSpineIndex = epub->getSpineIndexForTextReference();
     if (textSpineIndex != 0) {
       currentSpineIndex = textSpineIndex;
@@ -1306,8 +1308,7 @@ void EpubReaderActivity::idlePrewarmTick() {
   if (!lock.ownsLock()) return;
 
   if (!section || section->isBuilding() || !renderer.hasFrameBuffer() || overlay != Overlay::None ||
-      lastRenderCompleteMs == 0 || ESP.getFreeHeap() <= RENDER_MIN_FREE_HEAP ||
-      ESP.getMaxAllocHeap() <= BACKGROUND_BUILD_MIN_MAX_ALLOC) {
+      lastRenderCompleteMs == 0) {
     return;
   }
   if (idlePrewarmSpine != currentSpineIndex || idlePrewarmPage != section->currentPage) {
@@ -1325,6 +1326,10 @@ void EpubReaderActivity::idlePrewarmTick() {
   // Multi-page TTF vector fonts on PSRAM prewarm immediately (0ms).
   const unsigned long debounceMs = (maxLookahead > 1) ? 0UL : 400UL;
   if (debounceMs > 0 && millis() - lastRenderCompleteMs <= debounceMs) {
+    return;
+  }
+
+  if (ESP.getFreeHeap() <= RENDER_MIN_FREE_HEAP || ESP.getMaxAllocHeap() <= BACKGROUND_BUILD_MIN_MAX_ALLOC) {
     return;
   }
 
@@ -3204,7 +3209,7 @@ void EpubReaderActivity::renderBook() {
             return;
           }
           while (!section->isBuildComplete() &&
-                 (anchorJump               ? !section->findAnchor(pendingAnchor)
+                 (anchorJump               ? !section->findAnchorDuringBuild(pendingAnchor)
                   : offsetJump.has_value() ? !section->buildReachedVisibleTextOffset(*offsetJump)
                                            : static_cast<int>(section->pageCount) <= target)) {
             if (buildPopupPending && millis() - buildStartMs >= BUILD_POPUP_DEADLINE_MS) {
@@ -3437,9 +3442,10 @@ void EpubReaderActivity::renderBook() {
     // One call per render: the manager keeps the in-memory position current
     // and gates the disk write itself (changed + interval, or low battery —
     // §4.2/§4.5). Unchanged renders are no-ops inside the manager.
+    const int estimatedTotalPages = section->estimatedTotalPages();
     LOG_DBG("PRG", "caller: save spine=%u page=%u/%u offset=%d", currentSpineIndex, section->currentPage,
-            section->estimatedTotalPages(), currentPageVisibleOffset.has_value() ? 1 : 0);
-    progressManager.save(currentSpineIndex, section->currentPage, section->estimatedTotalPages(),
+            estimatedTotalPages, currentPageVisibleOffset.has_value() ? 1 : 0);
+    progressManager.save(currentSpineIndex, section->currentPage, estimatedTotalPages,
                          currentPageVisibleOffset.has_value(), currentPageVisibleOffset.value_or(0));
   }
   showPendingSyncSaveError();
@@ -6411,14 +6417,13 @@ void EpubReaderActivity::renderStatusBar() const {
       textYOffset += UITheme::getInstance().getMetrics().statusBarVerticalMargin;
     }
   } else if (sb.titleMode == CrossPointSettings::STATUS_BAR_TITLE::CHAPTER_TITLE) {
-    title = tr(STR_UNNAMED);
-    if (epub) {
+    // The lookup reads book.bin; a page render draws the bar several times.
+    if (statusTitleSpine != currentSpineIndex && epub) {
       const int tocIndex = epub->getTocIndexForSpineIndex(currentSpineIndex);
-      if (tocIndex != -1) {
-        const auto tocItem = epub->getTocItem(tocIndex);
-        title = tocItem.title;
-      }
+      statusTitle = tocIndex != -1 ? epub->getTocItem(tocIndex).title : tr(STR_UNNAMED);
+      statusTitleSpine = currentSpineIndex;
     }
+    title = epub ? statusTitle : tr(STR_UNNAMED);
   } else if (sb.titleMode == CrossPointSettings::STATUS_BAR_TITLE::BOOK_TITLE) {
     title = epub ? epub->getTitle() : "";
   }

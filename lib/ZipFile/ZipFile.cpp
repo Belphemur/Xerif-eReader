@@ -634,12 +634,13 @@ bool ZipFile::readFileToStream(const FileStatSlim& fileStat, Print& out, const s
 
     size_t remaining = inflatedDataSize;
     while (remaining > 0) {
-      const size_t dataRead = file.read(buffer, remaining < chunkSize ? remaining : chunkSize);
-      if (dataRead == 0) {
+      const int readResult = file.read(buffer, remaining < chunkSize ? remaining : chunkSize);
+      if (readResult <= 0) {  // read() returns -1 on an SD error
         LOG_ERR("ZIP", "Could not read more bytes");
         free(buffer);
         return false;
       }
+      const auto dataRead = static_cast<size_t>(readResult);
 
       if (out.write(buffer, dataRead) != dataRead) {
         free(buffer);

@@ -3,6 +3,7 @@
 #include <FsHelpers.h>
 #include <HalStorage.h>
 #include <HiddenItems.h>
+#include <LibraryBuilder.h>
 #include <Logging.h>
 
 #include "ClippingStore.h"
@@ -93,7 +94,8 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& rawData) 
     }
 
   } else if (rawData.status == RAW_END) {
-    if (_putFile) _putFile.close();
+    // close() writes the final size: a failed close must not replace the original.
+    if (_putFile && !_putFile.close()) _putOk = false;
     if (_putOk) {
       String tempPath = _putPath + ".davtmp";
       _putOk = Storage.replaceFile(tempPath.c_str(), _putPath.c_str());
@@ -396,12 +398,14 @@ void WebDAVHandler::handlePut(WebServer& s) {
 
   if (!_putOk) {
     String tempPath = path + ".davtmp";
-    Storage.remove(tempPath.c_str());
+    // A failed replace may already have removed the original; the temp is then the only copy.
+    if (!_putExisted || Storage.exists(path.c_str())) Storage.remove(tempPath.c_str());
     s.send(500, "text/plain", "Write failed - incomplete upload or disk full");
     return;
   }
 
   clearBookCache(path.c_str());
+  if (library::isLibraryBookFile(path.c_str())) library::markLibraryIndexDirty();
   s.send(_putExisted ? 204 : 201);
   LOG_DBG("DAV", "PUT complete: %s", path.c_str());
 }
@@ -646,7 +650,10 @@ void WebDAVHandler::handleCopy(WebServer& s) {
   while (srcFile.available()) {
     resetTaskWatchdogIfSubscribed();
     int bytesRead = srcFile.read(buf, sizeof(buf));
-    if (bytesRead <= 0) break;
+    if (bytesRead <= 0) {
+      copyOk = bytesRead == 0;
+      break;
+    }
     size_t written = dstFile.write(buf, bytesRead);
     if (written != (size_t)bytesRead) {
       copyOk = false;
@@ -658,6 +665,8 @@ void WebDAVHandler::handleCopy(WebServer& s) {
   dstFile.close();
 
   if (copyOk) {
+    if (dstExists) clearBookCache(dstPath.c_str());  // the old book's cache does not match the new content
+    if (library::isLibraryBookFile(dstPath.c_str())) library::markLibraryIndexDirty();
     s.send(dstExists ? 204 : 201);
   } else {
     Storage.remove(dstPath.c_str());
