@@ -53,8 +53,12 @@ jobs:
     concurrency:
       # Shared repo-wide publication lane (D6): publishers wait on each other;
       # the PR delete lane (pr-dev-cleanup.yml) is what cancels in progress.
+      # queue: max keeps every pending publication queued — with the default
+      # single-slot queue a second pending publication would cancel the
+      # first and its PR would never receive a dev-channel asset.
       group: dev-release-manifest
       cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -94,10 +98,15 @@ jobs:
             core.setOutput('short_sha', run.head_sha.slice(0, 7));
 
       # Only load publisher code from the trusted default-branch revision.
+      # Full history like dev-build.yml: git_branch.py derives the base
+      # version from release tags (git tag --merged HEAD), which a depth-1
+      # checkout cannot see — it would degrade to the platformio.ini
+      # fallback version.
       - uses: actions/checkout@v7
         if: steps.gate.outputs.publish == 'true'
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Fetch the PR head commit (the stamp derivation needs the object)
