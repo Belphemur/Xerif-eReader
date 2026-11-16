@@ -123,7 +123,11 @@ class MappedInputManager {
     resetPowerButtonInput();
   }
   bool wasShortPowerReleased() const {
-    return gpio.wasReleased(HalGPIO::BTN_POWER) && powerButtonInput.wasShortReleased();
+    // The release edge lives in the frame snapshot (powerReleaseFrame, set
+    // from the drain in update()): a direct gpio.wasReleased re-read would
+    // consume-on-read false on async builds (soak-fix7) and kill the X4 Pro
+    // click classifier (design 2026-11-16-power-short-click-merge-regression.md).
+    return powerReleaseFrame && powerButtonInput.wasShortReleased();
   }
   bool powerSleepRequested() const { return powerButtonInput.shouldSleep(); }
   bool wasPowerReleaseConsumed() const { return powerButtonInput.wasReleaseConsumed(); }
@@ -282,6 +286,10 @@ class MappedInputManager {
   mutable bool powerSingleClickFrame = false;
   mutable bool powerSleepFrame = false;
   mutable bool deferredPowerSleepFrame = false;
+  // This frame's raw Power release edge from the drain loop (set in
+  // update()): the single-read source for wasShortPowerReleased(). Per-frame
+  // like the other power verdicts.
+  mutable bool powerReleaseFrame = false;
   mutable HomeButtonAction homeAction = HomeButtonAction::Ignore;
   mutable HomeButtonGesture homeGesture = HomeButtonGesture::None;
   mutable HomeButtonAction deferredHomeAction = HomeButtonAction::Ignore;

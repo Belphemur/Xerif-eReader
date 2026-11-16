@@ -196,11 +196,18 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
 #endif
   // Shared keys are physically held before the SDK emits logical Power
   // (upstream #4407 port): the wake/restart qualification state machine.
+  // Edges move through the drained frame snapshot ONLY: the drain loop above
+  // consumed them (soak-fix7 consume-on-check), so a direct gpio.wasReleased
+  // here would always read false on async builds — the regression this file
+  // fixed after the upstream #4407 merge (design
+  // 2026-11-16-power-short-click-merge-regression.md). The raw physical edge
+  // is what the state machine qualifies, exactly as upstream fed it.
   const bool powerHeld = gpio.isPressed(HalGPIO::BTN_POWER);
-  const bool powerReleased = gpio.wasReleased(HalGPIO::BTN_POWER);
+  const bool powerReleased = drainedRelease[HalGPIO::BTN_POWER] != 0;
   const bool sharedConfirmRelease =
       BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalConfirmPowerHold &&
-      gpio.wasReleased(HalGPIO::BTN_CONFIRM);
+      drainedRelease[HalGPIO::BTN_CONFIRM] != 0;
+  powerReleaseFrame = powerReleased;
   // Shared keys are physically held before the SDK emits logical Power.
   powerButtonInput.update(isPowerHeld(), powerReleased || sharedConfirmRelease,
                           (powerHeld || powerReleased) ? gpio.getPowerButtonHeldTime() : 0,
