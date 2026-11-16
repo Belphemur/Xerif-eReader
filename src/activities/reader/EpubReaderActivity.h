@@ -325,6 +325,12 @@ class EpubReaderActivity final : public ReaderActivity {
   int ttfSpine = -1;          // spine the runtime's reader/session belong to
   int ttfPage = 0;            // chapter-local page index
   uint32_t ttfPageCount = 0;  // pages available for the current chapter
+  // pumpChapterChunk's caller-owned no-progress bounds (reset at every
+  // session (re)begin): the current-spine pumps (sync pass, background tick,
+  // partial-resume tick) share one counter for the single live session; the
+  // prefetch tick pumps the next spine's session and owns its own.
+  uint16_t ttfBuildStallChunks_ = 0;
+  uint16_t ttfPrefetchStallChunks_ = 0;
   // Estimated chapter total while a build is in flight: pages built scaled
   // by the layout session's input progress (the old Section engine's
   // extrapolation, owner steer: return after a few pages and let the user

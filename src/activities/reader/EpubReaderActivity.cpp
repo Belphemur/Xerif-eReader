@@ -4305,6 +4305,7 @@ void EpubReaderActivity::renderBookTtf() {
     }
     const freeink::book::BookStatus st =
         freeink::book::ensureChapterSession(*ttf_, static_cast<uint16_t>(currentSpineIndex), params, generation);
+    ttfBuildStallChunks_ = 0;  // fresh session: the stall bound starts clean
     if (st != freeink::book::BookStatus::Ok) {
       LOG_ERR("ERS", "TTF session begin failed: %s", bookStatusName(st));
       showBuildError();
@@ -4352,8 +4353,8 @@ void EpubReaderActivity::renderBookTtf() {
         break;
       }
       freeink::book::BookStatus st = freeink::book::BookStatus::Ok;
-      if (freeink::book::pumpChapterChunk(*ttf_, static_cast<uint16_t>(currentSpineIndex), BUILD_PAGES_PER_CHUNK,
-                                          &st) == freeink::book::ChapterPump::Failed) {
+      if (freeink::book::pumpChapterChunk(*ttf_, static_cast<uint16_t>(currentSpineIndex), BUILD_PAGES_PER_CHUNK, &st,
+                                          &ttfBuildStallChunks_) == freeink::book::ChapterPump::Failed) {
         LOG_ERR("ERS", "TTF build failed: %s", bookStatusName(st));
         showBuildError();
         return;
@@ -5357,7 +5358,7 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
     const uint16_t before = ttf_->availablePageCount(spine);
     const uint32_t tickStart = millis();
     freeink::book::BookStatus st = freeink::book::BookStatus::Ok;
-    if (freeink::book::pumpChapterChunk(*ttf_, spine, BACKGROUND_BUILD_PAGES_PER_TICK, &st) ==
+    if (freeink::book::pumpChapterChunk(*ttf_, spine, BACKGROUND_BUILD_PAGES_PER_TICK, &st, &ttfBuildStallChunks_) ==
         freeink::book::ChapterPump::Failed) {
       LOG_ERR("ERS", "Background TTF build failed: %s", bookStatusName(st));
       ttfPrefetchActive = false;
@@ -5426,13 +5427,14 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
     if (params.font == nullptr) return;  // no reader font chain: cannot lay out
     if (freeink::book::ensureChapterSession(*ttf_, static_cast<uint16_t>(currentSpineIndex), params, ttfGeneration) ==
         freeink::book::BookStatus::Ok) {
+      ttfBuildStallChunks_ = 0;  // fresh session: the stall bound starts clean
       freeink::book::BookStatus st = freeink::book::BookStatus::Ok;
       const uint16_t before = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
       const uint32_t tickStart = millis();
       // One page per tick while extending a partial: a press waits at most
       // one page build between input polls (soak finding #6).
-      const freeink::book::ChapterPump pump =
-          freeink::book::pumpChapterChunk(*ttf_, static_cast<uint16_t>(currentSpineIndex), 1, &st);
+      const freeink::book::ChapterPump pump = freeink::book::pumpChapterChunk(
+          *ttf_, static_cast<uint16_t>(currentSpineIndex), 1, &st, &ttfBuildStallChunks_);
       const uint16_t after = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
       LOG_INF("ERS", "resume build spine %d: %u pages (%+d, %lu ms)", currentSpineIndex, after,
               static_cast<int32_t>(after) - static_cast<int32_t>(before),
@@ -5556,7 +5558,15 @@ void EpubReaderActivity::ttfPrefetchTick() {
 
   if (ttf_->sessionFor(static_cast<uint16_t>(nextSpine))) {
     if (ttf_->sessionActive()) {
-      freeink::book::pumpChapterChunk(*ttf_, static_cast<uint16_t>(nextSpine), BACKGROUND_BUILD_PAGES_PER_TICK);
+      freeink::book::BookStatus st = freeink::book::BookStatus::Ok;
+      if (freeink::book::pumpChapterChunk(*ttf_, static_cast<uint16_t>(nextSpine), BACKGROUND_BUILD_PAGES_PER_TICK, &st,
+                                          &ttfPrefetchStallChunks_) == freeink::book::ChapterPump::Failed) {
+        // Bounded give-up (stalled/failed session aborted inside the pump):
+        // clear the build flag so the tick can re-seed the spine later
+        // instead of parking prefetch for the rest of the book.
+        LOG_ERR("ERS", "Prefetch TTF build failed: %s", bookStatusName(st));
+        ttfPrefetchActive = false;
+      }
     } else {
       ttfPrefetchActive = false;
       ttf_->dropPrefetch();
@@ -5576,8 +5586,14 @@ void EpubReaderActivity::ttfPrefetchTick() {
     if (params.font == nullptr) return;  // no reader font chain: cannot lay out
     if (freeink::book::ensureChapterSession(*ttf_, static_cast<uint16_t>(nextSpine), params, ttfGeneration) ==
         freeink::book::BookStatus::Ok) {
-      freeink::book::pumpChapterChunk(*ttf_, static_cast<uint16_t>(nextSpine), BACKGROUND_BUILD_PAGES_PER_TICK);
-      ttfPrefetchActive = true;
+      ttfPrefetchStallChunks_ = 0;  // fresh session: the stall bound starts clean
+      freeink::book::BookStatus st = freeink::book::BookStatus::Ok;
+      if (freeink::book::pumpChapterChunk(*ttf_, static_cast<uint16_t>(nextSpine), BACKGROUND_BUILD_PAGES_PER_TICK, &st,
+                                          &ttfPrefetchStallChunks_) == freeink::book::ChapterPump::Failed) {
+        LOG_ERR("ERS", "Prefetch TTF build failed: %s", bookStatusName(st));
+      } else {
+        ttfPrefetchActive = true;
+      }
     }
   }
 }

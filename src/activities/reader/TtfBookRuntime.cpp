@@ -294,17 +294,28 @@ BookStatus TtfBookRuntime::stepBuild(const uint16_t minNewPages) {
     return finishSession() ? BookStatus::Ok : BookStatus::IoError;
   }
   const BookStatus st = session_.step(minNewPages);
+  if (st != BookStatus::Ok) {
+    // A failed step must never leave the session pumpable. The SDK sets
+    // State::Failed on every non-Ok step, but a future regression that
+    // returned non-Ok while keeping the session active would spin the build
+    // pump forever (zero pages, no failure — the stuck-indexing shape).
+    // abortSession() commits the resumable partial either way.
+    LOG_ERR("TTFB", "Session step failed: %s", bookStatusName(st));
+    abortSession();
+    return st;
+  }
   if (writer_.failed()) {
     LOG_ERR("TTFB", "Writer failed mid-build (%s)", cacheName_);
     abortSession();
     return BookStatus::IoError;
   }
-  if (!session_.done() && !session_.active()) {
-    LOG_ERR("TTFB", "Session step failed: %s", bookStatusName(st));
-    abortSession();
-    return st;
-  }
   if (session_.done()) return finishSession() ? BookStatus::Ok : BookStatus::IoError;
+  if (!session_.active()) {
+    // Unreachable from the SDK's step() contract (Ok ⇒ Parsing or Done);
+    // belt-and-braces so an invariant break cannot spin the pump.
+    abortSession();
+    return BookStatus::Unsupported;
+  }
   return BookStatus::Ok;
 }
 
