@@ -8,6 +8,7 @@ a harness and structurally pin the save/menu wiring around it.
 
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -61,11 +62,17 @@ int main() {
 }
 """
 
-with subprocess.Popen(["c++", "-std=c++17", "-x", "c++", "-", "-o", "/dev/null"], stdin=subprocess.PIPE) as proc:
-    _, err = proc.communicate(harness.encode())
-if proc.returncode != 0:
-    print(err.decode() if err else "compile failed")
-    sys.exit(1)
+# Compile AND run the harness: the asserts must be able to fail the test when
+# the load fragment regresses (a compile-only check cannot).
+with tempfile.TemporaryDirectory() as directory:
+    binary = Path(directory) / "gesture_harness"
+    with subprocess.Popen(["c++", "-std=c++17", "-x", "c++", "-", "-o", str(binary)],
+                          stdin=subprocess.PIPE) as proc:
+        _, err = proc.communicate(harness.encode())
+    if proc.returncode != 0:
+        print(err.decode() if err else "compile failed")
+        sys.exit(1)
+    subprocess.run([str(binary)], check=True)
 
 # --- structural pins ---------------------------------------------------------
 # Save writes the same key (round-trip pair with the load line above).
