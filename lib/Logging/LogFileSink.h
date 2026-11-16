@@ -32,6 +32,10 @@
 
 namespace logfile {
 
+// SD path shared by the file sink, the USB/browser retrieval story and the
+// web UI logs endpoints (GET /api/logs, GET /logs/download).
+inline constexpr const char* kLogFilePath = "/.crosspoint/log.txt";
+
 class LogFileSink {
  public:
   // Sequential append-only storage behind the sink. open() may be retried

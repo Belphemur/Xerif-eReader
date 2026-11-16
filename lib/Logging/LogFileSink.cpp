@@ -127,13 +127,13 @@ void LogFileSink::onFlushFailure() {
 // pulls C headers (newlib) that must never be parsed inside a namespace.
 #include <HalStorage.h>
 
+using logfile::kLogFilePath;  // defined in the header (shared with the web UI)
+
 namespace {
 
 // HalStorage-backed writer: the codebase's own SD append pattern
 // (PluginEvents.cpp:223) — O_APPEND handle kept open between flushes, all
 // access serialized by HalStorage's recursive StorageLock.
-constexpr const char* kLogFilePath = "/.crosspoint/log.txt";
-
 class HalStorageLogWriter final : public logfile::LogFileSink::Writer {
  public:
   bool open() override {

@@ -5,6 +5,7 @@
 #include <WebServer.h>
 #include <WebSocketsServer.h>
 
+#include <cstdint>
 #include <memory>
 #include <span>
 #include <string>
@@ -114,8 +115,14 @@ class CrossPointWebServer {
   // Streams an already-open file to the client in 4KB chunks, feeding the
   // watchdog per write and aborting cleanly (rather than looping past a dead
   // connection) if a write stalls. Caller sets headers/content-length and
-  // closes the file.
-  void streamFileToClient(HalFile& file) const;
+  // closes the file. maxBytes bounds the stream so a file growing while it is
+  // served (the live log sink) cannot overrun the declared content-length.
+  void streamFileToClient(HalFile& file, uint64_t maxBytes = UINT64_MAX) const;
+
+  // Log file (Settings → System → SD Debug Log) handlers
+  void handleLogsPage() const;     // GET /logs          -> logs page
+  void handleLogTail() const;      // GET /api/logs      -> tail of /.crosspoint/log.txt (text/plain)
+  void handleLogDownload() const;  // GET /logs/download -> full log file (text/plain attachment)
   void handleUpload(UploadState& state) const;
   void handleUploadPost(UploadState& state) const;
   void handleCreateFolder() const;
