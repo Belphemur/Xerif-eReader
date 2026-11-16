@@ -285,6 +285,11 @@ inline bool isHiddenOnDevice(const SettingInfo& s) {
     // must not drop the saved value.
     case StrId::STR_TILT_PAGE_TURN:
       return !halTiltSensor.isAvailable();
+    // GT911 Gesture-mode park (design 2026-11-16-gt911-gesture-touch-wake.md):
+    // only boards whose touch controller IS a GT911 can gesture-park. Static
+    // per binary, so the compile-time-selected profile decides.
+    case StrId::STR_TOUCH_IDLE_GESTURE:
+      return BoardConfig::ACTIVE.touch.controller != BoardConfig::TouchController::Gt911;
     // Fork rows the base list always persists (clock rows: the automatic
     // timezone system covers every board; no long-press-menu row ships).
     default:

@@ -150,6 +150,16 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio, const uint64_t autoPowerOffT
   // releases the bus. On Picco this also puts the TMA525C to sleep.
   Frontlight.setOn(false);
   gpio.prepareForDeepSleep();
+#else
+  // GT911 gesture-park deep-sleep boundary (design
+  // 2026-11-16-gt911-gesture-touch-wake.md §2.3): drop the parked-touch INT
+  // edge capture before the rail cut below — the INT pad floats while its
+  // rail drops, and an ISR armed on it is a spurious wake source across deep
+  // sleep. No-op without a GT911; the rail-down itself depowers the
+  // controller.
+  if (BoardConfig::ACTIVE.touch.controller == BoardConfig::TouchController::Gt911) {
+    gpio.prepareForDeepSleep();
+  }
 #endif
 #ifdef ENABLE_SERIAL_LOG
   // Tear down HWCDC so the host sees a clean disconnect and the peripheral
@@ -269,6 +279,12 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio, const uint64_t autoPowerOffT
 
   // Cut the gated peripheral rails and park the frontlight pads while the
   // master rail is still up (same ordering as startDeepSleep()).
+  // GT911 gesture-park boundary: disarm the parked-touch INT edge capture
+  // first (design 2026-11-16-gt911-gesture-touch-wake.md §2.3) — same rule as
+  // startDeepSleep(), the pad must not carry an armed ISR across the cut.
+  if (BoardConfig::ACTIVE.touch.controller == BoardConfig::TouchController::Gt911) {
+    gpio.prepareForDeepSleep();
+  }
   freeink::PowerManager::powerDownRailsForSleep();
 #if FREEINK_FRONTLIGHT_LS
   Frontlight.park();

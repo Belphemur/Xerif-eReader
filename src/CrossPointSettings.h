@@ -387,8 +387,16 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // 2026-09-24-gt911-idle-sleep.md §3 Tier B): park the touch controller after
   // GT911_IDLE_SLEEP_MS of no input. 0 = disabled, for owners whose module
   // misbehaves on the best-effort sleep opcode — the poll throttle keeps
-  // running either way. No settings-menu entry yet; JSON-only (owner adds UI).
+  // running either way.
   uint8_t touchIdleSleep = 1;
+  // GT911 Gesture-mode park (design 2026-11-16-gt911-gesture-touch-wake.md):
+  // when on, the idle park runs in Gesture mode so a screen touch pulses INT
+  // and wakes the device without a button. Default OFF until the gesture-mode
+  // current draw is bench-measured (not specified in GT911 Rev.09) and the
+  // module's diode-to-INT circuit is confirmed; without the circuit the SDK
+  // falls back to Sleep-mode parking. On ⇒ park in Gesture mode even when
+  // touchIdleSleep is 0 (no dead combination).
+  uint8_t touchIdleSleepGesture = 0;
   // E-ink refresh frequency (default 15 pages)
   uint8_t refreshFrequency = REFRESH_15;
   uint8_t hyphenationEnabled = 0;

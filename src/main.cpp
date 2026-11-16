@@ -1758,6 +1758,30 @@ void loop() {
     gpio.setTouchSleep(false);
   }
 
+  // GT911 gesture-park touch wake (design 2026-11-16-gt911-gesture-touch-wake.md
+  // §2.2): while the controller is parked in Gesture mode, a screen touch
+  // pulses INT and the ISR latches a wake edge. The trunk drains the latch and
+  // runs the UNCHANGED wake handshake (exitGt911Sleep semantics via
+  // setTouchSleep(false)), sharing the two wake paths above's 1 s rate limit.
+  // The rate-limit gate runs BEFORE the latch is cleared: an edge arriving
+  // inside the retry window (the previous handshake failed) stays latched and
+  // drains the moment the window opens — clearing first would discard that
+  // quick retry touch until the user gestures yet again. pollGt911() never
+  // drains the latch (it early-returns while parked), so a wake attempt
+  // happens once per drained latch, and the SDK's fallback latches "gesture
+  // unsupported" after 3 consecutive failures and re-parks in Sleep mode, so
+  // a stuck INT line cannot turn this into a wake-thrash loop. Like the
+  // mapped-edge branch: a touch is user activity, so the inactivity clock and
+  // the CPU clock both restore.
+  if (gpio.isTouchAsleep() && gpio.wasTouchWakeEdgePending() &&
+      millis() - lastTouchWakeAttempt >= HalPowerManager::GT911_WAKE_RETRY_MS) {
+    gpio.clearTouchWakeEdge();
+    lastTouchWakeAttempt = millis();
+    lastActivityTime = millis();
+    powerManager.setPowerSaving(false);
+    gpio.setTouchSleep(false);
+  }
+
   // Let wake continue as soon as its hold has been verified. The release can
   // arrive after setup, so consume that one input frame rather than making it
   // a page turn, refresh, or other short power-button action.
@@ -2000,11 +2024,18 @@ void loop() {
 #define XERIF_BENCH_TOUCH_PARK 0
 #endif
       const bool usbGate = !gpio.isUsbConnected() || XERIF_BENCH_TOUCH_PARK;
-      // Parked state comes straight from the SDK (isTouchAsleep), so a failed
-      // entry is retried after the backoff window instead of latched awake
-      // until the next activity edge.
+      // Gesture wake (SETTINGS.touchIdleSleepGesture) implies parking even
+      // when touchIdleSleep is off — no dead combination: with the setting on
+      // the controller parks in Gesture mode (touch-triggered wake), otherwise
+      // in Sleep mode. The hasTouchIndependentWakeSource() gate stays: if the
+      // module lacks the diode-to-INT circuit the SDK falls back to Sleep-mode
+      // parking, where touch is dead again — a board with no buttons must not
+      // park at all. Parked state comes straight from the SDK (isTouchAsleep),
+      // so a failed entry is retried after the backoff window instead of
+      // latched awake until the next activity edge.
       static unsigned long lastParkAttempt = 0;
-      if (SETTINGS.touchIdleSleep && hasTouchIndependentWakeSource() && !gpio.isTouchAsleep() &&
+      const bool gesturePark = SETTINGS.touchIdleSleepGesture != 0;
+      if ((SETTINGS.touchIdleSleep || gesturePark) && hasTouchIndependentWakeSource() && !gpio.isTouchAsleep() &&
           millis() - lastActivityTime >= HalPowerManager::GT911_IDLE_SLEEP_MS && usbGate &&
           // Never park under a live contact: the held-contact wake above does
           // not reset the inactivity timer, so a parked controller would be
@@ -2013,7 +2044,11 @@ void loop() {
           // (InputManager::enterGt911Sleep, touchPressed/touchHomeKeyDown).
           !gpio.anyPhysicalButtonHeld() && millis() - lastParkAttempt >= HalPowerManager::GT911_PARK_RETRY_MS) {
         lastParkAttempt = millis();
-        gpio.setTouchSleep(true);
+        if (gesturePark) {
+          gpio.setTouchSleepGesture();
+        } else {
+          gpio.setTouchSleep(true);
+        }
       }
       // Sleep in short slices and wake the poll as soon as a button contact closes.
       // InputManager commits a press only when two consecutive polls agree, so a

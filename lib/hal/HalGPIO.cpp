@@ -257,6 +257,12 @@ bool HalGPIO::setTouchSleep(const bool asleep) { return inputMgr.setTouchSleep(a
 
 bool HalGPIO::wakeTouch() { return inputMgr.wakeTouch(); }
 
+bool HalGPIO::setTouchSleepGesture() { return inputMgr.setTouchSleepGesture(); }
+
+bool HalGPIO::wasTouchWakeEdgePending() const { return inputMgr.wasTouchWakeEdgePending(); }
+
+void HalGPIO::clearTouchWakeEdge() { inputMgr.clearTouchWakeEdge(); }
+
 bool HalGPIO::isTouchAsleep() const { return inputMgr.isTouchAsleep(); }
 
 unsigned long HalGPIO::getPowerButtonHeldTime() const { return inputMgr.getPowerButtonHeldTime(); }
