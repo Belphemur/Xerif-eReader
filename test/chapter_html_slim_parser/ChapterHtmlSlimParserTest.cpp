@@ -214,12 +214,13 @@ TEST_F(ChapterHtmlSlimParserTest, AbandonedLayoutStopsExtractingLines) {
 class ParserStopTest : public ChapterHtmlSlimParserTest {};
 
 TEST_P(ParserStopTest, PageCallbackStopsParsingAndClosesFile) {
-  filepath =
-      (std::filesystem::temp_directory_path() / ("crosspoint-parser-stop-" + std::to_string(::getpid()) + ".xhtml"))
-          .string();  // unique per discovered-test process (see include note)
+  // One file per process+parameter: gtest_discover_tests runs each parametrized
+  // case in its own process and ctest runs the instances in parallel.
   std::string html = "<html><body>";
   for (int i = 0; i < 100; ++i) html += GetParam();
   html += "</body></html>";
+  const std::string testId = std::to_string(std::hash<std::string>{}(html)) + "-" + std::to_string(::getpid());
+  filepath = (std::filesystem::temp_directory_path() / ("crosspoint-parser-stop-" + testId + ".xhtml")).string();
   {
     HalFile file;
     ASSERT_TRUE(file.open(filepath.c_str(), "wb"));
