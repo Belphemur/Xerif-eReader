@@ -253,7 +253,11 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
   // GT911 Gesture-mode park (design 2026-11-16-gt911-gesture-touch-wake.md
   // §2.4): the touch-wake setting the idle-sleep feature was missing a menu
   // entry for. Persisted on every board; isHiddenOnDevice() hides it where
-  // there is no GT911 to park (X4 Pro/X4C show it).
+  // there is no GT911 to park (X4 Pro/X4C show it). The label says
+  // "(Gestures)" because GT911 gesture-mode wake fires on the controller's
+  // gesture set (datasheet §8.1: swipes / double-tap / letter gestures) — a
+  // plain single tap is not guaranteed to wake, and Sleep-mode parking (the
+  // alternative) wakes by no touch at all.
   emit(SettingInfo::Toggle(StrId::STR_TOUCH_IDLE_GESTURE, &CrossPointSettings::touchIdleSleepGesture,
                            "touchIdleSleepGesture", StrId::STR_CAT_SYSTEM));
 
