@@ -1763,21 +1763,23 @@ void loop() {
   // pulses INT and the ISR latches a wake edge. The trunk drains the latch and
   // runs the UNCHANGED wake handshake (exitGt911Sleep semantics via
   // setTouchSleep(false)), sharing the two wake paths above's 1 s rate limit.
-  // pollGt911() never drains the latch (it early-returns while parked), so a
-  // wake attempt here happens exactly once per INT edge. A failed handshake is
-  // retried only on the next edge, and the SDK's fallback latches "gesture
-  // unsupported" after 3 consecutive failures and re-parks in Sleep mode, so a
-  // stuck INT line cannot turn this into a wake-thrash loop. Like the
+  // The rate-limit gate runs BEFORE the latch is cleared: an edge arriving
+  // inside the retry window (the previous handshake failed) stays latched and
+  // drains the moment the window opens — clearing first would discard that
+  // quick retry touch until the user gestures yet again. pollGt911() never
+  // drains the latch (it early-returns while parked), so a wake attempt
+  // happens once per drained latch, and the SDK's fallback latches "gesture
+  // unsupported" after 3 consecutive failures and re-parks in Sleep mode, so
+  // a stuck INT line cannot turn this into a wake-thrash loop. Like the
   // mapped-edge branch: a touch is user activity, so the inactivity clock and
   // the CPU clock both restore.
-  if (gpio.isTouchAsleep() && gpio.wasTouchWakeEdgePending()) {
+  if (gpio.isTouchAsleep() && gpio.wasTouchWakeEdgePending() &&
+      millis() - lastTouchWakeAttempt >= HalPowerManager::GT911_WAKE_RETRY_MS) {
     gpio.clearTouchWakeEdge();
-    if (millis() - lastTouchWakeAttempt >= HalPowerManager::GT911_WAKE_RETRY_MS) {
-      lastTouchWakeAttempt = millis();
-      lastActivityTime = millis();
-      powerManager.setPowerSaving(false);
-      gpio.setTouchSleep(false);
-    }
+    lastTouchWakeAttempt = millis();
+    lastActivityTime = millis();
+    powerManager.setPowerSaving(false);
+    gpio.setTouchSleep(false);
   }
 
   // Let wake continue as soon as its hold has been verified. The release can
