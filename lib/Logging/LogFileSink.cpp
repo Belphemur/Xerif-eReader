@@ -60,6 +60,16 @@ void LogFileSink::flush(const unsigned long nowMs) {
   flushLocked(nowMs, /*debounceGate=*/true);
 }
 
+void LogFileSink::flushAndClose() {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  if (!enabled_.load(std::memory_order_relaxed)) return;  // disable already closed the handle
+  flushLocked(0, /*debounceGate=*/false);
+  if (fileOpen_) {
+    writer_.close();
+    fileOpen_ = false;
+  }
+}
+
 size_t LogFileSink::pendingBytes() const {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   return pending_;
@@ -94,10 +104,20 @@ void LogFileSink::flushLocked(const unsigned long nowMs, const bool debounceGate
     }
     fileOpen_ = true;
   }
-  if (writer_.write(buffer_, pending_)) {
+  const size_t accepted = writer_.write(buffer_, pending_);
+  if (accepted == pending_) {
     pending_ = 0;  // the next append re-anchors the debounce window
     consecutiveFailures_ = 0;
     hasPending_.store(false, std::memory_order_relaxed);
+    return;
+  }
+  if (accepted > 0) {
+    // Short write: keep only the unwritten suffix so the next flush does not
+    // re-append the bytes the card already took.
+    pending_ -= accepted;
+    memmove(buffer_, buffer_ + accepted, pending_);
+    consecutiveFailures_ = 0;
+    hasPending_.store(true, std::memory_order_relaxed);
     return;
   }
   onFlushFailure();
@@ -141,9 +161,14 @@ class HalStorageLogWriter final : public logfile::LogFileSink::Writer {
     file_ = Storage.open(kLogFilePath, O_WRONLY | O_CREAT | O_APPEND);
     return static_cast<bool>(file_);
   }
-  bool write(const char* data, const size_t len) override {
-    if (!file_) return false;
-    return file_.write(data, len) == len;
+  size_t write(const char* data, const size_t len) override {
+    if (!file_) return 0;
+    const size_t written = file_.write(data, len);
+    // The flush's durability point: push the append out of SdFat's cache
+    // before reporting success, so the reported state survives a power cut
+    // (one extra card command per >=2 s flush; no extra cluster writes).
+    if (written == len) file_.sync();
+    return written;
   }
   uint64_t size() override { return file_ ? file_.fileSize64() : 0; }
   bool reset() override { return Storage.remove(kLogFilePath); }
@@ -167,6 +192,7 @@ void appendLogLine(const char* line) { sink.append(line, millis()); }
 void setLogFileEnabled(const bool on) { sink.setEnabled(on); }
 void tickLogFile() { sink.tick(millis()); }
 void flushLogFile() { sink.flush(millis()); }
+void flushAndCloseLogFile() { sink.flushAndClose(); }
 bool logFileEnabled() { return sink.enabled(); }
 
 }  // namespace logfile

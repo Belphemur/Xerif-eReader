@@ -62,9 +62,11 @@ bool HalStorage::freeBytes(uint64_t* outFreeBytes) {
 }
 
 void HalStorage::prepareForDeepSleep() {
-  // The SD debug log sink (default OFF) gets its pending bytes out before the
-  // card is unmounted; an empty buffer costs zero SD operations.
-  logfile::flushLogFile();
+  // The SD debug log sink (default OFF) gets its pending bytes out — without
+  // the flush debounce — and releases its append handle before the card is
+  // unmounted; an empty buffer costs zero SD operations. The setting stays
+  // enabled, so the next boot re-opens the file lazily.
+  logfile::flushAndCloseLogFile();
   StorageLock lock;
   SDCard.shutdown();
 }

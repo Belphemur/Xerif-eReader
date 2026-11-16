@@ -855,6 +855,10 @@ void enterPowerOff() {
   // deep-sleep command while the rail that powers it is still up (same ordering
   // rule as enterDeepSleep(); CodeRabbit finding).
   display.deepSleep();
+  // Drain the SD debug log sink and release its append handle before the rail
+  // cut (same non-debounced drain as deep sleep); an empty buffer costs zero
+  // SD operations.
+  logfile::flushAndCloseLogFile();
   LOG_INF("MAIN", "Powering off");
   // Stock-parity shutdown marker (ghidra_poweroff_report.md): record WHY we are
   // powering off in RTC slow RAM; the next boot reports + clears it.

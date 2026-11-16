@@ -26,15 +26,19 @@ class FakeWriter final : public logfile::LogFileSink::Writer {
     ++openCalls;
     return true;
   }
-  bool write(const char* data, const size_t len) override {
+  size_t write(const char* data, const size_t len) override {
     if (failWrites > 0) {
       --failWrites;
-      return false;
+      return 0;
     }
-    if (!open_) return false;
-    appends.emplace_back(data, len);
-    size_ += len;
-    return true;
+    if (!open_) return 0;
+    // shortBy > 0 simulates a short write: the card accepts len - shortBy
+    // bytes (0 when the write is shorter than the shortfall).
+    const size_t accepted = shortBy > 0 ? (len > shortBy ? len - shortBy : 0) : len;
+    if (accepted == 0) return 0;
+    appends.emplace_back(data, accepted);
+    size_ += accepted;
+    return accepted;
   }
   uint64_t size() override { return size_; }
   bool reset() override {
@@ -50,6 +54,7 @@ class FakeWriter final : public logfile::LogFileSink::Writer {
 
   unsigned failOpens = 0;
   unsigned failWrites = 0;
+  size_t shortBy = 0;
   int openCalls = 0;
   int closeCalls = 0;
   int resetCalls = 0;
@@ -133,6 +138,65 @@ TEST(LogFileSinkTest, BufferFullFlushesThenAppendsLine) {
   // The overflowing line stays buffered whole (its own flush follows later).
   EXPECT_EQ(s.writer.content(), three);
   EXPECT_EQ(s.sink.pendingBytes(), fourth.size());
+}
+
+// flushAndClose: the sleep/power-off entry — a young buffer drains WITHOUT
+// the debounce gate, the handle is released, and the sink stays enabled.
+TEST(LogFileSinkTest, FlushAndCloseDrainsYoungBufferAndReleasesHandle) {
+  SinkAndWriter s;
+  s.enable();
+  s.sink.append("[1] [INF] [X] young\n", /*nowMs=*/0);
+  EXPECT_EQ(s.writer.appends.size(), 0u);  // still inside the debounce window
+
+  s.sink.flushAndClose();
+  ASSERT_EQ(s.writer.appends.size(), 1u);
+  EXPECT_EQ(s.writer.appends[0], "[1] [INF] [X] young\n");
+  EXPECT_EQ(s.writer.closeCalls, 1);
+  EXPECT_EQ(s.sink.pendingBytes(), 0u);
+  EXPECT_TRUE(s.sink.enabled());  // the setting survives; next flush reopens
+
+  // The next flush reopens lazily and appends without re-writing the prefix
+  // (the fresh append re-anchors the debounce window, so the flush waits a
+  // full interval — the debounce is a MINIMUM).
+  s.sink.append("[2] [INF] [X] after\n", kDebounce);
+  s.sink.flush(2 * kDebounce);
+  ASSERT_EQ(s.writer.appends.size(), 2u);
+  EXPECT_EQ(s.writer.appends[1], "[2] [INF] [X] after\n");
+  EXPECT_EQ(s.writer.content(), "[1] [INF] [X] young\n[2] [INF] [X] after\n");
+}
+
+// No buffered bytes and no open handle: flushAndClose issues zero SD work.
+TEST(LogFileSinkTest, FlushAndCloseEmptyBufferTouchesNothing) {
+  SinkAndWriter s;
+  s.sink.flushAndClose();  // disabled
+  EXPECT_EQ(s.writer.closeCalls, 0);
+  EXPECT_EQ(s.writer.openCalls, 0);
+
+  s.enable();
+  s.sink.flushAndClose();  // enabled, empty (lazy open has not run yet)
+  EXPECT_EQ(s.writer.closeCalls, 0);
+  EXPECT_EQ(s.writer.openCalls, 0);
+}
+
+// A short write keeps only the unwritten suffix: the next flush appends the
+// remainder without replaying the bytes the card already took.
+TEST(LogFileSinkTest, ShortWriteRetainsUnwrittenSuffix) {
+  SinkAndWriter s;
+  s.enable();
+  s.sink.append("aa\n", /*nowMs=*/0);
+  s.sink.append("bb\n", /*nowMs=*/0);
+  s.writer.shortBy = 2;  // the card takes "aa\nb", chokes on the last 2 bytes
+  s.sink.flush(kDebounce);
+  ASSERT_EQ(s.writer.appends.size(), 1u);
+  EXPECT_EQ(s.writer.appends[0], "aa\nb");
+  EXPECT_EQ(s.sink.pendingBytes(), 2u);  // "b\n" stays buffered
+
+  s.writer.shortBy = 0;
+  s.sink.flush(2 * kDebounce);
+  ASSERT_EQ(s.writer.appends.size(), 2u);
+  EXPECT_EQ(s.writer.appends[1], "b\n");
+  EXPECT_EQ(s.writer.content(), "aa\nbb\n");  // no duplication, no loss
+  EXPECT_EQ(s.sink.pendingBytes(), 0u);
 }
 
 // Disable flushes what is pending and releases the file, so the card can be
