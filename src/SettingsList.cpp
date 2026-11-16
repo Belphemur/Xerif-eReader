@@ -238,6 +238,10 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
                           "autoPowerOffHours", StrId::STR_CAT_SYSTEM));
   emit(SettingInfo::Toggle(StrId::STR_SHOW_HIDDEN_FILES, &CrossPointSettings::showHiddenFiles, "showHiddenFiles",
                            StrId::STR_CAT_SYSTEM));
+  // SD debug log (/.crosspoint/log.txt): soak diagnostics retrievable via USB
+  // Drive or a card reader. Default OFF — zero SD cost while disabled.
+  emit(SettingInfo::Toggle(StrId::STR_SD_DEBUG_LOG, &CrossPointSettings::sdDebugLog, "sdDebugLog",
+                           StrId::STR_CAT_SYSTEM));
   emit(SettingInfo::Toggle(StrId::STR_SHOW_FILE_EXTENSIONS, &CrossPointSettings::showFileExtensions,
                            "showFileExtensions", StrId::STR_CAT_SYSTEM));
   emit(SettingInfo::Toggle(StrId::STR_LIBRARY_USE_METADATA, &CrossPointSettings::libraryUseMetadata,

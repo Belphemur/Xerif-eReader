@@ -5,6 +5,7 @@
 #include <GfxRenderer.h>
 #include <HalClock.h>
 #include <HalDisplay.h>
+#include <LogFileSink.h>
 #include <Logging.h>
 #include <Memory.h>
 #include <WiFi.h>
@@ -288,6 +289,12 @@ void SettingsActivity::activateIndex(const int index) {
 }
 
 void SettingsActivity::applyUiSettingChange(uint8_t CrossPointSettings::* valuePtr) {
+  // The SD debug log takes effect immediately: enabling starts appending
+  // (file opened lazily on the first flush), disabling flushes and closes —
+  // the card can be pulled right after the toggle.
+  if (valuePtr == &CrossPointSettings::sdDebugLog) {
+    logfile::setLogFileEnabled(SETTINGS.sdDebugLog != 0);
+  }
   // Theme changes take effect immediately, on this screen — reload the theme
   // and re-derive the app's tokens so the very next repaint is in the new look.
   if (valuePtr != &CrossPointSettings::uiTheme) {
