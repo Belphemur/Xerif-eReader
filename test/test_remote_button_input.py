@@ -15,12 +15,20 @@ methods = []
 for signature, following in (
     ("void MappedInputManager::update(", "bool MappedInputManager::isNavDirectionSwapped("),
     ("bool MappedInputManager::injectRemoteClick(", "bool MappedInputManager::wasLongPressed("),
+    ("bool MappedInputManager::isNavDirectionSwapped(", "bool MappedInputManager::areSidePageButtonsSwapped("),
+    ("bool MappedInputManager::areSidePageButtonsSwapped(", "MappedInputManager::Button MappedInputManager::mapScreenDirection("),
+    ("MappedInputManager::Button MappedInputManager::mapScreenDirection(", "bool MappedInputManager::mapButton("),
     ("bool MappedInputManager::isPressed(", "MappedInputManager::Labels MappedInputManager::mapLabels("),
+    ("bool MappedInputManager::edgeSnapshot(", "uint8_t MappedInputManager::edgeCountSnapshot("),
+    ("template <typename Probe>\nbool MappedInputManager::mapButtonWith(", "bool MappedInputManager::hasTouch("),
+    ("void MappedInputManager::resolvePowerDoubleClickWindow(", "bool MappedInputManager::isPowerClickHoldCandidate("),
+    ("bool MappedInputManager::isPowerClickHoldCandidate(", "bool MappedInputManager::consumePowerDoubleClick("),
+    ("bool MappedInputManager::consumePowerConfirmPress(", "bool MappedInputManager::wasPowerConfirmClick("),
 ):
     methods.append(signature + source.split(signature, 1)[1].split(following, 1)[0])
-methods.append("#if FREEINK_CAP_TOUCH\n" + "bool MappedInputManager::wasPowerConfirmClick() const" + source.split(
+methods.append("bool MappedInputManager::wasPowerConfirmClick() const" + source.split(
     "bool MappedInputManager::wasPowerConfirmClick() const", 1
-)[1].split("#endif", 1)[0] + "#endif\n")
+)[1].split("bool MappedInputManager::injectRemoteClick", 1)[0])
 
 stub = r"""
 #pragma once
@@ -46,12 +54,19 @@ struct HalGPIO {
   bool wasHomeKeyTapped() const { return false; }
   bool wasHomeKeyLongPressed() const { return false; }
   bool wasHomeKeyPressed() const { return false; }
+  // Fork async-input API the merged MappedInputManager::update() calls.
+  void consumeTouchFrame() {}
+  bool asyncInputActive() const { return false; }
 };
 """
 harness = r"""
 #include <cassert>
 #include "MappedInputManager.h"
-class GfxRenderer {};
+class GfxRenderer {
+ public:
+  enum Orientation { Portrait, PortraitInverted, LandscapeClockwise, LandscapeCounterClockwise };
+  Orientation getOrientation() const { return Portrait; }
+};
 namespace BoardConfig {
   enum class InputStyle { DigitalButtons, DigitalConfirmPowerHold };
   struct {
@@ -70,6 +85,12 @@ struct CrossPointSettings {
   uint16_t getPowerButtonDuration() const { return shortPwrBtn == SLEEP ? 10 : 400; }
   int vibration = VIBRATION_OFF, hapticIntensity = 0;
   int homeButtonTapAction = 0, homeButtonDoubleTapAction = 0, homeButtonLongPressAction = 0;
+  int frontButtonFollowOrientation = 0, sideButtonFollowOrientation = 0;
+  int sideButtonLayout = 0;
+  enum { PREV_NEXT, NEXT_PREV, PREV_PREV, NEXT_NEXT, SIDE_BUTTONS_DISABLED };
+  int frontButtonBack = 0, frontButtonConfirm = 0, frontButtonLeft = 0, frontButtonRight = 0;
+  CrossPointSettings() { frontButtonBack = HalGPIO::BTN_BACK; frontButtonConfirm = HalGPIO::BTN_CONFIRM;
+                         frontButtonLeft = HalGPIO::BTN_LEFT; frontButtonRight = HalGPIO::BTN_RIGHT; }
 } SETTINGS;
 struct HalHaptics {
   static void feedback(bool, bool, int) {}
@@ -396,6 +417,9 @@ void enterDeepSleep() { slept = true; }
 void dispatchSleep(MappedInputManager& mappedInputManager, HalGPIO& gpio,
                    bool x4ProDoubleClickEnabled, unsigned long allowSleepAt) {
   slept = forwardedRelease = false;
+#define LOG_INF(...) ((void)0)
+#define LOG_DBG(...) ((void)0)
+#define enterPowerOff(...) ((void)0)
   if (mappedInputManager.wasPowerReleaseConsumed()) {
 """ + release_guard + "  const bool x4ProAwaitingClickWindow =" + sleep_dispatch + r"""
   forwardedRelease = true;

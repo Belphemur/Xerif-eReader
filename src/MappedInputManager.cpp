@@ -272,14 +272,13 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
     powerButtonClickInput.reset();
   }
   // Touch boards without a home key: a short power click can carry a reader
-  // shortcut (see SHORT_PWRBTN). On the X4 Pro the frontlight double-click
-  // window (resolved above at the snapshot) withholds an ambiguous release
-  // from the served mask, so this mapping naturally sees only final releases.
-  // The probe reads the SERVED mask, not the raw GPIO edge: async builds
-  // drained every queued edge into the masks at the top of update(), and a
-  // window-expiry delivery never exists as a live edge — the raw probe would
-  // never fire for a classified click.
-  if (!classifyPower && homeAction == HomeButtonAction::Ignore && edgeSnapshot(Button::Power, /*pressed=*/false)) {
+  // shortcut (see SHORT_PWRBTN). The probe is upstream #4407's
+  // wasShortPowerReleased() (wake/restart-qualified: a wake press's release
+  // or a consumed gesture release never dispatches a shortcut), not a raw
+  // served-mask read — the served mask alone would re-introduce exactly the
+  // restart/wake dispatch the #4407 merge exists to kill.
+  if (!classifyPower && homeAction == HomeButtonAction::Ignore && wasShortPowerReleased()) {
+    switch (SETTINGS.shortPwrBtn) {
       case CrossPointSettings::PWR_BOOKMARK:
         homeAction = HomeButtonAction::Bookmark;
         break;
@@ -719,7 +718,11 @@ bool MappedInputManager::wasHomeGesture() const {
 bool MappedInputManager::wasLightPanelGesture() const { return wasTopEdgeDownSwipe(); }
 
 void MappedInputManager::resolvePowerDoubleClickWindow(const uint8_t newReleasedEdges) const {
-#if FREEINK_CAP_TOUCH
+  // NOT FREEINK_CAP_TOUCH-gated: the X4 Pro's frontlight double-click window
+  // classifies a PHYSICAL button's releases — the fork feature exists on
+  // touchless boards too (soak-fix7). Gating it on touch left the Power
+  // release unstripped on the touch=0 build, so wasReleased(Power) leaked
+  // classified double-click releases to release-driven consumers.
   if (!BoardConfig::isX4Pro() || SETTINGS.doublePwrBtn == CrossPointSettings::IGNORE) return;
   const unsigned long now = millis();
   // Classify only NEWLY captured releases (coderabbit 5r7g): the frame mask
@@ -751,7 +754,6 @@ void MappedInputManager::resolvePowerDoubleClickWindow(const uint8_t newReleased
   if (physicalRelease && (frameReleasedEdges & (1u << HalGPIO::BTN_POWER)) == 0) {
     frameHiddenActivity = true;
   }
-#endif
 }
 
 bool MappedInputManager::isPowerClickHoldCandidate() const {
@@ -767,7 +769,8 @@ bool MappedInputManager::consumePowerDoubleClick() {
   return true;
 }
 
-#if FREEINK_CAP_TOUCH
+// PWR_CONFIRM click + synthesized press: power-button features, not touch —
+// the double-click window sets powerConfirmClickFrame on touchless boards too.
 bool MappedInputManager::consumePowerConfirmPress() const {
   if (!powerConfirmPressActive) return false;
   powerConfirmPressActive = false;
@@ -783,10 +786,8 @@ bool MappedInputManager::wasPowerConfirmClick() const {
   // upstream #4407's wake/restart state machine, so a wake or consumed
   // release never counts as Confirm either.
   if (BoardConfig::isX4Pro() && SETTINGS.doublePwrBtn != CrossPointSettings::IGNORE) return powerConfirmClickFrame;
-  return wasShortPowerReleased() &&
-         gpio.getPowerButtonHeldTime() <= SETTINGS.getPowerButtonDuration();
+  return wasShortPowerReleased() && gpio.getPowerButtonHeldTime() <= SETTINGS.getPowerButtonDuration();
 }
-#endif
 
 bool MappedInputManager::injectRemoteClick(const RemoteButton button) {
   if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || isPressed(Button::Confirm) || isPressed(Button::Back))
@@ -809,6 +810,10 @@ bool MappedInputManager::wasPressed(const Button button) const {
   // Confirm consumers still work (kody 6O2u).
   if (button == Button::Confirm && consumePowerConfirmPress()) return true;
 #endif
+  // Upstream #4407: a short PWR_CONFIRM click also serves as a Confirm
+  // PRESS on its release tick (upstream's wasPressed calls
+  // wasPowerConfirmClick() before the raw edge read).
+  if (button == Button::Confirm && wasPowerConfirmClick()) return true;
   return edgeSnapshot(button, true);
 }
 
@@ -819,6 +824,11 @@ bool MappedInputManager::wasReleased(const Button button) const {
   // a double-click's second release is stripped and dispatched through
   // consumePowerDoubleClick() instead. Release-driven consumers (main.cpp's
   // sleep/refresh branches, reader shortcuts) read that served release here.
+  // No upstream-style hard guard (return false on X4+classifier): the fork's
+  // released-long-hold sleep (main.cpp's sleep-on-release branch) reads the
+  // served release on X4 too, and the window's mask strip already withholds
+  // classified double-click releases — a guard here would block the served
+  // final click and break the sleep path.
   if (button == Button::Confirm && remoteInput.button == RemoteButton::Confirm) return true;
   if (button == Button::Back && remoteInput.button == RemoteButton::Back) return true;
   if ((button == Button::NavNext || button == Button::Right) && remoteInput.button == RemoteButton::Next) return true;

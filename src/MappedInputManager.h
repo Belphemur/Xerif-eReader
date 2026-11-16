@@ -3,9 +3,9 @@
 #include <HalGPIO.h>
 
 #include "util/HomeButtonInput.h"
-#include "util/PowerClickWindow.h"
 #include "util/PowerButtonClickInput.h"
 #include "util/PowerButtonInput.h"
+#include "util/PowerClickWindow.h"
 #include "util/QueuedEdgeDrain.h"
 #include "util/RemoteButtonInput.h"
 #include "util/RepeatHoldDiscount.h"
@@ -270,9 +270,8 @@ class MappedInputManager {
   bool wasBottomEdgeUpSwipe() const;
   // Fetch the pending swipe (if any) and map both endpoints to logical screen coords
   bool decodeSwipe(int& sx, int& sy, int& ex, int& ey) const;
-#if FREEINK_CAP_TOUCH
+  // PWR_CONFIRM power click confirm (power-button feature, not touch).
   bool wasPowerConfirmClick() const;
-#endif
   void rememberTouchHeldTime() const;
   void suppressNextRelease(Button button) const;
 
@@ -330,13 +329,14 @@ class MappedInputManager {
   // otherwise the inactivity timer can expire during the 500 ms window
   // despite a real click (qodo Q2).
   mutable bool frameHiddenActivity = false;
-#if FREEINK_CAP_TOUCH
-  mutable bool powerConfirmClickFrame = false;
-  // PWR_CONFIRM synthesized press (kody 6O2u, frame-scoped per kody
-  // 8Y5e/8Y70): ARMED on the dispatch that delivers the Confirm verdict;
-  // the next normal dispatch shifts armed into ACTIVE, which lives exactly
-  // one dispatch frame and is consumed by the first wasPressed(Confirm)
+  // PWR_CONFIRM click verdict + synthesized press (kody 6O2u, frame-scoped
+  // per kody 8Y5e/8Y70): ARMED on the dispatch that delivers the Confirm
+  // verdict; the next normal dispatch shifts armed into ACTIVE, which lives
+  // exactly one dispatch frame and is consumed by the first wasPressed(Confirm)
   // read. Edge state never survives two dispatch boundaries.
+  // NOT FREEINK_CAP_TOUCH-gated: these are power-button features (the
+  // double-click window sets powerConfirmClickFrame on touchless boards).
+  mutable bool powerConfirmClickFrame = false;
   mutable bool powerConfirmPressActive = false;
   mutable bool powerConfirmPressArmed = false;
   // True while a blocking transfer's pump ticks run: verdicts raised
@@ -344,7 +344,6 @@ class MappedInputManager {
   // them for that frame); the pump-entry transition clears pre-transfer
   // verdict state (kody 7JYi).
   mutable bool pumpingDispatch = false;
-#endif
   // X4 Pro frontlight double-click window (soak-fix7 JFhK): the FIRST short
   // power release is ambiguous (frontlight toggle vs configured short-power
   // action) and is held out of the served mask until the window resolves.

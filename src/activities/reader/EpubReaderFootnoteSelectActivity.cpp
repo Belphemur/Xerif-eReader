@@ -63,8 +63,7 @@ void EpubReaderFootnoteSelectActivity::loop() {
   // Power single-click as a confirm: the fork's frontlight double-click
   // window withholds the ambiguous first release from the served mask, so a
   // Power release visible here is a final (non-double) short click.
-  if ((mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
-       mappedInput.wasReleased(MappedInputManager::Button::Power)) &&
+  if ((mappedInput.wasReleased(MappedInputManager::Button::Confirm) || mappedInput.wasPowerSingleClick()) &&
       !footnoteLinks.empty()) {
     performJump();
     return;

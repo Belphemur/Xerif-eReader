@@ -1154,17 +1154,6 @@ void setup() {
   // ([[gnu::used]] does not protect a section from garbage collection).
   [[maybe_unused]] const volatile BookStatusProbe keepAlive = bookStatusProbe;
 
-  // Brightness and warmth are always restored. A normal wake starts with the
-  // light off unless Restore Light on Wake is enabled; silent maintenance
-  // reboots replay the live state captured at restart, so they neither go dark
-  // nor light up against the user's wake preference. A slide switch bound to
-  // the light decides it from its position instead.
-  const bool restoreLightOn = isSilentReboot ? silentRebootLightOn
-                              : slideSwitchOwnsLight()
-                                  ? gpio.isToggleSwitchOn()
-                                  : (SETTINGS.frontlightOn != 0 && SETTINGS.frontlightRestoreOnWake != 0);
-  Frontlight.begin(SETTINGS.frontlightBrightness, SETTINGS.frontlightWarmth, restoreLightOn);
-
   // A power press that started this boot must never dispatch an in-app action
   // on its own release (docs/design/2026-11-03-wake-release-shutdown-swallow.md).
   // The classification covers deep-sleep wakes; on rail-button boards like the
@@ -1379,8 +1368,9 @@ void setup() {
     gpio.discardQueuedButtonEdges();
   }
 
-  mappedInputManager.beginPowerInput((wakeSwallowSuppress && !wakePowerReleasePending) || !isSilentReboot || suppressRestartPower,
-                                     mappedInputManager.isPowerHeld());
+  mappedInputManager.beginPowerInput(
+      (wakeSwallowSuppress && !wakePowerReleasePending) || !isSilentReboot || suppressRestartPower,
+      mappedInputManager.isPowerHeld());
   wakeSwallowSuppress = false;
   allowSleepAt = millis() + (isSilentReboot ? 0 : 2000);
 }
@@ -1847,11 +1837,24 @@ void loop() {
 
   // On X4 Pro with SLEEP, a press still within the click window is a
   // double-click candidate — let it be released and evaluated by the click
-  // tracking below instead of powering off on button-down.
-  const bool x4ProAwaitingClickWindow =
-      mappedInputManager.isPowerClickHoldCandidate() && SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP;
+  // tracking below instead of powering off on button-down. Upstream #4407's
+  // formula, kept verbatim: the double-click ENABLED context (board +
+  // classifier setting) gates the window, and the hold duration decides
+  // whether this press is still a click candidate. The harness extracts this
+  // region into dispatchSleep(..., x4ProDoubleClickEnabled, ...) and supplies
+  // the context as a parameter; on-device it is board-derived here.
+  const bool x4ProDoubleClickEnabled = BoardConfig::isX4Pro() && SETTINGS.doublePwrBtn != CrossPointSettings::IGNORE;
+  const bool x4ProAwaitingClickWindow = x4ProDoubleClickEnabled &&
+                                        SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP &&
+                                        gpio.getPowerButtonHeldTime() <= PowerButtonClickInput::MAX_CLICK_HOLD_MS;
 
-  if (!x4ProAwaitingClickWindow && millis() >= allowSleepAt && mappedInputManager.powerSleepRequested()) {
+  // Fork semantics kept: the hold path powers off ONLY while the button is
+  // still pressed (a released long hold falls through to the sleep-on-release
+  // branch below, whose binding decides). Upstream #4407's version dropped the
+  // isPressed gate, which turned every released long hold into a power-off —
+  // wrong on the fork, where long-hold = power off, short click = sleep.
+  if (!x4ProAwaitingClickWindow && millis() >= allowSleepAt &&
+      mappedInputManager.isPressed(MappedInputManager::Button::Power) && mappedInputManager.powerSleepRequested()) {
     // If the screenshot combination is potentially being pressed, don't power off
     if (mappedInputManager.isPressed(MappedInputManager::Button::Down)) {
       return;
@@ -1867,9 +1870,12 @@ void loop() {
   // one-tick click, so the hold path above cannot fire); on the other boards
   // it complements the hold path, which is now exclusively the power off
   // gesture. allowSleepAt also covers the release of the press that woke the
-  // device when wakePowerReleasePending missed it.
-  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP && millis() >= allowSleepAt &&
-      mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
+  // device when wakePowerReleasePending missed it. Gated on the double-click
+  // window like the hold path (upstream #4407): a press still inside the
+  // window is a double-click candidate, so its release must wait for the
+  // classifier instead of sleeping immediately.
+  if (!x4ProAwaitingClickWindow && SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP &&
+      millis() >= allowSleepAt && mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
     LOG_INF("MAIN", "Sleep triggered by power-button click");
     enterDeepSleep();
     return;
