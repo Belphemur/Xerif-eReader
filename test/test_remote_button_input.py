@@ -35,15 +35,28 @@ stub = r"""
 #include <cstdint>
 struct HalGPIO {
   enum { BTN_BACK, BTN_CONFIRM, BTN_LEFT, BTN_RIGHT, BTN_UP, BTN_DOWN, BTN_POWER };
-  bool pressed = false, released = false, held = false;
+  mutable bool pressed = false, released = false, held = false;
   bool physicalPowerHeld = false;
   uint8_t button = 0;
   unsigned long powerHeldMs = 20;
   void update() {}
   bool wasAnyPressed() const { return pressed; }
   bool wasAnyReleased() const { return released; }
-  bool wasPressed(uint8_t b) const { return b == button && pressed; }
-  bool wasReleased(uint8_t b) const { return b == button && released; }
+  // soak-fix7 consume-on-check contract (SDK InputManager.cpp:832-866): an
+  // edge is delivered ONCE — the read that returns true consumes it, a second
+  // check of the same edge is false. Model that here so the harness catches
+  // any consumer that re-reads an edge after update()'s drain (the X4 Pro
+  // short-click merge regression).
+  bool wasPressed(uint8_t b) const {
+    if (b != button || !pressed) return false;
+    pressed = false;
+    return true;
+  }
+  bool wasReleased(uint8_t b) const {
+    if (b != button || !released) return false;
+    released = false;
+    return true;
+  }
   bool isPressed(uint8_t b) const { return b == button && held; }
   bool isPowerButtonPhysicallyPressed() const { return physicalPowerHeld; }
   bool hasTouch() const { return true; }
@@ -215,10 +228,13 @@ int main() {
   input.update();
   assert(input.wasPowerReleaseConsumed());
   assert(!input.wasShortPowerReleased());
+  // The release is served on its own frame (consume-on-read: the next
+  // update() drains nothing and rebuilds the mask without it).
+  assert(input.wasReleased(Button::Confirm) && !input.wasShortPowerReleased());
   input.beginPowerInput(false, false);
   input.update();
   assert(!input.wasPowerReleaseConsumed());
-  assert(input.wasReleased(Button::Confirm) && !input.wasShortPowerReleased());
+  assert(!input.wasShortPowerReleased());
   BoardConfig::ACTIVE.inputStyle = BoardConfig::InputStyle::DigitalButtons;
 
 #if FREEINK_CAP_TOUCH
@@ -383,6 +399,41 @@ void checkPowerClicks() {
   frame(9521, false, false, false, 20);
   assert(input.homeButtonAction() == HomeButtonAction::Sync);
 
+  // REGRESSION (X4 Pro short power click dead after the upstream #4407 merge;
+  // design 2026-11-16-power-short-click-merge-regression.md): the merged
+  // code fed the click classifier from a SECOND gpio.wasReleased read that
+  // update()'s drain had already consumed (consume-on-read), so a wake →
+  // release → fresh short click dispatched nothing. Both doublePwrBtn
+  // bindings must still reach SLEEP after a wake contact.
+  SETTINGS.shortPwrBtn = CrossPointSettings::SLEEP;
+  {
+    const uint8_t savedDouble = SETTINGS.doublePwrBtn;
+    const uint8_t bindings[] = {CrossPointSettings::IGNORE, savedDouble};
+    for (const uint8_t doubleAction : bindings) {
+      SETTINGS.doublePwrBtn = doubleAction;
+      // Wake press held through boot: the state machine consumes the release.
+      input.beginPowerInput(true, true);
+      frame(12000, false, true, false, 0);
+      frame(12020, false, false, true, 20);
+      assert(input.wasPowerReleaseConsumed());
+      assert(!input.powerSleepClick() && !input.wasPowerSingleClick());
+      // A fresh short click after the wake release dispatches SLEEP.
+      frame(12500, true, true, false, 0);
+      frame(12520, false, false, true, 20);
+      if (doubleAction == CrossPointSettings::IGNORE) {
+        // Served-mask sleep-on-release branch (main.cpp dispatchSleep).
+        dispatchSleep(input, gpio, false, 0);
+        assert(slept);
+      } else {
+        // Classifier: the single verdict lands at the click window's expiry.
+        assert(!input.powerSleepClick());
+        frame(13021, false, false, false, 20);
+        assert(input.powerSleepClick());
+      }
+    }
+    SETTINGS.doublePwrBtn = savedDouble;
+  }
+
   SETTINGS.shortPwrBtn = CrossPointSettings::SLEEP;
   frame(10000, true, true, false, 0);
   frame(10600, false, false, true, 600);
@@ -432,6 +483,9 @@ void checkSleepDispatch(MappedInputManager& input, HalGPIO& gpio) {
   dispatchSleep(input, gpio, false, millis() + 1);
   assert(!slept && !forwardedRelease);  // Startup delay still consumes the release.
   input.beginPowerInput(true, true);
+  // A suppressed contact's release edge arrives in THIS frame (consume-on-
+  // read: the stub's one-shot edge from the release frame above is spent).
+  gpio.released = true;
   input.update();
   dispatchSleep(input, gpio, false, 0);
   assert(!slept && !forwardedRelease);
