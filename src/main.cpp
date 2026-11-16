@@ -17,6 +17,7 @@
 #include <HalSystem.h>
 #include <HalTiltSensor.h>
 #include <I18n.h>
+#include <LogFileSink.h>
 #include <Logging.h>
 #include <Memory.h>
 // The recovery hatch repoints otadata at slot 0 — an ESP32 boot-ROM concept
@@ -854,6 +855,10 @@ void enterPowerOff() {
   // deep-sleep command while the rail that powers it is still up (same ordering
   // rule as enterDeepSleep(); CodeRabbit finding).
   display.deepSleep();
+  // Drain the SD debug log sink and release its append handle before the rail
+  // cut (same non-debounced drain as deep sleep); an empty buffer costs zero
+  // SD operations.
+  logfile::flushAndCloseLogFile();
   LOG_INF("MAIN", "Powering off");
   // Stock-parity shutdown marker (ghidra_poweroff_report.md): record WHY we are
   // powering off in RTC slow RAM; the next boot reports + clears it.
@@ -1115,6 +1120,9 @@ void setup() {
     SETTINGS.readerMenuStyle = CrossPointSettings::READER_MENU_TOOLBAR;
   }
   SETTINGS.loadFromFile();
+  // SD debug log (Settings → System, default OFF): apply the persisted state
+  // once storage is up; the file opens lazily on the first flush.
+  logfile::setLogFileEnabled(SETTINGS.sdDebugLog != 0);
 
   // Auto power off: the dwell timer woke us, so the sleep entry's staged marker
   // was consumed above as a genuine AutoOff shutdown. Re-stage it for the next
@@ -1611,6 +1619,9 @@ void loop() {
   }
 
   // After the exclusive-storage return: it saves settings to the SD card.
+  // Debounce check for the SD debug log sink (zero SD work when empty; the
+  // exclusive-storage branch above stays SD-free while USB owns the card).
+  logfile::tickLogFile();
   handleSlideSwitch();
   halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, activityManager.isReaderActivity());
 

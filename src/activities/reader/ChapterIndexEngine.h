@@ -54,10 +54,23 @@ struct ChapterIndexYield {
 BookStatus ensureChapterSession(ChapterIndexTarget& target, uint16_t spineIndex, const LayoutParams& params,
                                 uint32_t generation);
 
+// Consecutive no-progress chunks tolerated before the pump gives up on the
+// build: a chunk that neither advances the spine's page count nor finishes
+// (hard failure, completion) nor is preceded by one is stalled. Legitimate
+// slow builds always emit pages on an Ok chunk (the session's step() either
+// delivers minNewPages or ends the parse), so 8 stalled chunks in a row can
+// only be a session that consumes nothing while staying alive — torn down at
+// the 9th with the resumable partial commit, not pumped forever.
+constexpr uint16_t kMaxStalledPumpChunks = 8;
+
 // Steps one build chunk and classifies the result. stOut (optional) carries
-// the raw BookStatus for caller-side logging.
-ChapterPump pumpChapterChunk(ChapterIndexTarget& target, uint16_t spineIndex, uint16_t minNewPages,
-                             BookStatus* stOut = nullptr);
+// the raw BookStatus for caller-side logging. stallChunks is the CALLER-OWNED
+// consecutive-stall counter (must be provided; reset it whenever the pumped
+// session is (re)begun) — it bounds the soft-failure/zero-page spin: without
+// it, a step that fails while leaving the session active would be pumped
+// forever with no pages and no terminal state.
+ChapterPump pumpChapterChunk(ChapterIndexTarget& target, uint16_t spineIndex, uint16_t minNewPages, BookStatus* stOut,
+                             uint16_t* stallChunks);
 
 // Runs the full build session for one spine to completion, invoking the yield
 // hook between chunks. A false hook result cancels: the session aborts with a

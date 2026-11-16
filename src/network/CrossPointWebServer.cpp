@@ -12,6 +12,7 @@
 #include <HiddenItems.h>
 #include <I18n.h>
 #include <LibraryBuilder.h>
+#include <LogFileSink.h>
 #include <Logging.h>
 #include <MD5Builder.h>
 #include <Memory.h>
@@ -50,6 +51,7 @@
 #include "html/FilesPageHtml.generated.h"
 #include "html/FontsPageHtml.generated.h"
 #include "html/HomePageHtml.generated.h"
+#include "html/LogsPageHtml.generated.h"
 #include "html/PluginsPageHtml.generated.h"
 #include "html/RunnerPageHtml.generated.h"
 #include "html/SettingsPageHtml.generated.h"
@@ -244,12 +246,17 @@ bool listContainsKey(const String& list, const char* key) {
   return false;
 }
 
+// Text view of the SD debug log (logfile::kLogFilePath) is tail-bounded; the
+// download endpoint serves the whole file. The log caps at 2 MiB (LogFileSink).
+constexpr uint64_t kLogTailBytes = 64u * 1024u;
+
 }  // namespace
 
 // File listing page template - now using generated headers:
 // - HomePageHtml (from html/HomePage.html)
 // - FilesPageHeaderHtml (from html/FilesPageHeader.html)
 // - FilesPageFooterHtml (from html/FilesPageFooter.html)
+// - LogsPageHtml (from html/LogsPage.html)
 CrossPointWebServer::CrossPointWebServer() {}
 
 CrossPointWebServer::~CrossPointWebServer() { stop(); }
@@ -295,6 +302,9 @@ class CrossPointWebServer::RouteHandler final : public RequestHandler {
     static constexpr Route ROUTES[] = {
         {"/", HTTP_GET, [](S& s) { s.handleRoot(); }, nullptr},
         {"/files", HTTP_GET, [](S& s) { s.handleFileList(); }, nullptr},
+        {"/logs", HTTP_GET, [](S& s) { s.handleLogsPage(); }, nullptr},
+        {"/api/logs", HTTP_GET, [](S& s) { s.handleLogTail(); }, nullptr},
+        {"/logs/download", HTTP_GET, [](S& s) { s.handleLogDownload(); }, nullptr},
         {"/js/jszip.min.js", HTTP_GET, [](S& s) { s.handleJszip(); }, nullptr},
         {"/js/epub-optimizer.js", HTTP_GET,
          [](S& s) {
@@ -890,7 +900,7 @@ void CrossPointWebServer::handleFileListData() const {
   LOG_DBG("WEB", "Served file listing page for path: %s", currentPath.c_str());
 }
 
-void CrossPointWebServer::streamFileToClient(HalFile& file) const {
+void CrossPointWebServer::streamFileToClient(HalFile& file, const uint64_t maxBytes) const {
   NetworkClient client = server->client();
   static constexpr size_t CHUNK_SIZE = 4096;
   // Off the stack: the web-server task also runs TLS and SD from this stack.
@@ -901,10 +911,11 @@ void CrossPointWebServer::streamFileToClient(HalFile& file) const {
   }
 
   bool ok = true;
-  while (ok && file.available()) {
+  uint64_t sent = 0;
+  while (ok && file.available() && sent < maxBytes) {
     const int result = file.read(buffer.get(), CHUNK_SIZE);
     if (result <= 0) break;
-    const size_t bytesRead = static_cast<size_t>(result);
+    const size_t bytesRead = std::min<uint64_t>(static_cast<uint64_t>(result), maxBytes - sent);
     size_t totalWritten = 0;
     while (totalWritten < bytesRead) {
       resetTaskWatchdogIfSubscribed();
@@ -915,6 +926,7 @@ void CrossPointWebServer::streamFileToClient(HalFile& file) const {
       }
       totalWritten += wrote;
     }
+    sent += bytesRead;
   }
   client.clear();
 }
@@ -973,7 +985,79 @@ void CrossPointWebServer::handleDownload() const {
   server->setContentLength(file.size());
   server->sendHeader("Content-Disposition", "attachment; filename=\"" + filename + "\"");
   server->send(200, contentType.c_str(), "");
-  streamFileToClient(file);
+  streamFileToClient(file, file.size());
+  file.close();
+}
+
+// Serves the SD debug log page (Settings → System → SD Debug Log writes
+// logfile::kLogFilePath). The view is a tail of the file so a 2 MiB log never
+// streams whole on every poll; the download endpoint serves it whole.
+void CrossPointWebServer::handleLogsPage() const {
+  sendStaticContent(server.get(), LogsPageHtml, sizeof(LogsPageHtml), LogsPageHtmlETag, "text/html");
+}
+
+void CrossPointWebServer::handleLogTail() const {
+  HalFile file = Storage.open(logfile::kLogFilePath, O_RDONLY);
+  if (!file || file.isDirectory()) {
+    server->sendHeader("Cache-Control", "no-store");
+    server->send(404, "text/plain", "Log file not found — enable Settings -> System -> SD Debug Log on the device.");
+    return;
+  }
+
+  const uint64_t size = file.fileSize64();
+  const bool truncated = size > kLogTailBytes;
+  uint64_t start = truncated ? size - kLogTailBytes : 0;
+  char sizeBuf[24] = {0};
+  // Skip forward to the first line boundary so the view never starts mid-line.
+  // The scan reads ahead, so the file is re-seeked to the computed boundary.
+  if (start > 0) {
+    if (!file.seek64(start)) {
+      file.close();
+      server->send(500, "text/plain", "Failed to seek in log file");
+      return;
+    }
+    char buf[256];
+    while (start < size) {
+      const int got = file.read(buf, sizeof(buf));
+      if (got <= 0) {
+        start = size;
+        break;
+      }
+      const char* nl = static_cast<const char*>(memchr(buf, '\n', static_cast<size_t>(got)));
+      if (nl) {
+        start += static_cast<uint64_t>(nl - buf) + 1;
+        break;
+      }
+      start += static_cast<uint64_t>(got);
+    }
+    if (!file.seek64(start)) {
+      file.close();
+      server->send(500, "text/plain", "Failed to seek in log file");
+      return;
+    }
+  }
+
+  snprintf(sizeBuf, sizeof(sizeBuf), "%lu", static_cast<unsigned long>(size));
+  server->sendHeader("X-Log-Size", sizeBuf);
+  if (truncated) server->sendHeader("X-Log-Truncated", "1");
+  // Live file: never cached, the page polls every 2 s.
+  server->sendHeader("Cache-Control", "no-store");
+  server->setContentLength(static_cast<size_t>(size - start));
+  server->send(200, "text/plain", "");
+  streamFileToClient(file, size - start);
+  file.close();
+}
+
+void CrossPointWebServer::handleLogDownload() const {
+  HalFile file = Storage.open(logfile::kLogFilePath, O_RDONLY);
+  if (!file || file.isDirectory()) {
+    server->send(404, "text/plain", "Log file not found — enable Settings -> System -> SD Debug Log on the device.");
+    return;
+  }
+  server->setContentLength(file.size());
+  server->sendHeader("Content-Disposition", "attachment; filename=\"log.txt\"");
+  server->send(200, "text/plain", "");
+  streamFileToClient(file, file.size());
   file.close();
 }
 
@@ -1765,6 +1849,14 @@ void CrossPointWebServer::handlePostSettings() {
   }
 
   SETTINGS.saveToFile();
+
+#if defined(ESP_PLATFORM)
+  // The SD debug log applies immediately, exactly like the device toggle does
+  // (SettingsActivity::applyUiSettingChange): enabling opens the file lazily
+  // on the first flush, disabling flushes and closes the handle. Guarded
+  // because the sink's device entry points are ESP-only declarations.
+  logfile::setLogFileEnabled(SETTINGS.sdDebugLog != 0);
+#endif
 
   LOG_DBG("WEB", "Applied %d setting(s)", applied);
   server->send(200, "text/plain", String("Applied ") + String(applied) + " setting(s)");

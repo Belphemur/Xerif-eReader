@@ -325,6 +325,12 @@ class EpubReaderActivity final : public ReaderActivity {
   int ttfSpine = -1;          // spine the runtime's reader/session belong to
   int ttfPage = 0;            // chapter-local page index
   uint32_t ttfPageCount = 0;  // pages available for the current chapter
+  // pumpChapterChunk's caller-owned no-progress bounds (reset at every
+  // session (re)begin): the current-spine pumps (sync pass, background tick,
+  // partial-resume tick) share one counter for the single live session; the
+  // prefetch tick pumps the next spine's session and owns its own.
+  uint16_t ttfBuildStallChunks_ = 0;
+  uint16_t ttfPrefetchStallChunks_ = 0;
   // Estimated chapter total while a build is in flight: pages built scaled
   // by the layout session's input progress (the old Section engine's
   // extrapolation, owner steer: return after a few pages and let the user
@@ -345,6 +351,14 @@ class EpubReaderActivity final : public ReaderActivity {
   uint32_t ttfSavedCharOffset = 0;
   uint32_t ttfSavedGeneration = 0;
   bool ttfPrefetchActive = false;  // session building the NEXT spine
+  // One repaint per background-build failure episode: armed by build progress
+  // (or a fresh session), consumed by the failure branch so the screen leaves
+  // the stale Indexing-looking frame without repainting on every retry.
+  bool ttfBgFailRepaintArmed_ = true;
+  // Last failed prefetch spine and when it failed (backoff gate, millis()
+  // wrap-safe unsigned math).
+  int16_t ttfPrefetchFailSpine_ = -1;
+  uint32_t ttfPrefetchFailMs_ = 0;
   // Unified pending target for the resolver funnel (design §3.2). Single
   // definition lives in TtfResolvePolicy.h (ttf_resolve::PendingTarget) —
   // aliased here so the funnel and the policy share one struct and one
@@ -490,6 +504,10 @@ class EpubReaderActivity final : public ReaderActivity {
 
   static constexpr int BUILD_PAGES_PER_CHUNK = 8;
   static constexpr int BACKGROUND_BUILD_PAGES_PER_TICK = 2;
+  // After a failed next-chapter prefetch, wait this long before re-seeding
+  // that spine so a persistently failing chapter cannot churn a build
+  // session on every display tick.
+  static constexpr uint32_t kPrefetchFailBackoffMs = 30 * 1000;
   static constexpr size_t BACKGROUND_BUILD_MIN_FREE_HEAP = 32 * 1024;
   static constexpr size_t BACKGROUND_BUILD_MIN_MAX_ALLOC = 16 * 1024;
   // Requires the render lock; heap admission is checked separately by the build tick.

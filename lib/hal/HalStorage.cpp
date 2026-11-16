@@ -1,6 +1,7 @@
 #include "HalStorage.h"
 
 #include <FS.h>  // need to be included before SdFat.h for compatibility with FS.h's File class
+#include <LogFileSink.h>
 #include <Logging.h>
 #include <SDCardManager.h>
 #include <esp_heap_caps.h>
@@ -61,12 +62,21 @@ bool HalStorage::freeBytes(uint64_t* outFreeBytes) {
 }
 
 void HalStorage::prepareForDeepSleep() {
+  // The SD debug log sink (default OFF) gets its pending bytes out — without
+  // the flush debounce — and releases its append handle before the card is
+  // unmounted; an empty buffer costs zero SD operations. The setting stays
+  // enabled, so the next boot re-opens the file lazily.
+  logfile::flushAndCloseLogFile();
   StorageLock lock;
   SDCard.shutdown();
 }
 
 bool HalStorage::beginUsbDrive() {
 #if FREEINK_CAP_USB_MSC
+  // USB Drive owns the raw card: flush and release the log sink's append
+  // handle first, so the host sees the complete file.
+  logfile::flushLogFile();
+  logfile::setLogFileEnabled(false);
   StorageLock lock;
   auto* const blockDevice = SDCard.detachFilesystemForRawAccess();
   if (!blockDevice) {

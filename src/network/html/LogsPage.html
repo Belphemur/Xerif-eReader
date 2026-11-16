@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Logs - CrossPoint Reader</title>
+    <style>
+      .log-view {
+        background: var(--bg-color, #faf9f7);
+        border: 1px solid var(--border-color, #ddd);
+        border-radius: 8px;
+        padding: 12px;
+        max-height: 60vh;
+        overflow: auto;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.85em;
+        line-height: 1.35;
+        white-space: pre-wrap;
+        word-break: break-all;
+        margin: 0 0 12px 0;
+      }
+      .log-note {
+        color: var(--label-color);
+        font-size: 0.9em;
+        margin: 8px 0;
+      }
+      .action-buttons {
+        display: flex;
+        gap: 10px;
+      }
+    </style>
+  </head>
+  <body class="web-ui">
+    <!--#include file="shared/Header.html.inc" -->
+    <main class="page-content">
+      <div class="card">
+        <h2>Device Log</h2>
+        <p class="log-note" id="logStatus">Loading…</p>
+        <pre class="log-view" id="logView"></pre>
+        <div class="action-buttons">
+          <button type="button" onclick="refreshLog()">Refresh</button>
+          <button type="button" onclick="downloadLog()">Download</button>
+        </div>
+        <p class="log-note">
+          Refreshes every 2 s while this page is open. The view shows the latest portion of
+          /.crosspoint/log.txt; Download serves the full file.
+        </p>
+      </div>
+    </main>
+    <!--#include file="shared/Footer.html.inc" -->
+    <script>
+      var view = document.getElementById('logView');
+      var status = document.getElementById('logStatus');
+      // Follow the tail unless the reader scrolled up to inspect earlier lines.
+      var stick = true;
+      view.addEventListener('scroll', function () {
+        stick = view.scrollHeight - view.scrollTop - view.clientHeight < 40;
+      });
+
+      function setStatus(message) {
+        status.textContent = message;
+      }
+
+      function refreshLog() {
+        fetch('/api/logs')
+          .then(function (response) {
+            if (response.status === 404) {
+              view.textContent = '';
+              setStatus('Log file not found — enable Settings → System → SD Debug Log on the device (an SD card must be inserted).');
+              return;
+            }
+            if (!response.ok) {
+              throw new Error('HTTP ' + response.status);
+            }
+            return response.text().then(function (text) {
+              view.textContent = text;
+              if (response.headers.get('X-Log-Truncated') === '1') {
+                setStatus('Showing the latest portion only — Download serves the full file.');
+              } else {
+                setStatus('Showing the full log (' + response.headers.get('X-Log-Size') + ' bytes).');
+              }
+              if (stick) {
+                view.scrollTop = view.scrollHeight;
+              }
+            });
+          })
+          .catch(function (error) {
+            setStatus('Device unreachable (' + error.message + ') — retrying…');
+          });
+      }
+
+      function downloadLog() {
+        window.location.href = '/logs/download';
+      }
+
+      refreshLog();
+      setInterval(function () {
+        if (!document.hidden) refreshLog();
+      }, 2000);
+    </script>
+  </body>
+</html>

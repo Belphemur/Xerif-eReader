@@ -3,6 +3,10 @@
 #include <BoardConfig.h>
 #include <esp_rom_sys.h>
 
+#if defined(ESP_PLATFORM)
+#include "LogFileSink.h"
+#endif
+
 #include <string>
 
 #define MAX_ENTRY_LEN 256
@@ -74,6 +78,12 @@ void logPrintf(const char* level, const char* origin, const char* format, ...) {
   logSerial.print(buf);
 #endif
   addToLogRingBuffer(buf);
+#if defined(ESP_PLATFORM)
+  // Optional SD file sink (Settings → System, default OFF): the same
+  // formatted line the serial and RTC ring receive. Buffered + debounced
+  // inside the sink; zero cost while disabled.
+  logfile::appendLogLine(buf);
+#endif
 }
 
 std::string getLastLogs() {
