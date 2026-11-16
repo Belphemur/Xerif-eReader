@@ -4305,7 +4305,8 @@ void EpubReaderActivity::renderBookTtf() {
     }
     const freeink::book::BookStatus st =
         freeink::book::ensureChapterSession(*ttf_, static_cast<uint16_t>(currentSpineIndex), params, generation);
-    ttfBuildStallChunks_ = 0;  // fresh session: the stall bound starts clean
+    ttfBuildStallChunks_ = 0;       // fresh session: the stall bound starts clean
+    ttfBgFailRepaintArmed_ = true;  // fresh build episode
     if (st != freeink::book::BookStatus::Ok) {
       LOG_ERR("ERS", "TTF session begin failed: %s", bookStatusName(st));
       showBuildError();
@@ -5362,6 +5363,13 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
         freeink::book::ChapterPump::Failed) {
       LOG_ERR("ERS", "Background TTF build failed: %s", bookStatusName(st));
       ttfPrefetchActive = false;
+      // The failure leaves whatever was last painted up (often the build
+      // overlay); repaint once per failure episode so the readable partial
+      // (or the foreground error popup on the next build attempt) shows.
+      if (ttfBgFailRepaintArmed_) {
+        ttfBgFailRepaintArmed_ = false;
+        requestUpdate();
+      }
       return;
     }
     // Per-tick progress (soak finding #6): the 2-minute silent resume was
@@ -5375,6 +5383,7 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
     // the freshly laid-out pages of whichever spine the session serves.
     if (after > before) {
       sightTtfSpineImages(spine, before, after);
+      ttfBgFailRepaintArmed_ = true;  // progress: the next failure earns a repaint
     }
     powerManager.pokeNormalSpeed();
     if (!ttf_->sessionActive()) {  // finished (or failed) in this tick
@@ -5427,7 +5436,8 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
     if (params.font == nullptr) return;  // no reader font chain: cannot lay out
     if (freeink::book::ensureChapterSession(*ttf_, static_cast<uint16_t>(currentSpineIndex), params, ttfGeneration) ==
         freeink::book::BookStatus::Ok) {
-      ttfBuildStallChunks_ = 0;  // fresh session: the stall bound starts clean
+      ttfBuildStallChunks_ = 0;       // fresh session: the stall bound starts clean
+      ttfBgFailRepaintArmed_ = true;  // fresh build episode
       freeink::book::BookStatus st = freeink::book::BookStatus::Ok;
       const uint16_t before = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
       const uint32_t tickStart = millis();
@@ -5566,6 +5576,8 @@ void EpubReaderActivity::ttfPrefetchTick() {
         // instead of parking prefetch for the rest of the book.
         LOG_ERR("ERS", "Prefetch TTF build failed: %s", bookStatusName(st));
         ttfPrefetchActive = false;
+        ttfPrefetchFailSpine_ = static_cast<int16_t>(nextSpine);  // backoff: retry, not every tick
+        ttfPrefetchFailMs_ = millis();
       }
     } else {
       ttfPrefetchActive = false;
@@ -5579,8 +5591,13 @@ void EpubReaderActivity::ttfPrefetchTick() {
   // served from its cache AND the next spine has no complete cache yet —
   // otherwise a warm prefetch reader would be rewritten on every idle tick.
   // A suspended partial next-chapter cache still earns a build (§3.5).
-  if (!ttfPrefetchActive && !(ttf_->prefetchFor(nextSpine) && !ttf_->prefetchPartial()) && ttf_->cacheReady() &&
-      !ttf_->cachePartial() && !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) {
+  // A spine whose last build attempt failed waits out the backoff before it
+  // is re-seeded, so a persistently failing chapter costs one bounded
+  // attempt per interval instead of one aborted session per tick.
+  const bool prefetchInBackoff = static_cast<int16_t>(nextSpine) == ttfPrefetchFailSpine_ &&
+                                 static_cast<uint32_t>(millis() - ttfPrefetchFailMs_) < kPrefetchFailBackoffMs;
+  if (!ttfPrefetchActive && !prefetchInBackoff && !(ttf_->prefetchFor(nextSpine) && !ttf_->prefetchPartial()) &&
+      ttf_->cacheReady() && !ttf_->cachePartial() && !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) {
     freeink::book::LayoutParams params;
     ttf_->makeLayoutParams(renderer, params, automaticPageTurnActive);
     if (params.font == nullptr) return;  // no reader font chain: cannot lay out
@@ -5591,6 +5608,8 @@ void EpubReaderActivity::ttfPrefetchTick() {
       if (freeink::book::pumpChapterChunk(*ttf_, static_cast<uint16_t>(nextSpine), BACKGROUND_BUILD_PAGES_PER_TICK, &st,
                                           &ttfPrefetchStallChunks_) == freeink::book::ChapterPump::Failed) {
         LOG_ERR("ERS", "Prefetch TTF build failed: %s", bookStatusName(st));
+        ttfPrefetchFailSpine_ = static_cast<int16_t>(nextSpine);  // backoff: retry, not every tick
+        ttfPrefetchFailMs_ = millis();
       } else {
         ttfPrefetchActive = true;
       }
