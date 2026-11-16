@@ -130,9 +130,11 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   if (clockTzPending) {
     doc["clockTzPending"] = 1;
   }
-  // GT911 idle sleep toggle — not in SettingsList (no menu UI yet), persisted
-  // manually so the owner can flip it without a rebuild.
+  // GT911 idle sleep toggles — touchIdleSleep has no menu entry (persisted
+  // manually so the owner can flip it without a rebuild); the gesture variant
+  // has a Settings menu entry (System). Both bool-folded bytes.
   doc["touchIdleSleep"] = touchIdleSleep;
+  doc["touchIdleSleepGesture"] = touchIdleSleepGesture;
   // TTF image decode quality revert switch — not in SettingsList either; the
   // value selects the tone bake on new decode paths only (old caches stay
   // valid under their own bake flag in the cache name).
@@ -279,9 +281,9 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   // Font family — uses dynamic getter/setter in SettingsList so the generic loop skips it.
   const uint8_t storedFontFamily = doc["fontFamily"] | STORED_NOTOSANS;
   fontFamily = NOTOSANS;
-  // GT911 idle sleep toggle — not in SettingsList, load manually (bool-fold:
-  // anything non-zero counts as enabled).
+  // GT911 idle sleep toggles (bool-fold: anything non-zero counts as enabled).
   touchIdleSleep = doc["touchIdleSleep"] | (uint8_t)1 ? 1 : 0;
+  touchIdleSleepGesture = doc["touchIdleSleepGesture"] | (uint8_t)0 ? 1 : 0;
   // TTF image decode quality: anything non-zero counts as on (default on).
   imageDecodeQuality = doc["imageDecodeQuality"] | (uint8_t)1 ? 1 : 0;
   // pictureDetail (the Sharp/Enhanced CLAHE selector) was removed with the

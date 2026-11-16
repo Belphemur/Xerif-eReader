@@ -250,6 +250,12 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
   emit(SettingInfo::Toggle(StrId::STR_TRACK_READING_STATS, &CrossPointSettings::trackReadingStats, "trackReadingStats",
                            StrId::STR_CAT_SYSTEM));
 #endif
+  // GT911 Gesture-mode park (design 2026-11-16-gt911-gesture-touch-wake.md
+  // §2.4): the touch-wake setting the idle-sleep feature was missing a menu
+  // entry for. Persisted on every board; isHiddenOnDevice() hides it where
+  // there is no GT911 to park (X4 Pro/X4C show it).
+  emit(SettingInfo::Toggle(StrId::STR_TOUCH_IDLE_GESTURE, &CrossPointSettings::touchIdleSleepGesture,
+                           "touchIdleSleepGesture", StrId::STR_CAT_SYSTEM));
 
   // OPDS download folder: persisted + web-exposed, but category-less so it
   // is hidden from the on-device Settings screen (edited via OPDS UI).
