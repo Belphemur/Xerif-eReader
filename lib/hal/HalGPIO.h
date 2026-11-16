@@ -143,6 +143,17 @@ class HalGPIO {
   // contexts that may stall (idle window, activity entry).
   bool setTouchSleep(bool asleep);
   bool wakeTouch();
+  // GT911 Gesture-mode park (docs/design/2026-11-16-gt911-gesture-touch-wake.md
+  // §2.1): parks the controller so a screen touch pulses INT and the parked
+  // edge ISR latches a wake edge (wasTouchWakeEdgePending) that the idle trunk
+  // drains into the unchanged wake handshake. Same blocking/threading
+  // contract as setTouchSleep(true). Falls back to the Sleep-mode park once
+  // the SDK latched gesture unsupported (no diode-to-INT circuit).
+  bool setTouchSleepGesture();
+  // Parked-touch wake edge: latched by the GT911 INT ISR while gesture-parked;
+  // the trunk drains it. No-op accessors on boards without a GT911.
+  bool wasTouchWakeEdgePending() const;
+  void clearTouchWakeEdge();
   // True while the GT911 is parked in Sleep mode.
   bool isTouchAsleep() const;
   // True while a finger is in contact with the touch panel right now.
