@@ -18,9 +18,10 @@ panel = (ROOT / "src/activities/util/FrontlightPanelActivity.cpp").read_text()
 preview_setup = panel[panel.index("    static constexpr fui::Rotation rotations[]"):panel.index("    const fui::Rect row = screen.takeTop(kQuickControlSize)")]
 preview_draw = panel[panel.index("      screen.target().bitmap(iconRect"):panel.index("      // A tile whose function")]
 reader = (ROOT / "src/activities/reader/ReaderUtils.h").read_text()
-# Fork shape: TouchPageTurn precedes PageTurnResult, and the function is
-# detectPageTurnSteps (edge-count netting) ending at detectTouchPageTurn.
-detect_turn = reader[reader.index("struct TouchPageTurn"):reader.index("inline TouchPageTurn detectTouchPageTurn")]
+# Fork shape: upstream's FrontPageTurnButtons helper (#4512) is adopted and
+# precedes the fork's TouchPageTurn; the function is detectPageTurnSteps
+# (edge-count netting) ending at detectTouchPageTurn.
+detect_turn = reader[reader.index("struct FrontPageTurnButtons"):reader.index("inline TouchPageTurn detectTouchPageTurn")]
 
 stub = r"""
 #pragma once

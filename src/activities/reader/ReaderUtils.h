@@ -58,6 +58,19 @@ inline void applyOrientation(GfxRenderer& renderer, const uint8_t orientation) {
   }
 }
 
+// Front (Left/Right) page-turn buttons follow the nav-swap setting; dictionary
+// pages and the reader share this mapping (upstream #4512).
+struct FrontPageTurnButtons {
+  MappedInputManager::Button previous;
+  MappedInputManager::Button next;
+};
+
+inline FrontPageTurnButtons getFrontPageTurnButtons(const MappedInputManager& input) {
+  const bool swapped = input.isNavDirectionSwapped();
+  return {swapped ? MappedInputManager::Button::Right : MappedInputManager::Button::Left,
+          swapped ? MappedInputManager::Button::Left : MappedInputManager::Button::Right};
+}
+
 struct TouchPageTurn {
   bool prev;
   bool next;
@@ -85,9 +98,7 @@ inline PageTurnResult detectPageTurnSteps(const MappedInputManager& input,
   const bool usePress = SETTINGS.longPressButtonBehavior == SETTINGS.OFF;
   const bool tiltNext = SETTINGS.tiltPageTurn && halTiltSensor.wasTiltedForward();
   const bool tiltPrev = SETTINGS.tiltPageTurn && halTiltSensor.wasTiltedBack();
-  const bool swapFront = input.isNavDirectionSwapped();
-  const auto prevButton = swapFront ? MappedInputManager::Button::Right : MappedInputManager::Button::Left;
-  const auto nextButton = swapFront ? MappedInputManager::Button::Left : MappedInputManager::Button::Right;
+  const auto frontButtons = getFrontPageTurnButtons(input);
   // Fire the long-press latches first (release mode): wasLongPressed arms the
   // release suppression its own edge class relies on, exactly as the boolean
   // read below does. The drained counts then reflect the same edge class the
@@ -101,10 +112,10 @@ inline PageTurnResult detectPageTurnSteps(const MappedInputManager& input,
     return usePress ? input.wasPressedCount(button) : input.wasReleasedCount(button);
   };
   turnnet::TriggerCounts counts;
-  counts.nextCount =
-      static_cast<uint8_t>(pageButtonCount(MappedInputManager::Button::PageForward)) + pageButtonCount(nextButton);
-  counts.prevCount =
-      static_cast<uint8_t>(pageButtonCount(MappedInputManager::Button::PageBack)) + pageButtonCount(prevButton);
+  counts.nextCount = static_cast<uint8_t>(pageButtonCount(MappedInputManager::Button::PageForward)) +
+                     pageButtonCount(frontButtons.next);
+  counts.prevCount = static_cast<uint8_t>(pageButtonCount(MappedInputManager::Button::PageBack)) +
+                     pageButtonCount(frontButtons.previous);
   counts.touchNext = touch.next;
   counts.touchPrev = touch.prev;
   counts.tiltNext = tiltNext;
@@ -112,9 +123,9 @@ inline PageTurnResult detectPageTurnSteps(const MappedInputManager& input,
   counts.powerTurn = SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN && input.wasPowerSingleClick();
   counts.homeNextPage = input.homeButtonAction() == HomeButtonAction::NextPage;
   const bool prev = tiltPrev || pageButtonTriggered(MappedInputManager::Button::PageBack) ||
-                    pageButtonTriggered(prevButton) || touch.prev;
+                    pageButtonTriggered(frontButtons.previous) || touch.prev;
   const bool next = counts.homeNextPage || tiltNext || pageButtonTriggered(MappedInputManager::Button::PageForward) ||
-                    counts.powerTurn || pageButtonTriggered(nextButton) || touch.next;
+                    counts.powerTurn || pageButtonTriggered(frontButtons.next) || touch.next;
   return {prev, next, tiltPrev || tiltNext, turnnet::net(counts)};
 }
 
