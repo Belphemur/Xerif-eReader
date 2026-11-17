@@ -1,0 +1,12 @@
+Continue. The brief at .pi-briefs/dev-label-short.md in the worktree is the
+contract; prior-round context lives in the session transcript.
+
+Standing reminders every round:
+- Re-read the task list first; pick the next incomplete task.
+- One GPG-signed commit per logical change; commit BEFORE TaskUpdate.
+- cppcheck clean on the EXACT tip + full ctest + pio x4pro before any push.
+- Push only to origin wt/dev-label-short; re-fetch origin/develop first.
+- AUTO-MERGE authorized: PR to develop (changelog-quality title) and
+  squash-merge once CI is green. No SDK pin re-pointing.
+- Finish with /tmp/pi_dev_label_short_final_report.md and the marker
+  DEV_LABEL_SHORT_DONE in the final message, then stop.

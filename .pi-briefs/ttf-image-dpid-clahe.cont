@@ -1,0 +1,16 @@
+Continue the ttf-image-dpid-clahe brief.
+
+Marker: DPID_CLAHE_DONE
+Final report: /tmp/pi_ttf_dpid_clahe_final_report.md
+Worktree: /home/balor/workspace/eink/crosspoint-x-reader/_worktrees/ttf-image-quality2
+Branch: feat/ttf-image-quality2 (PR 303)
+
+Design doc: docs/design/2026-11-09-ttf-image-dpid-clahe.md — the contract.
+Priorities: task 0 rebase first; task 1 verification + host probe before code; DPID
+integer fixed-point λ=1 (no pow); CLAHE in place, gated by the "Picture detail"
+setting ("Sharp" default / "Enhanced"); legacy bitmap reader decode path stays
+bit-identical; cache rev 't'→'v'; README update; fresh rebuild before ctest, always.
+Rules recap: TTF path only; legacy FS4 and driver/LUT untouched; integer-only; no
+new heap beyond the justified PSRAM scratch; gates before every push;
+force-with-lease; report-first; default git config; no Co-authored-by; marker as
+last line.

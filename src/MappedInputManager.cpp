@@ -232,7 +232,8 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
   }
   powerSleepFrame = false;
   powerSingleClickFrame = false;
-  const bool classifyPower = BoardConfig::isX4Pro() && SETTINGS.doublePwrBtn != CrossPointSettings::IGNORE;
+  const bool classifyPower =
+      CrossPointSettings::hasPowerDoubleClick() && SETTINGS.doublePwrBtn != CrossPointSettings::IGNORE;
   if (classifyPower && !gpio.isPressed(HalGPIO::BTN_DOWN) && !powerButtonInput.suppressesHold() &&
       !wasPowerReleaseConsumed()) {
     const auto click = powerButtonClickInput.update(millis(), gpio.isPressed(HalGPIO::BTN_POWER),
@@ -786,13 +787,15 @@ bool MappedInputManager::consumePowerConfirmPress() const {
 
 bool MappedInputManager::wasPowerConfirmClick() const {
   if (!gpio.hasTouch() || SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::PWR_CONFIRM) return false;
-  // Wait out the X4 Pro's frontlight double-click window before treating its
-  // first release as Confirm. With the shortcut disabled (doublePwrBtn ==
-  // Ignore), and on other touch boards, the release counts directly — from
-  // the SERVED SNAPSHOT (soak-fix7): the served release bit is qualified by
-  // upstream #4407's wake/restart state machine, so a wake or consumed
-  // release never counts as Confirm either.
-  if (BoardConfig::isX4Pro() && SETTINGS.doublePwrBtn != CrossPointSettings::IGNORE) return powerConfirmClickFrame;
+  // Wait out the power double-click window before treating the first release
+  // as Confirm on every board that classifies doubles (upstream #4494
+  // broadened the X4-Pro-only gate with hasPowerDoubleClick()). With the
+  // shortcut disabled (doublePwrBtn == Ignore), and on other touch boards,
+  // the release counts directly — from the SERVED SNAPSHOT (soak-fix7): the
+  // served release bit is qualified by upstream #4407's wake/restart state
+  // machine, so a wake or consumed release never counts as Confirm either.
+  if (CrossPointSettings::hasPowerDoubleClick() && SETTINGS.doublePwrBtn != CrossPointSettings::IGNORE)
+    return powerConfirmClickFrame;
   return wasShortPowerReleased() && gpio.getPowerButtonHeldTime() <= SETTINGS.getPowerButtonDuration();
 }
 
@@ -825,17 +828,17 @@ bool MappedInputManager::wasPressed(const Button button) const {
 }
 
 bool MappedInputManager::wasReleased(const Button button) const {
-  // Power on the X4 Pro: the double-click window classified at the snapshot
-  // serves each final short click exactly once into frameReleasedEdges
+  // Power with a double-click action: the double-click window classified at the
+  // snapshot serves each final short click exactly once into frameReleasedEdges
   // (resolvePowerDoubleClickWindow) — an ambiguous first release is withheld,
   // a double-click's second release is stripped and dispatched through
   // consumePowerDoubleClick() instead. Release-driven consumers (main.cpp's
   // sleep/refresh branches, reader shortcuts) read that served release here.
-  // No upstream-style hard guard (return false on X4+classifier): the fork's
-  // released-long-hold sleep (main.cpp's sleep-on-release branch) reads the
-  // served release on X4 too, and the window's mask strip already withholds
-  // classified double-click releases — a guard here would block the served
-  // final click and break the sleep path.
+  // No upstream-style hard guard (return false on classifier-enabled boards):
+  // the fork's released-long-hold sleep (main.cpp's sleep-on-release branch)
+  // reads the served release there too, and the window's mask strip already
+  // withholds classified double-click releases — a guard here would block the
+  // served final click and break the sleep path.
   if (button == Button::Confirm && remoteInput.button == RemoteButton::Confirm) return true;
   if (button == Button::Back && remoteInput.button == RemoteButton::Back) return true;
   if ((button == Button::NavNext || button == Button::Right) && remoteInput.button == RemoteButton::Next) return true;

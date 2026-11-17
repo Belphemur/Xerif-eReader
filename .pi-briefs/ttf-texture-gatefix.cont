@@ -1,0 +1,13 @@
+Continue the ttf-texture-gatefix brief.
+
+Marker: TEXTURE_GATEFIX_DONE
+Final report: /tmp/pi_ttf_gatefix_final_report.md
+Worktree: /home/balor/workspace/eink/crosspoint-x-reader/_worktrees/ttf-image-quality2
+Branch: feat/ttf-image-quality2 (PR 303)
+
+Two stale test pins in test/ttf_image_engine/TtfImageEngineTest.cpp: update the
+DiffusionWeightScalesEveryKernelTerm expectations to the 1.0 kernel (computed from the
+real diffuse() and verified by running it) and the PolicyLetterSeparatesBakes rev pin
+/is -> /it with the updated comment. Implementation is correct — touch tests only.
+Fresh rebuild before ctest, always. Gates before push; force-with-lease; report-first;
+default git config; no Co-authored-by; marker as last line.

@@ -1,0 +1,11 @@
+Resume the dev-ota-manifest-sort-fix job. Do NOT restart from scratch.
+- Read the design doc docs/design/2026-11-08-dev-ota-pr-firmware.md and the brief
+  first — the contract is: manifest newest-first by asset date.
+- The fix is in generate_dev_manifest.py sort_key: parse the date to a UTC
+  datetime before comparing; mixed timezone formats must sort by real instant.
+- Push develop to origin after every commit. Do NOT merge.
+- Gates: the helper runs cleanly under python3 locally. No device gate for this
+  change (workflow + Python only).
+- When every task is committed, pushed, and verified, write the final report and
+  end your reply with the marker as the last line:
+MANIFEST_SORT_FIX_DONE

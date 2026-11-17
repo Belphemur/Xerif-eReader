@@ -1,0 +1,13 @@
+Continue the ttf-image-texture-impl brief.
+
+Marker: TEXTURE_IMPL_DONE
+Final report: /tmp/pi_ttf_texture_impl_final_report.md
+Worktree: /home/balor/workspace/eink/crosspoint-x-reader/_worktrees/ttf-image-quality2
+Branch: feat/ttf-image-quality2 (PR 303)
+
+Verification evidence is in the brief — do NOT re-derive; start at task 0 (rebase +
+doc amendment), then F1, F2, F3, delivery. Keep commands short-rolling: the stall
+detector kills silent turns (~90s) — stream output or background+poll long builds.
+Rules recap: TTF image path only; integer-only; no new heap in the bake; legacy FS4 and
+driver/LUT untouched; gates before every push; force-with-lease; report-first; default
+git config; no Co-authored-by; marker as last line.

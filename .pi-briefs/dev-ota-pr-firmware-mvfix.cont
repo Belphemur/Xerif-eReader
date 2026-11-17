@@ -1,0 +1,8 @@
+Resume the dev-ota-pr-firmware-mvfix job. Do NOT restart from scratch.
+- Read the brief first — the fix is one line in pr-firmware-links.yml.
+- The fix is verifiable live: rerun CI run 42483936293 (PR #303 head 50bbb3354)
+  and confirm the PR asset + manifest entry land on the dev release.
+- Push develop directly after verification.
+- When the fix is committed, pushed, and verified live on the release, write the
+  final report and end your reply with the marker as the last line:
+PR_FIRMWARE_MVFIX_DONE

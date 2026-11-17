@@ -303,10 +303,13 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   // the generic settings loop — load them manually. doublePwrBtn is upstream's
   // action selector; settings written by older fork builds only carry the
   // doubleClickPwrLight bool, which migrates (1 = frontlight, 0 = ignore).
+  // Upstream #4494: without a persisted value, the default is board-derived
+  // (defaultDoublePwrBtn), not a hard-coded PWR_FRONTLIGHT.
   shortPwrBtn = clamp(doc["shortPwrBtn"] | (uint8_t)SLEEP, (uint8_t)SHORT_PWRBTN_COUNT, (uint8_t)SLEEP);
-  doublePwrBtn =
-      clamp(doc["doublePwrBtn"] | (uint8_t)((doc["doubleClickPwrLight"] | (uint8_t)1) ? PWR_FRONTLIGHT : IGNORE),
-            (uint8_t)SHORT_PWRBTN_COUNT, (uint8_t)PWR_FRONTLIGHT);
+  const uint8_t legacyDoublePwrBtn = doc["doubleClickPwrLight"].isNull()         ? defaultDoublePwrBtn()
+                                     : (doc["doubleClickPwrLight"] | (uint8_t)1) ? (uint8_t)PWR_FRONTLIGHT
+                                                                                 : (uint8_t)IGNORE;
+  doublePwrBtn = clamp(doc["doublePwrBtn"] | legacyDoublePwrBtn, (uint8_t)SHORT_PWRBTN_COUNT, defaultDoublePwrBtn());
 
   // SD card font family name — not in SettingsList, load manually
   const char* sfn = doc["sdFontFamilyName"] | "";

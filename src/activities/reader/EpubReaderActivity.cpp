@@ -1346,6 +1346,7 @@ void EpubReaderActivity::idlePrewarmTick() {
     return;
   }
 
+  HalPowerManager::Lock powerLock;
   if (const auto p = section->loadPage(targetPage)) {
     const auto t0 = millis();
     auto scope = fcm->createPrewarmScope(true);
@@ -3054,6 +3055,10 @@ void EpubReaderActivity::renderBook() {
   // exit from the overlay while its deferred chrome refresh is still pending.
   settleOverlayRefresh();
 
+  // The old page snapshot must not compete with chapter builds for heap.
+  // An open overlay gets a fresh snapshot after the new page is rendered.
+  discardOverlayPage();
+
   const auto showPendingSyncSaveError = [this]() {
     if (!pendingSyncSaveError) return;
     pendingSyncSaveError = false;
@@ -3407,11 +3412,6 @@ void EpubReaderActivity::renderBook() {
 #ifdef READING_STATS_ENABLED
     currentPageWordsOnPage = p->wordCount();
 #endif
-
-    // The overlay and non-tiled grayscale renderer share the renderer's single
-    // stored-BW slot. Release the old page snapshot before renderContents()
-    // needs that slot, then snapshot the newly rendered page below.
-    discardOverlayPage();
 
 #ifdef BOOK_PROFILE
     uint8_t render_core = xPortGetCoreID();
@@ -5921,8 +5921,11 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   // Paper Mono only (no other panel combines): defer the B/W base activation so
   // the gray planes join it in a single waveform. Displaying the base
   // separately makes the gray pass re-drive the whole text body — a visible
-  // flash on every AA page.
-  const bool combinedGrayscaleBase = tiledGrayscale && !pageHasImages && renderer.combinesGrayscaleBase();
+  // flash on every AA page. The EEGO A4 combines image pages too (upstream
+  // #4494): its driver then shows base and grays itself instead of repainting
+  // a displayed base.
+  const bool combinedGrayscaleBase =
+      tiledGrayscale && (!pageHasImages || BoardConfig::isEegoA4()) && renderer.combinesGrayscaleBase();
   // supportsAsyncGrayscaleBase(): X3 must not use an async B/W refresh as the
   // grayscale base (upstream #3439); SSD1677-class panels keep the overlap.
   // The overlap window is also what lets the DUAL render walk fill both plane
@@ -5968,7 +5971,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     }
     LOG_DBG("ERS", "Image page: absolute grayscale waveform");
     pagesUntilFullRefresh = 1;
-  } else if (pageHasImages) {
+  } else if (pageHasImages && !combinedGrayscaleBase) {
     // Image pages use one base refresh before the grayscale pass. FAST leaves
     // the panel receptive to the gray waveform; pending cleanup still honors
     // the scheduled/manual HALF refresh.
@@ -6366,6 +6369,8 @@ void EpubReaderActivity::drawClippingHighlights(const Page& page, const int font
   const auto fillHighlight = [&](const int x, const int y, const int width, const int height) {
     if (BoardConfig::isEegoA4() && renderer.getRenderMode() != GfxRenderer::BW) {
       // Gray planes start at zero and use set bits for ink, opposite to B/W.
+      // MSB plane only: light gray.
+      if (renderer.getRenderMode() != GfxRenderer::GRAYSCALE_MSB) return;
       for (int py = y + (y & 1); py < y + height; py += 2) {
         for (int px = x + (x & 1); px < x + width; px += 2) renderer.drawPixel(px, py, false);
       }

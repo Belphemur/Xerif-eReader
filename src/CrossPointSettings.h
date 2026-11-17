@@ -343,14 +343,19 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   static constexpr uint8_t CHARACTER_SPACING_OFFSET = 2;  // stored 0..4 maps to -2..+2 px
   uint8_t characterSpacing = CHARACTER_SPACING_OFFSET;
   int8_t getCharacterSpacing() const { return static_cast<int8_t>(characterSpacing - CHARACTER_SPACING_OFFSET); }
-  // Short power button click behaviour. The default Sleep binding makes the
-  // short click sleep; a long press (see POWER_BUTTON_HOLD_MS) always powers
-  // the device off, regardless of this setting.
+  uint8_t textAntiAliasing = 1;
+  // Short power button click behaviour. The fork default is Sleep: a short
+  // click sleeps; a long press (see POWER_BUTTON_HOLD_MS) always powers the
+  // device off, regardless of this setting. FromJson's default must match.
   uint8_t shortPwrBtn = SLEEP;
-  // X4 Pro double click action; Ignore disables the single-click delay.
-  // (action selector ported from upstream's power-button rework; the click
-  // detection itself stays on the fork's PowerClickWindow state machine.)
-  uint8_t doublePwrBtn = PWR_FRONTLIGHT;
+  // Power double click (see hasPowerDoubleClick()); Ignore disables the
+  // single-click delay. (action selector ported from upstream's power-button
+  // rework; the click detection itself stays on the fork's PowerClickWindow
+  // state machine.)
+  uint8_t doublePwrBtn = defaultDoublePwrBtn();
+  uint8_t homeButtonTapAction = static_cast<uint8_t>(HomeButtonAction::Home);
+  uint8_t homeButtonDoubleTapAction = static_cast<uint8_t>(HomeButtonAction::ToggleFrontlight);
+  uint8_t homeButtonLongPressAction = static_cast<uint8_t>(HomeButtonAction::ReaderMenu);
   // EPUB reading orientation settings
   // 0 = portrait (default), 1 = landscape clockwise, 2 = inverted, 3 = landscape counter-clockwise
   uint8_t orientation = PORTRAIT;
@@ -512,13 +517,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t showReaderMenu = READER_MENU_TAP;
   // X4 Pro: double-click power toggles the frontlight. Disabling frees the
   // power button for shortPwrBtn actions without the double-click wait.
-  uint8_t doubleClickPwrLight = 1;
-  // Capacitive Home-key actions. Persisted values are HomeButtonAction indices;
-  // fields are ungated so every board compiles the same catalog. UI rows are
-  // gated by board capability. Unknown or legacy fields fall back to defaults.
-  uint8_t homeButtonTapAction = static_cast<uint8_t>(HomeButtonAction::GoBack);
-  uint8_t homeButtonDoubleTapAction = static_cast<uint8_t>(HomeButtonAction::ReaderMenu);
-  uint8_t homeButtonLongPressAction = static_cast<uint8_t>(HomeButtonAction::ToggleFrontlight);
+  uint8_t doubleClickPwrLight = 1;  // legacy key; fromJson migrates it into doublePwrBtn
   // Frontlight quick-panel state. Category-less SettingsList entries persist
   // these without adding them to the regular Settings screen.
   uint8_t frontlightBrightness = 60;
@@ -572,8 +571,22 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // exclusively the power off gesture. Also bounds the PWR_CONFIRM click
   // detector (MappedInputManager.cpp:313), which always saw 400 before.
   static constexpr uint16_t POWER_BUTTON_HOLD_MS = 400;
-  uint16_t getPowerButtonDuration() const { return POWER_BUTTON_HOLD_MS; }
   bool shouldTrackReadingStats() const { return trackReadingStats != 0; }
+  // Every board offers a power double-click action except those whose power
+  // button is also Confirm.
+  static bool hasPowerDoubleClick() {
+    return BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::DigitalConfirmPowerHold;
+  }
+  // Frontlight toggle where it shipped enabled; off elsewhere, so a single
+  // click has no double-click wait unless the user picks an action.
+  static uint8_t defaultDoublePwrBtn() {
+    return (BoardConfig::isX4Pro() || BoardConfig::isEegoA4()) ? PWR_FRONTLIGHT : IGNORE;
+  }
+  // The 10ms threshold only served the old short-click sleep path, which the
+  // fork's release path replaced; the hold path is exclusively the power off
+  // gesture on the fork. EEGO A4 (upstream #4494): its hold must last 400 ms
+  // longer, on top of the fork's constant.
+  uint16_t getPowerButtonDuration() const { return POWER_BUTTON_HOLD_MS + (BoardConfig::isEegoA4() ? 400 : 0); }
   int getReaderFontId() const;
 
   // Drop the SD font selection and fall back to the built-in family. The reader

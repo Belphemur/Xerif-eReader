@@ -1,0 +1,10 @@
+Continue the ttf-image-texture brief.
+
+Marker: TEXTURE_QUALITY_DONE
+Final report: /tmp/pi_ttf_texture_final_report.md
+Worktree: /home/balor/workspace/eink/crosspoint-x-reader/_worktrees/ttf-image-quality2
+Branch: feat/ttf-image-quality2 (PR 303)
+
+Rules recap: TTF image path only; integer-only; no new heap in the bake; legacy FS4 and
+driver/LUT untouched; F4 excluded by owner; gates before every push; force-with-lease;
+report-first; default git config; no Co-authored-by.

@@ -1,0 +1,11 @@
+Continue the ttf-image-text-edge brief.
+
+Marker: TEXT_EDGE_DONE
+Final report: /tmp/pi_ttf_text_edge_final_report.md
+Worktree: /home/balor/workspace/eink/crosspoint-x-reader/_worktrees/ttf-image-quality2
+Branch: feat/ttf-image-quality2
+
+Priorities: task 0 rebase first; task 1 verification before any code; edge pass
+post-dithering; cache rev 't'→'u'; legacy FS4 and driver/LUT untouched; F1/F2
+invariants must not regress; gates before every push; force-with-lease; report-first;
+default git config; no Co-authored-by; marker as last line.

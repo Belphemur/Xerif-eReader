@@ -1,0 +1,12 @@
+Resume the dev-ota-pr-firmware job. Do NOT restart from scratch.
+- Read the design doc docs/design/2026-11-08-dev-ota-pr-firmware.md first — it is
+  the contract.
+- Worktree: /home/balor/workspace/eink/crosspoint-x-reader, branch develop.
+- Commit directly to develop; push develop to origin after every commit.
+- Never merge; never amend authorship; default/global git config only.
+- Report-first discipline: update the report at round start and after every commit.
+- Gates before you consider a task done: every touched workflow YAML parses as
+  valid YAML; design doc updated in lockstep if you deviate from it.
+- When every task is committed, pushed, and verified, write the final report and
+  end your reply with the marker as the last line:
+DEV_OTA_PR_FIRMWARE_DONE
