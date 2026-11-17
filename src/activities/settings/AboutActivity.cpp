@@ -6,6 +6,7 @@
 #include <HalFrontlight.h>
 #include <HalMemory.h>
 #include <HalStorage.h>
+#include <HalSystem.h>
 #include <HalTiltSensor.h>
 #include <I18n.h>
 #include <esp_mac.h>
@@ -34,6 +35,9 @@ enum MenuItem {
   ITEM_RTC,
   ITEM_IMU,
   ITEM_MAC,
+#if FREEINK_DEVICE_EEGO_A4
+  ITEM_UID,
+#endif
   ITEM_FREE_HEAP,
   ITEM_MIN_FREE_HEAP,
   ITEM_LARGEST_BLOCK,
@@ -58,6 +62,9 @@ const char* const menuNames[AboutActivity::ITEM_COUNT] = {
     "RTC",
     "Tilt Sensor (IMU)",
     "MAC Address",
+#if FREEINK_DEVICE_EEGO_A4
+    "UID",
+#endif
     "Free Heap",
     "Min Free Heap",
     "Largest Free Block",
@@ -144,6 +151,15 @@ void AboutActivity::onEnter() {
   // the exception: onEnter() runs on every entry, so they read as a snapshot
   // taken when this screen opened.
   rowValues_[ITEM_DEVICE] = BoardConfig::ACTIVE.name;
+#if FREEINK_DEVICE_EEGO_A4
+  uint32_t uid = 0;
+  if (HalSystem::getEegoUid(uid)) {
+    snprintf(buf, sizeof(buf), "%lu", static_cast<unsigned long>(uid));
+    rowValues_[ITEM_UID] = buf;
+  } else {
+    rowValues_[ITEM_UID] = "Error.";
+  }
+#endif
   rowValues_[ITEM_FIRMWARE] = CROSSPOINT_VERSION;
   snprintf(buf, sizeof(buf), "%s rev %u", ESP.getChipModel(), static_cast<unsigned>(ESP.getChipRevision()));
   rowValues_[ITEM_CHIP] = buf;
