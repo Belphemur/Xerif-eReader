@@ -229,7 +229,6 @@ class MappedInputManager {
   // touch-override preconditions; long-press detection and every other
   // consumer keep reading raw getHeldTime().
   unsigned long getRepeatHeldTime() const;
-  const GfxRenderer& getRenderer() const { return renderer; }
   Labels mapLabels(const char* back, const char* confirm, const char* previous, const char* next) const;
   // Maps four screen-direction labels onto the two physical front-button roles
   // using the same live-orientation transform as ScreenLeft/Right/Up/Down.

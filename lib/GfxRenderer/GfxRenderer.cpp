@@ -364,16 +364,6 @@ void GfxRenderer::prewarmFallbackText(const int fontId, const TextGetter getter,
 #endif  // !CROSSPOINT_TTF_READER
 }
 
-void GfxRenderer::prewarmFallbackText(const int fontId, const char* text, const EpdFontFamily::Style style) const {
-  if (text == nullptr || *text == '\0') {
-    return;
-  }
-  const int resolvedFontId = resolveTextFontId(fontId, text, style);
-  if (resolvedFontId != fontId) {
-    ensureSdGlyphsResident(resolvedFontId, text, style, false);
-  }
-}
-
 void GfxRenderer::ensureSdGlyphsResident([[maybe_unused]] const int fontId, [[maybe_unused]] const char* text,
                                          [[maybe_unused]] const EpdFontFamily::Style style,
                                          [[maybe_unused]] const bool metadataOnly) const {
@@ -2907,24 +2897,6 @@ bool GfxRenderer::displayRetainedGrayscaleOverlay(int x, int y, int width, int h
 
 void GfxRenderer::preconditionGrayscale() const { display.preconditionGrayscale(); }
 
-void GfxRenderer::preconditionGrayscale(int x, int y, int w, int h) const {
-  if (w <= 0 || h <= 0) return;
-  // Rotate the logical rect's opposite corners to physical panel coords; the
-  // physical bbox stays axis-aligned for all four orientations.
-  int ax, ay, bx, by;
-  rotateCoordinates(orientation, x, y, &ax, &ay, panelWidth, panelHeight);
-  rotateCoordinates(orientation, x + w - 1, y + h - 1, &bx, &by, panelWidth, panelHeight);
-  int x0 = ax < bx ? ax : bx, x1 = ax > bx ? ax : bx;
-  int y0 = ay < by ? ay : by, y1 = ay > by ? ay : by;
-  if (x0 < 0) x0 = 0;
-  if (y0 < 0) y0 = 0;
-  if (x1 >= panelWidth) x1 = panelWidth - 1;
-  if (y1 >= panelHeight) y1 = panelHeight - 1;
-  if (x1 < x0 || y1 < y0) return;
-  display.preconditionGrayscale(static_cast<uint16_t>(x0), static_cast<uint16_t>(y0),
-                                static_cast<uint16_t>(x1 - x0 + 1), static_cast<uint16_t>(y1 - y0 + 1));
-}
-
 void GfxRenderer::copyGrayscaleLsbBuffers() const { display.copyGrayscaleLsbBuffers(frameBuffer); }
 
 void GfxRenderer::copyGrayscaleLsbBuffers(const uint8_t* plane) const { display.copyGrayscaleLsbBuffers(plane); }
@@ -2954,8 +2926,6 @@ void GfxRenderer::writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* scratch
   assert(yStart >= 0 && numRows > 0 && yStart <= static_cast<int>(panelHeight) - numRows);
   display.writeGrayscalePlaneStrip(lsbPlane, scratch, static_cast<uint16_t>(yStart), static_cast<uint16_t>(numRows));
 }
-
-bool GfxRenderer::supportsStripGrayscale() const { return grayscaleCapabilities().stripUploads; }
 
 bool GfxRenderer::combinesGrayscaleBase() const {
   return grayscaleCapabilities().base == HalDisplay::GrayscaleBase::Combined;

@@ -72,15 +72,6 @@ int FontCacheManager::getIdleLookaheadPages(const int fontId) const {
 #endif
 }
 
-void FontCacheManager::logStats(const char* label) {
-  if (fontDecompressor_) fontDecompressor_->logStats(label);
-#if !defined(CROSSPOINT_TTF_READER)
-  for (auto& [id, font] : sdCardFonts_) {
-    font->logStats(label);
-  }
-#endif  // !CROSSPOINT_TTF_READER
-}
-
 void FontCacheManager::resetStats() {
   if (fontDecompressor_) fontDecompressor_->resetStats();
 #if !defined(CROSSPOINT_TTF_READER)

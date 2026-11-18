@@ -103,21 +103,7 @@ HalDisplay::GrayscaleCapabilities HalDisplay::grayscaleCapabilities(GrayscaleMod
   return einkDisplay.grayscaleCapabilities(mode);
 }
 
-bool HalDisplay::supportsAsyncGrayscaleBase() const { return grayscaleCapabilities().asyncBase; }
-
-void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {
-  if (gpio.deviceIsX3() && mode == RefreshMode::HALF_REFRESH) {
-    einkDisplay.requestResync(1);
-  }
-
-  einkDisplay.refreshDisplay(convertRefreshMode(mode), turnOffScreen);
-  LOG_DBG("EPD", "refresh mode=%d turnOff=%d (booster PON for paint; POF idle-hold after when turnOff=1)",
-          static_cast<int>(mode), turnOffScreen);
-}
-
 void HalDisplay::setInverted(bool inverted) { einkDisplay.setInverted(inverted); }
-
-bool HalDisplay::toggleInverted() { return einkDisplay.toggleInverted(); }
 
 bool HalDisplay::isInverted() const { return einkDisplay.isInverted(); }
 
@@ -154,10 +140,6 @@ bool HalDisplay::displayGrayscaleBase(GrayscaleMode mode, RefreshMode fallback, 
   LOG_DBG("EPD", "gray refresh mode=%d turnOff=%d (booster PON for paint; POF idle-hold after when turnOff=1)",
           static_cast<int>(fallback), turnOffScreen);
   return ok;
-}
-
-void HalDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* msbBuffer) {
-  einkDisplay.copyGrayscaleBuffers(lsbBuffer, msbBuffer);
 }
 
 void HalDisplay::displayGrayscaleBase(RefreshMode fallback, bool turnOffScreen) {
@@ -198,10 +180,6 @@ void HalDisplay::writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* rows, ui
   einkDisplay.writeGrayscalePlaneStrip(lsbPlane ? EInkDisplay::GRAY_PLANE_LSB : EInkDisplay::GRAY_PLANE_MSB, rows,
                                        yStart, numRows);
 }
-
-bool HalDisplay::supportsStripGrayscale() const { return grayscaleCapabilities().stripUploads; }
-
-bool HalDisplay::combinesGrayscaleBase() const { return grayscaleCapabilities().base == GrayscaleBase::Combined; }
 
 uint16_t HalDisplay::getDisplayWidth() const { return einkDisplay.getDisplayWidth(); }
 
