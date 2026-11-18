@@ -36,7 +36,18 @@ class SleepActivity final : public Activity {
                                           int pagesLeft = -1) const;
   void renderBlankSleepScreen() const;
 
+  // Issues the white pre-clean that onEnter deferred (sleepPreCleanPending_):
+  // the clean is skipped only while the selected image screen is expected to
+  // repaint the panel through its absolute/Direct gray base pass; every path
+  // that ends up flushing plain B/W content calls this first, before its
+  // frame is drawn.
+  void issueDeferredPreClean() const;
+
   bool fromTimeout = false;
+  // Set by onEnter when the white pre-clean was deferred to the image render
+  // path on a grayscale-capable non-Metalio panel; false once issued or once
+  // the gray base pass has repainted the panel in its place.
+  mutable bool sleepPreCleanPending_ = false;
   // Cover + Transparent: the cover under the overlay, and the same cover while its gray planes are redrawn.
   mutable const Bitmap* overlayCover = nullptr;
   mutable const Bitmap* overlayGrayCover = nullptr;
