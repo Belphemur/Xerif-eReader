@@ -712,10 +712,16 @@ void releaseSdFontCachesForDecode(const GfxRenderer& renderer) {
 // content must pass false. grayCover (a gray cover already drawn into the B/W
 // base) gets its gray planes redrawn under overlay passes, like the panel-side
 // Cover + Transparent compositing.
+// deferredPreClean carries SleepActivity's pending onEnter pre-clean when the
+// caller reached this function with that clean still unissued (only the
+// full-screen image path does). The absolute/Direct base pass below repaints
+// the whole panel, so it replaces the clean; the gray-setup failure fallback
+// re-issues it (with a redraw, since the frame is already in the framebuffer).
+// Overlay and shutdown callers leave it null and behave exactly as before.
 void displayImageWithGrayscale(GfxRenderer& renderer, const Bitmap& bitmap, const int x, const int y, const int maxW,
                                const int maxH, const float cropX, const float cropY, const bool hasGreyscale,
                                const bool preserveBackground = false, const bool allowAbsolutePlanes = true,
-                               const Bitmap* grayCover = nullptr) {
+                               const Bitmap* grayCover = nullptr, bool* deferredPreClean = nullptr) {
   if (!hasGreyscale) {
     renderer.displayBuffer(kSleepClean);
     return;
@@ -731,12 +737,27 @@ void displayImageWithGrayscale(GfxRenderer& renderer, const Bitmap& bitmap, cons
   // next fast refresh drop the grays (Picco SSD1677).
   const BwFrameKeeper bwFrame(renderer, !absolute);
   if (!bwFrame.ready()) {
+    if (deferredPreClean && *deferredPreClean) {
+      // Gray setup failed after the frame was drawn, with onEnter's pre-clean
+      // still pending: clean to white, then redraw the frame so the panel
+      // sequence matches the paths that issued the clean before drawing.
+      *deferredPreClean = false;
+      renderer.clearScreen();
+      renderer.displayBuffer(kSleepClean);
+      if (bitmap.rewindToData() == BmpReaderError::Ok) {
+        renderer.drawBitmap(bitmap, x, y, maxW, maxH, cropX, cropY, preserveBackground);
+      }
+    }
     renderer.displayBuffer(kSleepClean);
     return;
   }
   if (absolute) {
-    // Full-screen modes already cleaned to white in onEnter; Cover + Transparent
-    // skips that clean, so its plain-cover fallback cleans here.
+    // The base pass repaints the whole panel, replacing the clean onEnter
+    // deferred for this path.
+    if (deferredPreClean) *deferredPreClean = false;
+    // Full-screen modes cleaned to white in onEnter or skipped that clean for
+    // this very base pass; Cover + Transparent skips the clean entirely, so
+    // its plain-cover fallback cleans here.
     if (preserveBackground || SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::COVER_TRANSPARENT) {
       cleanBeforeAbsoluteGray(renderer);
     }
@@ -905,6 +926,7 @@ bool renderShutdownImageFramed(GfxRenderer& renderer, HalFile& file, const bool 
 
 void SleepActivity::onEnter() {
   Activity::onEnter();
+  sleepPreCleanPending_ = false;
 
   const bool renderQuickResume =
       SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::QUICK_RESUME ||
@@ -957,10 +979,28 @@ void SleepActivity::onEnter() {
   }
 
   // Every mode below replaces the whole screen. One clean straight to the new
-  // image leaves the old screen visible, so clean to white first (BLANK is that clean).
+  // image leaves the old screen visible, so clean to white first (BLANK is that
+  // clean). On panels whose grayscale pipeline repaints the whole panel
+  // (absolute/direct base pass) the IMAGE screens defer the clean instead of
+  // skipping it: only they can reach that base pass, which is the ghosting
+  // protection, and the deferred clean is re-issued by every path that ends up
+  // flushing plain B/W content instead (monochrome or filtered art,
+  // progress-enabled covers, missing-image fallbacks to the logo screen).
+  // Non-image screens (DARK/LIGHT and the logo itself) and Metalio's gray
+  // paint (which shows the prior screen through, see cleanBeforeAbsoluteGray)
+  // always clean right here.
+  const bool grayPipelineRepaintsPanel =
+      !BoardConfig::isMetalioEInk4() && renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported();
+  const bool imageSleepScreen = sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM ||
+                                sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::COVER ||
+                                sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM;
   if (SETTINGS.sleepScreen != CrossPointSettings::SLEEP_SCREEN_MODE::BLANK) {
-    renderer.clearScreen();
-    renderer.displayBuffer(kSleepClean);
+    if (grayPipelineRepaintsPanel && imageSleepScreen) {
+      sleepPreCleanPending_ = true;
+    } else {
+      renderer.clearScreen();
+      renderer.displayBuffer(kSleepClean);
+    }
   }
 
   switch (SETTINGS.sleepScreen) {
@@ -1042,10 +1082,21 @@ void SleepActivity::renderCustomSleepScreen() const {
   renderDefaultSleepScreen();
 }
 
+void SleepActivity::issueDeferredPreClean() const {
+  if (!sleepPreCleanPending_) return;
+  sleepPreCleanPending_ = false;
+  renderer.clearScreen();
+  renderer.displayBuffer(kSleepClean);
+}
+
 // Sleep screens paint with kSleepClean (after the white clean in onEnter): HALF, not
 // the multi-flash GC waveform (0xF7) that FULL_REFRESH selects (#2471's blinking
 // complaint), except on Metalio.
 void SleepActivity::renderDefaultSleepScreen() const {
+  // Terminal fallback of every image screen: it flushes plain B/W content, so
+  // any pre-clean onEnter deferred to the image path is issued here, before
+  // this frame reaches the panel.
+  issueDeferredPreClean();
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
 
@@ -1079,13 +1130,28 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool pre
 
   LOG_DBG("SLP", "bitmap %d x %d, screen %d x %d", bitmap.getWidth(), bitmap.getHeight(), pageWidth, pageHeight);
   LOG_DBG("SLP", "drawing to %d x %d", x, y);
-  if (!preserveBackground) renderer.clearScreen();
 
   const bool hasGreyscale = (bitmap.hasGreyscale() || (preserveBackground && overlayGrayCover)) &&
                             (preserveBackground || SETTINGS.sleepScreenCoverFilter ==
                                                        CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER);
 
+  // onEnter defers its white pre-clean on grayscale-capable panels expecting
+  // the absolute/Direct gray base pass. When THIS render cannot reach that
+  // pass (monochrome or filtered art, a progress line forcing the OEM fold
+  // pipeline), issue the deferred clean here, before the frame is drawn, so
+  // the previous screen cannot ghost through the HALF waveform. Overlay and
+  // shutdown renders never have a pending clean: transparent modes and
+  // renderShutdownScreen do not run onEnter's deferral.
+  if (sleepPreCleanPending_ && !(hasGreyscale && progressPercent < 0 &&
+                                 renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported())) {
+    issueDeferredPreClean();
+  }
+
+  if (!preserveBackground) renderer.clearScreen();
+
   if (!renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY, preserveBackground)) {
+    // Leave the pre-clean pending: the caller's next fallback (ultimately
+    // renderDefaultSleepScreen) issues it before painting its own frame.
     renderer.displayBuffer(kSleepClean);
     return;
   }
@@ -1119,7 +1185,8 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool pre
   // text is shown, force the OEM fold pipeline, which keeps base content
   // (same choice renderShutdownImageFramed makes for its frame + caption).
   displayImageWithGrayscale(renderer, bitmap, x, y, pageWidth, pageHeight, cropX, cropY, hasGreyscale,
-                            preserveBackground, /*allowAbsolutePlanes=*/progressPercent < 0, overlayGrayCover);
+                            preserveBackground, /*allowAbsolutePlanes=*/progressPercent < 0, overlayGrayCover,
+                            &sleepPreCleanPending_);
 }
 
 bool SleepActivity::renderSleepOverlayFile(HalFile& file, const char* pathForLog, const int progressPercent,
