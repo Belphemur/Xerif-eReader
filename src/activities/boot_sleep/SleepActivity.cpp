@@ -957,8 +957,14 @@ void SleepActivity::onEnter() {
   }
 
   // Every mode below replaces the whole screen. One clean straight to the new
-  // image leaves the old screen visible, so clean to white first (BLANK is that clean).
-  if (SETTINGS.sleepScreen != CrossPointSettings::SLEEP_SCREEN_MODE::BLANK) {
+  // image leaves the old screen visible, so clean to white first (BLANK is that
+  // clean). Panels whose grayscale sleep pipeline repaints the whole panel
+  // (absolute/direct base pass) skip it: that pass is the ghosting protection,
+  // so the extra clean only doubles the panel flash. Metalio's gray paint shows
+  // the prior screen through (see cleanBeforeAbsoluteGray), so its clean stays.
+  const bool grayPipelineRepaintsPanel =
+      !BoardConfig::isMetalioEInk4() && renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported();
+  if (SETTINGS.sleepScreen != CrossPointSettings::SLEEP_SCREEN_MODE::BLANK && !grayPipelineRepaintsPanel) {
     renderer.clearScreen();
     renderer.displayBuffer(kSleepClean);
   }
