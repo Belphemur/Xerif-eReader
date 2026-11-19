@@ -62,13 +62,20 @@ HalDisplay::GrayscaleMode sleepGrayscaleMode(const GfxRenderer& renderer) {
              : HalDisplay::GrayscaleMode::Absolute;
 }
 
-// Fallback refresh mode for the absolute/direct gray base pass. FAST lets the
-// panel driver take its non-flashing base transition when it still holds a
-// valid prior frame — the same treatment reader image pages get (HALF always
-// degrades to a real B/W display(), the full-panel whiteout). X3 keeps HALF:
-// its gray base relies on the resync HALF forces in HalDisplay.cpp. Only the
-// UC8279 X4 driver reports Absolute/Direct capabilities, so other panels never
-// reach these call sites.
+// Fallback refresh mode for the absolute/direct gray base pass. FAST lets a
+// driver that consumes the fallback take its non-flashing base transition when
+// it still holds a valid prior frame — the same treatment reader image pages
+// get (HALF always degrades to a real B/W display(), the full-panel whiteout).
+// Consumption is driver-specific, so this is not a universal transition
+// change: the UC8279 X4 driver honors the fallback on the Absolute base
+// (Uc8279X4Driver::displayGrayscaleBase — the non-flashing prebw settle),
+// while its Direct branch returns before reading it (Direct sleeps keep the
+// driver's own quality-bank DRF against the retained planes, which never
+// paints a white B/W base; honoring the fallback there is an SDK change), and
+// SSD1677 absolute boards (Metalio, Sticky, Picco) ignore it too — their
+// absolute pass activates the fixed gray LUT directly, so their transition is
+// byte-identical with either argument. X3 keeps HALF: its gray base relies on
+// the resync HALF forces in HalDisplay.cpp.
 HalDisplay::RefreshMode sleepBaseRefreshMode() {
   return gpio.deviceIsX3() ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH;
 }
