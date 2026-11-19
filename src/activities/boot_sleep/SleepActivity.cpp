@@ -62,6 +62,17 @@ HalDisplay::GrayscaleMode sleepGrayscaleMode(const GfxRenderer& renderer) {
              : HalDisplay::GrayscaleMode::Absolute;
 }
 
+// Fallback refresh mode for the absolute/direct gray base pass. FAST lets the
+// panel driver take its non-flashing base transition when it still holds a
+// valid prior frame — the same treatment reader image pages get (HALF always
+// degrades to a real B/W display(), the full-panel whiteout). X3 keeps HALF:
+// its gray base relies on the resync HALF forces in HalDisplay.cpp. Only the
+// UC8279 X4 driver reports Absolute/Direct capabilities, so other panels never
+// reach these call sites.
+HalDisplay::RefreshMode sleepBaseRefreshMode() {
+  return gpio.deviceIsX3() ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH;
+}
+
 // SSD absolute images use the new thresholds; other panels retain legacy tuning.
 bool useOriginalCoverThresholds(const GfxRenderer& renderer) {
   return renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported() &&
@@ -438,7 +449,8 @@ AlphaOverlayResult tryRenderTransparentOverlayBmp(HalFile& file, GfxRenderer& re
   }
   if (absolute) {
     cleanBeforeAbsoluteGray(renderer);
-    if (!renderer.displayGrayscaleBase(sleepGrayscaleMode(renderer))) return AlphaOverlayResult::Error;
+    if (!renderer.displayGrayscaleBase(sleepGrayscaleMode(renderer), sleepBaseRefreshMode()))
+      return AlphaOverlayResult::Error;
   } else {
     renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
   }
@@ -761,7 +773,7 @@ void displayImageWithGrayscale(GfxRenderer& renderer, const Bitmap& bitmap, cons
     if (preserveBackground || SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::COVER_TRANSPARENT) {
       cleanBeforeAbsoluteGray(renderer);
     }
-    if (!renderer.displayGrayscaleBase(sleepGrayscaleMode(renderer))) return;
+    if (!renderer.displayGrayscaleBase(sleepGrayscaleMode(renderer), sleepBaseRefreshMode())) return;
   } else {
     // OEM grayscale pipeline base. Must stay HALF: the gray nudge LUT is
     // calibrated against the pixel state the single-pass HALF waveform leaves
@@ -1245,7 +1257,7 @@ bool SleepActivity::renderTransparentOverlayPng(const std::string& path, const i
   if (absolute) {
     // The cover replaces the previous screen, so clean it like the BMP paths do.
     if (overlayCover) cleanBeforeAbsoluteGray(renderer);
-    if (!renderer.displayGrayscaleBase(sleepGrayscaleMode(renderer))) return false;
+    if (!renderer.displayGrayscaleBase(sleepGrayscaleMode(renderer), sleepBaseRefreshMode())) return false;
   } else {
     renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
   }
