@@ -104,6 +104,10 @@ class ParsedText {
   bool focusReadingEnabled;
   bool isNaturalAlign;
   bool hasRtlWord;
+  // Complex-script shaping (Indic, #3787): latched in addWord when any word
+  // scanned as a complex script; drives the shaping memo and per-word display
+  // forms (TextBlock::displayForm).
+  bool hasComplexWord = false;
   // Latched when a word was dropped because the text arena could not
   // allocate. The section build must fail instead of committing a cache with
   // holes in the text.

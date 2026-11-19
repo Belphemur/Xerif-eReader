@@ -1,10 +1,12 @@
 #include "SdCardFontSystem.h"
 
 #include <GfxRenderer.h>
+#include <IndicScripts.h>
 #include <Logging.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <iterator>
 
 #include "CrossPointSettings.h"
@@ -196,6 +198,10 @@ void SdCardFontSystem::setupUiFallbacks(GfxRenderer& renderer) {
       break;
     }
   }
+  // Every Indic script too.
+  hasFallbackScript = hasFallbackScript ||
+                      std::any_of(std::begin(indic::SCRIPTS), std::end(indic::SCRIPTS),
+                                  [&](const indic::ScriptInfo& s) { return readerIt->second.hasCodepoint(s.probe); });
   if (!hasFallbackScript) {
     LOG_DBG("SDFS", "%s has no fallback-script coverage - skipping UI fallback sizes", familyName.c_str());
     return;

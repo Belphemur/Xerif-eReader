@@ -1,6 +1,7 @@
 #include "Section.h"
 
 #include <BufferedFile.h>
+#include <ComplexShaper.h>
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
@@ -152,8 +153,12 @@ namespace {
 // pixels rounded exactly once. The change is not observable on the fork, so the
 // merged tree keeps v74 and both parents' v74 caches stay valid.
 
-constexpr uint8_t SECTION_FILE_VERSION = 75;
 // v75: Headings are not hyphenated (upstream #4442); invalidates both parents' v74 caches.
+// v76: Indic text is measured as shaped glyphs (OpenType conjuncts, reph, positioned
+//      marks, in the book's language; reordered vowel signs for fonts without shaping
+//      data), and TextBlocks store each complex-script word's drawn form so page turns
+//      never shape (upstream #3787, its v76). Invalidates both parents' v75 caches.
+constexpr uint8_t SECTION_FILE_VERSION = 76;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
@@ -671,6 +676,8 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   build_->parser->setTextSpacing(spec.characterSpacing, spec.wordSpacingPercent);
   build_->parser->setParagraphIndentSpaces(spec.paragraphIndentSpaces);
   Hyphenator::setPreferredLanguage(epub->getLanguage());
+  // The document language selects the shaper's script plan and Indic matra reordering.
+  ComplexShaper::setDocumentLanguage(epub->getLanguage().c_str());
 
   if (!build_->parser->beginParse()) {
     LOG_ERR("SCT", "Failed to begin parse");

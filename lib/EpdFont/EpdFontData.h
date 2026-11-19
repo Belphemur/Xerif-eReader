@@ -4,6 +4,7 @@
 
 #pragma once
 #include <cstdint>
+#include <string>
 
 // fontconvert.py, fontconvert_sdcard.py and the vector loader rasterize point sizes at this DPI.
 constexpr uint16_t FONT_RASTER_DPI = 150;
@@ -255,6 +256,16 @@ typedef struct {
   /// bitmaps at data->bitmap[glyph->dataOffset], so getGlyphBitmap takes the
   /// standard tail — the ctx must NOT be reinterpreted as an SdCardFont.
   uint8_t missKind;
+
+  /// Complex-script shaping (ComplexShaper). When non-null, the renderer hands
+  /// it any text containing a complex-script run and draws the ShapingTokens.h
+  /// stream written to `out` instead. Returns false to draw the text unshaped.
+  /// Shares glyphMissCtx. nullptr for fonts without shaping data (all fonts
+  /// zero-init this). The fork dropped the vector-font handlers this slot sat
+  /// behind upstream (vectorBitmapHandler/kernHandler, TtfEpdFont engine) —
+  /// native fonts come from the SDK's FreeInkBook engine — but the shaping
+  /// slot itself is engine-independent and SD fonts carry it.
+  bool (*shapeHandler)(void* ctx, const char* utf8, std::string* out);
 } EpdFontData;
 
 /// missCtx kind values (namespace scope — the EpdFontData typedef is an

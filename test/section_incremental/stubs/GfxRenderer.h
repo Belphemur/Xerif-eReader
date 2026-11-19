@@ -65,6 +65,26 @@ class GfxRenderer {
   void fillRectDither(int, int, int, int, Color) const {}
   void drawText(int, int, int, const char*, bool, EpdFontFamily::Style,
                 BidiUtils::BidiBaseDir = BidiUtils::BidiBaseDir::AUTO, int8_t = 0) const {}
+  // Shaped-run overloads (upstream #3787): a stored display form draws as is.
+  struct LaidOutText {
+    const char* text;
+    const char* display;
+  };
+  bool resolveForDisplay(int, const char*, EpdFontFamily::Style, std::string&) const { return false; }
+  inline static unsigned shapingMemoStarts = 0;
+  struct ShapingMemoScope {
+    explicit ShapingMemoScope(bool enabled = true) {
+      if (enabled) ++shapingMemoStarts;
+    }
+    ~ShapingMemoScope() {}
+  };
+  void drawText(int, int, int, const LaidOutText&, bool, EpdFontFamily::Style,
+                BidiUtils::BidiBaseDir = BidiUtils::BidiBaseDir::AUTO, int8_t = 0) const {}
+  int getTextAdvanceX(int, const LaidOutText&, EpdFontFamily::Style, int8_t = 0,
+                      BidiUtils::BidiBaseDir = BidiUtils::BidiBaseDir::AUTO,
+                      TextMeasureMode = TextMeasureMode::Layout) const {
+    return 0;
+  }
   void setFontVariantProvider(const FontVariantProvider& provider) { fontVariantProvider_ = provider; }
   // Variant ids resolve through the provider; without one every scale keeps the base font.
   int resolveFontVariant(int fontId, float scale) const { return fontVariantProvider_.resolveFont(fontId, scale); }
