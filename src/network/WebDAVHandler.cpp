@@ -405,6 +405,7 @@ void WebDAVHandler::handlePut(WebServer& s) {
   }
 
   clearBookCache(path.c_str());
+  sleepImageChanged(path.c_str());
   if (library::isLibraryBookFile(path.c_str())) library::markLibraryIndexDirty();
   s.send(_putExisted ? 204 : 201);
   LOG_DBG("DAV", "PUT complete: %s", path.c_str());
@@ -568,6 +569,7 @@ void WebDAVHandler::handleMove(WebServer& s) {
   const bool success = ClippingStore::moveBook(srcPath.c_str(), dstPath.c_str());
 
   if (success) {
+    if (!dstExists) sleepImageChanged(dstPath.c_str());
     s.send(dstExists ? 204 : 201);
   } else {
     s.send(500, "text/plain", "Move failed");
@@ -665,6 +667,7 @@ void WebDAVHandler::handleCopy(WebServer& s) {
   dstFile.close();
 
   if (copyOk) {
+    sleepImageChanged(dstPath.c_str());
     if (dstExists) clearBookCache(dstPath.c_str());  // the old book's cache does not match the new content
     if (library::isLibraryBookFile(dstPath.c_str())) library::markLibraryIndexDirty();
     s.send(dstExists ? 204 : 201);
