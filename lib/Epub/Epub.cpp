@@ -853,8 +853,11 @@ const std::string& Epub::getLanguage() const {
 }
 
 std::string Epub::getCoverBmpPath(bool cropped, bool originalThresholds) const {
+  // v3: the blue-noise cover bake (design 2026-11-20-cover-image-pipeline.md
+  // section 3). The rename orphans the Atkinson-era v2 files so a stale baked
+  // cover is never re-served; both threshold variants changed content.
   const auto coverFileName =
-      std::string("cover") + (originalThresholds ? "_original" : "_legacy_v2") + (cropped ? "_crop" : "");
+      std::string("cover") + (originalThresholds ? "_original_v3" : "_legacy_v3") + (cropped ? "_crop" : "");
   return cachePath + "/" + coverFileName + ".bmp";
 }
 
