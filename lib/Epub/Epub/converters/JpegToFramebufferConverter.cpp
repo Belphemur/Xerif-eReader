@@ -16,6 +16,7 @@
 
 #include "DirectPixelWriter.h"
 #include "DitherUtils.h"
+#include "ImageBakeQuantizer.h"
 #include "PixelCache.h"
 
 namespace {
@@ -164,6 +165,12 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
   const int32_t fineScaleFPY = ctx->fineScaleFPY;
   const int32_t invScaleFPY = ctx->invScaleFPY;
   GfxRenderer& renderer = *ctx->renderer;
+  // Details/OPDS cover paint (design 2026-11-20-cover-image-pipeline.md
+  // section 4): the same grayscale-capability predicate the reader's paint
+  // gates use decides the bake — grayscale-capable panels quantize the
+  // placement box through the shared blue-noise quantizer, non-gray panels
+  // keep the legacy Bayer texture.
+  const bool blueNoisePaint = renderer.grayscaleCapabilities().supported();
   const int cfgX = ctx->config->x;
   const int cfgY = ctx->config->y;
   const int blockX = pDraw->x - ctx->cropLeft;
@@ -224,7 +231,12 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
         uint8_t gray = row[dstX - blockX];
         uint8_t dithered;
         if (useDithering) {
-          dithered = applyBayerDither4Level(gray, outX, outY);
+          // Grayscale-capable panels bake through the shared blue-noise
+          // quantizer (placement-local coordinates, like the reader bake);
+          // non-gray panels keep the legacy Bayer texture (design
+          // 2026-11-20-cover-image-pipeline.md section 4).
+          dithered = blueNoisePaint ? imagebake::quantizeGray2bit(dstX, dstY, gray)
+                                    : applyBayerDither4Level(gray, outX, outY);
         } else {
           dithered = gray / 85;
           if (dithered > 3) dithered = 3;
@@ -283,7 +295,12 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
 
         uint8_t dithered;
         if (useDithering) {
-          dithered = applyBayerDither4Level(gray, outX, outY);
+          // Grayscale-capable panels bake through the shared blue-noise
+          // quantizer (placement-local coordinates, like the reader bake);
+          // non-gray panels keep the legacy Bayer texture (design
+          // 2026-11-20-cover-image-pipeline.md section 4).
+          dithered = blueNoisePaint ? imagebake::quantizeGray2bit(dstX, dstY, gray)
+                                    : applyBayerDither4Level(gray, outX, outY);
         } else {
           dithered = gray / 85;
           if (dithered > 3) dithered = 3;
@@ -306,7 +323,12 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
 
         uint8_t dithered;
         if (useDithering) {
-          dithered = applyBayerDither4Level(gray, outX, outY);
+          // Grayscale-capable panels bake through the shared blue-noise
+          // quantizer (placement-local coordinates, like the reader bake);
+          // non-gray panels keep the legacy Bayer texture (design
+          // 2026-11-20-cover-image-pipeline.md section 4).
+          dithered = blueNoisePaint ? imagebake::quantizeGray2bit(dstX, dstY, gray)
+                                    : applyBayerDither4Level(gray, outX, outY);
         } else {
           dithered = gray / 85;
           if (dithered > 3) dithered = 3;
@@ -332,7 +354,12 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
 
         uint8_t dithered;
         if (useDithering) {
-          dithered = applyBayerDither4Level(gray, outX, outY);
+          // Grayscale-capable panels bake through the shared blue-noise
+          // quantizer (placement-local coordinates, like the reader bake);
+          // non-gray panels keep the legacy Bayer texture (design
+          // 2026-11-20-cover-image-pipeline.md section 4).
+          dithered = blueNoisePaint ? imagebake::quantizeGray2bit(dstX, dstY, gray)
+                                    : applyBayerDither4Level(gray, outX, outY);
         } else {
           dithered = gray / 85;
           if (dithered > 3) dithered = 3;
@@ -365,7 +392,12 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
 
       uint8_t dithered;
       if (useDithering) {
-        dithered = applyBayerDither4Level(gray, outX, outY);
+        // Grayscale-capable panels bake through the shared blue-noise
+        // quantizer (placement-local coordinates, like the reader bake);
+        // non-gray panels keep the legacy Bayer texture (design
+        // 2026-11-20-cover-image-pipeline.md section 4).
+        dithered = blueNoisePaint ? imagebake::quantizeGray2bit(dstX, dstY, gray)
+                                  : applyBayerDither4Level(gray, outX, outY);
       } else {
         dithered = gray / 85;
         if (dithered > 3) dithered = 3;
