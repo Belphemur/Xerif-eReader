@@ -56,7 +56,16 @@ void cleanBeforeAbsoluteGray(GfxRenderer& renderer) {
 #endif
 }
 
+// Prefer the absolute pipeline: its base pass (displayGrayscaleBase) runs the
+// non-flashing prev->current transition when a valid prior plane exists
+// (Uc8279X4Driver::transitionGrayscaleBase), while Direct begins with no base
+// refresh at all and its quality four-tone bank first sweeps the panel white —
+// the sleep whiteout. Absolute is also what reader image pages use, so sleep
+// matches them. A Direct-only driver keeps Direct; a driver reporting neither
+// keeps the legacy absolute default.
 HalDisplay::GrayscaleMode sleepGrayscaleMode(const GfxRenderer& renderer) {
+  if (renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported())
+    return HalDisplay::GrayscaleMode::Absolute;
   return renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Direct).supported()
              ? HalDisplay::GrayscaleMode::Direct
              : HalDisplay::GrayscaleMode::Absolute;
@@ -69,7 +78,8 @@ HalDisplay::GrayscaleMode sleepGrayscaleMode(const GfxRenderer& renderer) {
 // Consumption is driver-specific, so this is not a universal transition
 // change: the UC8279 X4 driver honors the fallback on the Absolute base
 // (Uc8279X4Driver::displayGrayscaleBase — the non-flashing prebw settle),
-// while its Direct branch returns before reading it (Direct sleeps keep the
+// while its Direct branch returns before reading it (a Direct sleep — only
+// reachable on a driver reporting Direct but not Absolute — keeps the
 // driver's own quality-bank DRF against the retained planes, which never
 // paints a white B/W base; honoring the fallback there is an SDK change), and
 // SSD1677 absolute boards (Metalio, Sticky, Picco) ignore it too — their
