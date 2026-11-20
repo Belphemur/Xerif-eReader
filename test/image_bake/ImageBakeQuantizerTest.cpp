@@ -8,9 +8,8 @@
 //  - BmpStreamWriter in BlueNoise mode must pack exactly what the quantizers
 //    produce, so the BMP cover converters and the details paint emit the
 //    reader bake's tones byte-for-byte.
-#include <gtest/gtest.h>
-
 #include <Print.h>
+#include <gtest/gtest.h>
 
 #include <cstdint>
 #include <vector>
@@ -35,9 +34,7 @@ class VectorPrint final : public Print {
 
 // Synthetic gray ramp: deterministic, every value class represented, and a
 // function of both coordinates so row/column patterns are exercised.
-uint8_t rampGray(const int x, const int y) {
-  return static_cast<uint8_t>((x * 7 + y * 13 + (x * y) / 5) % 256);
-}
+uint8_t rampGray(const int x, const int y) { return static_cast<uint8_t>((x * 7 + y * 13 + (x * y) / 5) % 256); }
 
 // Unpacks one 2-bit BMP row (MSB-first, 2 bits/pixel) written by
 // BmpStreamWriter: row bytes start at data + 4-byte stride alignment.
@@ -151,13 +148,13 @@ TEST(ImageBakeQuantizer, OneBitIsMonotonicPerPosition) {
 // compares them against ToneBake4::toneRow over the same rows.
 TEST(ImageBakeBmpStream, TwoBitPackingMatchesReaderBake) {
   constexpr int kWidth = 200;
-  constexpr int kHeight = 66;  // crosses the 64-row tile seam
+  constexpr int kHeight = 66;            // crosses the 64-row tile seam
   constexpr int kHeaderBytes = 54 + 16;  // 2-bit header + 4-entry palette
 
   VectorPrint output;
   BmpStreamWriter writer;
-  ASSERT_TRUE(writer.begin(output, kWidth, kHeight, /*oneBit=*/false, /*originalThresholds=*/false,
-                           BmpBake::BlueNoise));
+  ASSERT_TRUE(
+      writer.begin(output, kWidth, kHeight, /*oneBit=*/false, /*originalThresholds=*/false, BmpBake::BlueNoise));
   ASSERT_EQ(output.bytes.size(), kHeaderBytes);
 
   ttfimg::ToneBake4 bake(kWidth);
@@ -184,8 +181,7 @@ TEST(ImageBakeBmpStream, OneBitPackingMatchesQuantizer) {
 
   VectorPrint output;
   BmpStreamWriter writer;
-  ASSERT_TRUE(writer.begin(output, kWidth, kHeight, /*oneBit=*/true, /*originalThresholds=*/false,
-                           BmpBake::BlueNoise));
+  ASSERT_TRUE(writer.begin(output, kWidth, kHeight, /*oneBit=*/true, /*originalThresholds=*/false, BmpBake::BlueNoise));
   ASSERT_EQ(output.bytes.size(), kHeaderBytes);
 
   std::vector<uint8_t> gray(kWidth);

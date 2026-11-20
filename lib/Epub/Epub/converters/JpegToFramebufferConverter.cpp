@@ -235,8 +235,8 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
           // quantizer (placement-local coordinates, like the reader bake);
           // non-gray panels keep the legacy Bayer texture (design
           // 2026-11-20-cover-image-pipeline.md section 4).
-          dithered = blueNoisePaint ? imagebake::quantizeGray2bit(dstX, dstY, gray)
-                                    : applyBayerDither4Level(gray, outX, outY);
+          dithered =
+              blueNoisePaint ? imagebake::quantizeGray2bit(dstX, dstY, gray) : applyBayerDither4Level(gray, outX, outY);
         } else {
           dithered = gray / 85;
           if (dithered > 3) dithered = 3;
@@ -299,8 +299,8 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
           // quantizer (placement-local coordinates, like the reader bake);
           // non-gray panels keep the legacy Bayer texture (design
           // 2026-11-20-cover-image-pipeline.md section 4).
-          dithered = blueNoisePaint ? imagebake::quantizeGray2bit(dstX, dstY, gray)
-                                    : applyBayerDither4Level(gray, outX, outY);
+          dithered =
+              blueNoisePaint ? imagebake::quantizeGray2bit(dstX, dstY, gray) : applyBayerDither4Level(gray, outX, outY);
         } else {
           dithered = gray / 85;
           if (dithered > 3) dithered = 3;
@@ -327,8 +327,8 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
           // quantizer (placement-local coordinates, like the reader bake);
           // non-gray panels keep the legacy Bayer texture (design
           // 2026-11-20-cover-image-pipeline.md section 4).
-          dithered = blueNoisePaint ? imagebake::quantizeGray2bit(dstX, dstY, gray)
-                                    : applyBayerDither4Level(gray, outX, outY);
+          dithered =
+              blueNoisePaint ? imagebake::quantizeGray2bit(dstX, dstY, gray) : applyBayerDither4Level(gray, outX, outY);
         } else {
           dithered = gray / 85;
           if (dithered > 3) dithered = 3;
@@ -358,8 +358,8 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
           // quantizer (placement-local coordinates, like the reader bake);
           // non-gray panels keep the legacy Bayer texture (design
           // 2026-11-20-cover-image-pipeline.md section 4).
-          dithered = blueNoisePaint ? imagebake::quantizeGray2bit(dstX, dstY, gray)
-                                    : applyBayerDither4Level(gray, outX, outY);
+          dithered =
+              blueNoisePaint ? imagebake::quantizeGray2bit(dstX, dstY, gray) : applyBayerDither4Level(gray, outX, outY);
         } else {
           dithered = gray / 85;
           if (dithered > 3) dithered = 3;
@@ -396,8 +396,8 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
         // quantizer (placement-local coordinates, like the reader bake);
         // non-gray panels keep the legacy Bayer texture (design
         // 2026-11-20-cover-image-pipeline.md section 4).
-        dithered = blueNoisePaint ? imagebake::quantizeGray2bit(dstX, dstY, gray)
-                                  : applyBayerDither4Level(gray, outX, outY);
+        dithered =
+            blueNoisePaint ? imagebake::quantizeGray2bit(dstX, dstY, gray) : applyBayerDither4Level(gray, outX, outY);
       } else {
         dithered = gray / 85;
         if (dithered > 3) dithered = 3;
