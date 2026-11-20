@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -210,7 +211,7 @@ void LyraTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
 void LyraTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                                     const int selectorIndex, bool& coverRendered, bool& coverBufferStored,
                                     bool& bufferRestored, std::function<bool()> storeCoverBuffer,
-                                    const std::vector<std::string>& recentBookProgressLines) const {
+                                    const std::vector<std::string>& recentBookProgressLines, int progress) const {
   const int tileWidth = rect.width - 2 * LyraMetrics::values.contentSidePadding;
   const int tileHeight = rect.height;
   const int tileY = rect.y;
@@ -292,9 +293,18 @@ void LyraTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
     const bool hasProgressLine = !progressLine.empty() && progressLine != "-";
 
     const int titleLineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+    const int smallLineHeight = renderer.getLineHeight(UI_10_FONT_ID);
     const int titleBlockHeight = titleLineHeight * static_cast<int>(titleLines.size());
-    const int authorHeight = book.author.empty() ? 0 : (renderer.getLineHeight(UI_10_FONT_ID) * 3 / 2);
-    const int progressHeight = hasProgressLine ? (renderer.getLineHeight(SMALL_FONT_ID) * 3 / 2) : 0;
+    const int authorHeight = book.author.empty() ? 0 : smallLineHeight * 3 / 2;
+    constexpr int progressGap = 12;
+    constexpr int barGap = 2;
+    constexpr int barHeight = 4;
+    // The fork's stats-derived line (percent + time left) wins when present;
+    // upstream's bar covers the books a stats record cannot (XTC, no record).
+    const bool showBar = !hasProgressLine && progress >= 0 &&
+                         textWidth >= renderer.getTextWidth(UI_10_FONT_ID, "100%", EpdFontFamily::BOLD);
+    const int progressHeight = hasProgressLine ? renderer.getLineHeight(SMALL_FONT_ID) * 3 / 2
+                                               : (showBar ? progressGap + smallLineHeight + barGap + barHeight : 0);
     const int totalBlockHeight = titleBlockHeight + authorHeight + progressHeight;
     int titleY = tileY + tileHeight / 2 - totalBlockHeight / 2;
     const int textX = tileX + hPaddingInSelection + coverWidth + LyraMetrics::values.verticalSpacing;
@@ -303,13 +313,22 @@ void LyraTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
       titleY += titleLineHeight;
     }
     if (!book.author.empty()) {
-      titleY += renderer.getLineHeight(UI_10_FONT_ID) / 2;
+      titleY += smallLineHeight / 2;
       renderer.drawText(UI_10_FONT_ID, textX, titleY, author.c_str(), true);
-      titleY += renderer.getLineHeight(UI_10_FONT_ID);
+      titleY += smallLineHeight;
     }
     if (hasProgressLine) {
       titleY += renderer.getLineHeight(SMALL_FONT_ID) / 2;
       renderer.drawText(SMALL_FONT_ID, textX, titleY, progressLine.data(), true);
+    } else if (showBar) {
+      const int progressY = titleY + progressGap;
+      char label[12];
+      snprintf(label, sizeof(label), "%d%%", progress);
+      renderer.drawText(UI_10_FONT_ID, textX, progressY, label, true, EpdFontFamily::BOLD);
+      const int barY = progressY + smallLineHeight + barGap;
+      renderer.drawRect(textX, barY, textWidth, barHeight);
+      renderer.fillRect(textX + 1, barY + 1, textWidth - 2, barHeight - 2, false);
+      renderer.fillRect(textX + 1, barY + 1, (textWidth - 2) * progress / 100, barHeight - 2);
     }
   } else {
     drawEmptyRecents(renderer, rect);

@@ -30,7 +30,7 @@ int Lyra3CoversTheme::homeCoverThumbHeight(const GfxRenderer& renderer) const {
 void Lyra3CoversTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                                            const int selectorIndex, bool& coverRendered, bool& coverBufferStored,
                                            bool& bufferRestored, std::function<bool()> storeCoverBuffer,
-                                           const std::vector<std::string>& recentBookProgressLines) const {
+                                           const std::vector<std::string>& recentBookProgressLines, int) const {
   const int tileWidth = (rect.width - 2 * Lyra3CoversMetrics::values.contentSidePadding) / 3;
   const int tileY = rect.y;
   const bool hasContinueReading = !recentBooks.empty();
