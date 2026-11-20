@@ -795,8 +795,17 @@ void enterDeepSleep(bool fromTimeout = false) {
 
   halTiltSensor.deepSleep();
   display.deepSleep();
-  Storage.prepareForDeepSleep();
+  // prepareForDeepSleep() drains the SD debug log sink and then unmounts the
+  // card, so any line emitted after it is buffered with no writer: the
+  // append path's lazy reopen fails on the unmounted card, the sink keeps
+  // the bytes in RAM, and the power cut discards them — the log ends
+  // mid-sequence. Emit the last sleep-boundary line before the teardown and
+  // force a second non-debounced drain right after it (an empty buffer costs
+  // zero SD work; this also retries the single-shot drain inside
+  // prepareForDeepSleep if that one write hit a busy card).
   LOG_DBG("MAIN", "Entering deep sleep");
+  logfile::flushAndCloseLogFile();
+  Storage.prepareForDeepSleep();
 
   uint64_t autoPowerOffUs = 0;
   if (const uint32_t apOffMs = SETTINGS.getAutoPowerOffMs(); apOffMs > 0) {

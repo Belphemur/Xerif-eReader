@@ -56,10 +56,38 @@ void cleanBeforeAbsoluteGray(GfxRenderer& renderer) {
 #endif
 }
 
+// Prefer the absolute pipeline: its base pass (displayGrayscaleBase) runs the
+// non-flashing prev->current transition when a valid prior plane exists
+// (Uc8279X4Driver::transitionGrayscaleBase), while Direct begins with no base
+// refresh at all and its quality four-tone bank first sweeps the panel white —
+// the sleep whiteout. Absolute is also what reader image pages use, so sleep
+// matches them. A Direct-only driver keeps Direct; a driver reporting neither
+// keeps the legacy absolute default.
 HalDisplay::GrayscaleMode sleepGrayscaleMode(const GfxRenderer& renderer) {
+  if (renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported())
+    return HalDisplay::GrayscaleMode::Absolute;
   return renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Direct).supported()
              ? HalDisplay::GrayscaleMode::Direct
              : HalDisplay::GrayscaleMode::Absolute;
+}
+
+// Fallback refresh mode for the absolute/direct gray base pass. FAST lets a
+// driver that consumes the fallback take its non-flashing base transition when
+// it still holds a valid prior frame — the same treatment reader image pages
+// get (HALF always degrades to a real B/W display(), the full-panel whiteout).
+// Consumption is driver-specific, so this is not a universal transition
+// change: the UC8279 X4 driver honors the fallback on the Absolute base
+// (Uc8279X4Driver::displayGrayscaleBase — the non-flashing prebw settle),
+// while its Direct branch returns before reading it (a Direct sleep — only
+// reachable on a driver reporting Direct but not Absolute — keeps the
+// driver's own quality-bank DRF against the retained planes, which never
+// paints a white B/W base; honoring the fallback there is an SDK change), and
+// SSD1677 absolute boards (Metalio, Sticky, Picco) ignore it too — their
+// absolute pass activates the fixed gray LUT directly, so their transition is
+// byte-identical with either argument. X3 keeps HALF: its gray base relies on
+// the resync HALF forces in HalDisplay.cpp.
+HalDisplay::RefreshMode sleepBaseRefreshMode() {
+  return gpio.deviceIsX3() ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH;
 }
 
 // SSD absolute images use the new thresholds; other panels retain legacy tuning.
@@ -438,7 +466,8 @@ AlphaOverlayResult tryRenderTransparentOverlayBmp(HalFile& file, GfxRenderer& re
   }
   if (absolute) {
     cleanBeforeAbsoluteGray(renderer);
-    if (!renderer.displayGrayscaleBase(sleepGrayscaleMode(renderer))) return AlphaOverlayResult::Error;
+    if (!renderer.displayGrayscaleBase(sleepGrayscaleMode(renderer), sleepBaseRefreshMode()))
+      return AlphaOverlayResult::Error;
   } else {
     renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
   }
@@ -714,8 +743,10 @@ void releaseSdFontCachesForDecode(const GfxRenderer& renderer) {
 // Cover + Transparent compositing.
 // deferredPreClean carries SleepActivity's pending onEnter pre-clean when the
 // caller reached this function with that clean still unissued (only the
-// full-screen image path does). The absolute/Direct base pass below repaints
-// the whole panel, so it replaces the clean; the gray-setup failure fallback
+// full-screen image path does). Both base passes below repaint the whole
+// panel — the absolute/Direct base pass, and the OEM fold's real B/W
+// activation that a progress line forces (see renderBitmapSleepScreen) — so
+// either replaces the clean; the gray-setup failure fallback
 // re-issues it (with a redraw, since the frame is already in the framebuffer).
 // Overlay and shutdown callers leave it null and behave exactly as before.
 void displayImageWithGrayscale(GfxRenderer& renderer, const Bitmap& bitmap, const int x, const int y, const int maxW,
@@ -751,22 +782,24 @@ void displayImageWithGrayscale(GfxRenderer& renderer, const Bitmap& bitmap, cons
     renderer.displayBuffer(kSleepClean);
     return;
   }
+  // Both base passes repaint the whole panel from the drawn frame, so either
+  // replaces the clean onEnter deferred for this path.
+  if (deferredPreClean) *deferredPreClean = false;
   if (absolute) {
-    // The base pass repaints the whole panel, replacing the clean onEnter
-    // deferred for this path.
-    if (deferredPreClean) *deferredPreClean = false;
     // Full-screen modes cleaned to white in onEnter or skipped that clean for
     // this very base pass; Cover + Transparent skips the clean entirely, so
     // its plain-cover fallback cleans here.
     if (preserveBackground || SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::COVER_TRANSPARENT) {
       cleanBeforeAbsoluteGray(renderer);
     }
-    if (!renderer.displayGrayscaleBase(sleepGrayscaleMode(renderer))) return;
+    if (!renderer.displayGrayscaleBase(sleepGrayscaleMode(renderer), sleepBaseRefreshMode())) return;
   } else {
     // OEM grayscale pipeline base. Must stay HALF: the gray nudge LUT is
     // calibrated against the pixel state the single-pass HALF waveform leaves
     // behind. A FULL (GC) base parks pixels in a different charge state and
     // the differential nudge then lands unevenly (blotchy noise in gray areas).
+    // This HALF base drives the framebuffer to the panel as a real B/W
+    // activation, which is the whole-panel repaint noted above.
     renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
   }
 
@@ -981,11 +1014,12 @@ void SleepActivity::onEnter() {
   // Every mode below replaces the whole screen. One clean straight to the new
   // image leaves the old screen visible, so clean to white first (BLANK is that
   // clean). On panels whose grayscale pipeline repaints the whole panel
-  // (absolute/direct base pass) the IMAGE screens defer the clean instead of
-  // skipping it: only they can reach that base pass, which is the ghosting
-  // protection, and the deferred clean is re-issued by every path that ends up
-  // flushing plain B/W content instead (monochrome or filtered art,
-  // progress-enabled covers, missing-image fallbacks to the logo screen).
+  // (absolute/direct base pass, or the OEM fold's whole-panel B/W activation
+  // when a progress line forces the overlay pipeline) the IMAGE screens defer
+  // the clean instead of skipping it: only they can reach a gray base pass,
+  // which is the ghosting protection, and the deferred clean is re-issued by
+  // every path that ends up flushing plain B/W content instead (monochrome or
+  // filtered art, missing-image fallbacks to the logo screen).
   // Non-image screens (DARK/LIGHT and the logo itself) and Metalio's gray
   // paint (which shows the prior screen through, see cleanBeforeAbsoluteGray)
   // always clean right here.
@@ -1136,14 +1170,17 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool pre
                                                        CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER);
 
   // onEnter defers its white pre-clean on grayscale-capable panels expecting
-  // the absolute/Direct gray base pass. When THIS render cannot reach that
-  // pass (monochrome or filtered art, a progress line forcing the OEM fold
-  // pipeline), issue the deferred clean here, before the frame is drawn, so
-  // the previous screen cannot ghost through the HALF waveform. Overlay and
-  // shutdown renders never have a pending clean: transparent modes and
-  // renderShutdownScreen do not run onEnter's deferral.
-  if (sleepPreCleanPending_ && !(hasGreyscale && progressPercent < 0 &&
-                                 renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported())) {
+  // a gray base pass. When THIS render cannot reach one (monochrome or
+  // filtered art), issue the deferred clean here, before the frame is drawn,
+  // so the previous screen cannot ghost through the HALF waveform. Gray art
+  // keeps the clean deferred on grayscale-capable panels whether the absolute
+  // base runs or a progress line forces the OEM fold pipeline: that fold's
+  // HALF base is a real B/W activation that repaints the whole panel with the
+  // drawn cover before the gray planes, which IS the ghosting protection.
+  // Overlay and shutdown renders never have a pending clean: transparent
+  // modes and renderShutdownScreen do not run onEnter's deferral.
+  if (sleepPreCleanPending_ &&
+      !(hasGreyscale && renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported())) {
     issueDeferredPreClean();
   }
 
@@ -1245,7 +1282,7 @@ bool SleepActivity::renderTransparentOverlayPng(const std::string& path, const i
   if (absolute) {
     // The cover replaces the previous screen, so clean it like the BMP paths do.
     if (overlayCover) cleanBeforeAbsoluteGray(renderer);
-    if (!renderer.displayGrayscaleBase(sleepGrayscaleMode(renderer))) return false;
+    if (!renderer.displayGrayscaleBase(sleepGrayscaleMode(renderer), sleepBaseRefreshMode())) return false;
   } else {
     renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
   }

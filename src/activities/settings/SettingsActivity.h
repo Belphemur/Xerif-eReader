@@ -215,6 +215,9 @@ class SettingsActivity final : public UiListActivity {
   void toggleSelectedSetting();
   void openSleepTimeoutPicker();
   void openAutoPowerOffPicker();  // Fork: auto-power-off interval picker.
+  static bool sdDebugLogFileHasContent();
+  void promptSdLogTruncate();
+  void finishSdDebugLogEnable(bool truncate);
   void applyUiSettingChange(uint8_t CrossPointSettings::* valuePtr);
   void syncQuickResumeTimeoutForSleepScreen(bool sleepScreenChanged, bool quickResumeTimeoutChanged);
   static std::string settingValueText(const SettingInfo& setting);

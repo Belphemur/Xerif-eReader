@@ -165,6 +165,35 @@ TEST(LogFileSinkTest, FlushAndCloseDrainsYoungBufferAndReleasesHandle) {
   EXPECT_EQ(s.writer.content(), "[1] [INF] [X] young\n[2] [INF] [X] after\n");
 }
 
+// Sleep-boundary contract: a line appended after the close cannot be written
+// (the card is unmounted by then, so the lazy reopen fails) — the sink must
+// keep the bytes buffered instead of dropping them, and a later drain writes
+// them whole. This is what lets the firmware drain again after its last log
+// emission (enterDeepSleep) and still capture the late lines.
+TEST(LogFileSinkTest, AppendAfterCloseStaysBufferedUntilNextDrain) {
+  SinkAndWriter s;
+  s.enable();
+  s.sink.append("[1] [INF] [X] before\n", /*nowMs=*/0);
+  s.sink.flushAndClose();
+  ASSERT_EQ(s.writer.appends.size(), 1u);
+  EXPECT_EQ(s.writer.closeCalls, 1);
+
+  // The card is gone: the reopen fails and the line stays pending.
+  s.writer.failOpens = 1;
+  s.sink.append("[2] [INF] [X] late\n", kDebounce);
+  EXPECT_EQ(s.writer.appends.size(), 1u);
+  EXPECT_EQ(s.sink.pendingBytes(), 19u);  // "[2] ..." whole line buffered, not dropped
+
+  // Storage is back (next boot or a re-mounted card): the drain writes it.
+  s.writer.failOpens = 0;
+  s.sink.flushAndClose();
+  ASSERT_EQ(s.writer.appends.size(), 2u);
+  EXPECT_EQ(s.writer.appends[1], "[2] [INF] [X] late\n");
+  EXPECT_EQ(s.writer.content(), "[1] [INF] [X] before\n[2] [INF] [X] late\n");
+  EXPECT_EQ(s.sink.pendingBytes(), 0u);
+  EXPECT_TRUE(s.sink.enabled());  // the setting still survives the loss window
+}
+
 // No buffered bytes and no open handle: flushAndClose issues zero SD work.
 TEST(LogFileSinkTest, FlushAndCloseEmptyBufferTouchesNothing) {
   SinkAndWriter s;
