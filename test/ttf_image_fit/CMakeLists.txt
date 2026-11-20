@@ -11,9 +11,9 @@ add_executable(TtfImageFitTest
   stubs/Stubs.cpp
   stubs/ImageDecoderFactory.cpp
   ${REPO_ROOT}/src/activities/reader/TtfImageCache.cpp
-  ${REPO_ROOT}/src/activities/reader/BlueNoise64.cpp
+  ${REPO_ROOT}/lib/ImageBake/BlueNoise64.cpp
   ${REPO_ROOT}/src/activities/reader/TtfImageEngine.cpp
-  ${REPO_ROOT}/src/activities/reader/DpidScaler.cpp
+  ${REPO_ROOT}/lib/ImageBake/DpidScaler.cpp
   ${REPO_ROOT}/src/adapters/StandaloneImageCatalog.cpp
   ${REPO_ROOT}/src/adapters/SdCardBookSource.cpp
   ${REPO_ROOT}/lib/Epub/Epub/blocks/ImageDecodeGate.cpp
@@ -48,6 +48,7 @@ target_include_directories(TtfImageFitTest PRIVATE
   ${REPO_ROOT}/src
   ${REPO_ROOT}/src/activities/reader
   ${REPO_ROOT}/lib
+  ${REPO_ROOT}/lib/ImageBake
   ${REPO_ROOT}/lib/Epub
   ${REPO_ROOT}/lib/GfxRenderer
   ${REPO_ROOT}/lib/GifSupport

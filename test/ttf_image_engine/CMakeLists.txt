@@ -1,7 +1,7 @@
 add_executable(TtfImageEngineTest
   TtfImageEngineTest.cpp
   ${REPO_ROOT}/src/activities/reader/TtfImageCache.cpp
-  ${REPO_ROOT}/src/activities/reader/BlueNoise64.cpp
+  ${REPO_ROOT}/lib/ImageBake/BlueNoise64.cpp
   ${REPO_ROOT}/lib/Epub/Epub/blocks/ImageDecodeGate.cpp
   stubs/Stubs.cpp
 )
@@ -11,6 +11,7 @@ target_include_directories(TtfImageEngineTest PRIVATE
   # host-safe versions
   ${CMAKE_CURRENT_SOURCE_DIR}/stubs
   ${REPO_ROOT}/src/activities/reader
+  ${REPO_ROOT}/lib/ImageBake
   ${REPO_ROOT}/lib/Epub/Epub
   # TtfImageCache.h's DitherUtils.h include uses the firmware's "Epub/..."
   # prefix (lib/Epub on the include path).
