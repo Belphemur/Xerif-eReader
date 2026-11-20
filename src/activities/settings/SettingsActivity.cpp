@@ -5,6 +5,7 @@
 #include <GfxRenderer.h>
 #include <HalClock.h>
 #include <HalDisplay.h>
+#include <HalStorage.h>
 #include <LibraryBuilder.h>
 #include <LogFileSink.h>
 #include <Logging.h>
@@ -22,6 +23,7 @@
 #include "ClockSettingsActivity.h"
 #include "CrossPointSettings.h"
 #include "FontDownloadActivity.h"
+#include "activities/util/ConfirmationActivity.h"
 // Only the catalog this build can actually fetch is compiled in; both headers
 // gate themselves on CROSSPOINT_TTF_READER.
 #if defined(CROSSPOINT_TTF_READER)
@@ -308,6 +310,39 @@ void SettingsActivity::applyUiSettingChange(uint8_t CrossPointSettings::* valueP
   resetUi();
 }
 
+bool SettingsActivity::sdDebugLogFileHasContent() {
+  HalFile file;
+  if (!Storage.openFileForRead("SET", logfile::kLogFilePath, file)) return false;
+  return file.fileSize64() > 0;
+}
+
+void SettingsActivity::promptSdLogTruncate() {
+  auto confirmation = makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput, tr(STR_SD_DEBUG_LOG),
+                                                              tr(STR_SD_LOG_TRUNCATE_CONFIRM));
+  if (!confirmation) {
+    LOG_ERR("SET", "OOM: SD log truncate confirmation (%u bytes)", static_cast<unsigned>(sizeof(ConfirmationActivity)));
+    return;
+  }
+  startActivityForResult(std::move(confirmation),
+                         [this](const ActivityResult& result) { finishSdDebugLogEnable(!result.isCancelled); });
+}
+
+void SettingsActivity::finishSdDebugLogEnable(const bool truncate) {
+  if (truncate) {
+    // The sink holds no file handle between flushes once flushAndClose() ran
+    // (the setting is off, so the handle is closed already); the next flush
+    // reopens lazily with O_CREAT|O_APPEND, so removing the file here starts
+    // a fresh log while the setting ends up enabled.
+    logfile::flushAndCloseLogFile();
+    Storage.remove(logfile::kLogFilePath);
+  }
+  SETTINGS.sdDebugLog = 1;
+  SETTINGS.saveToFile();
+  rebuildSettings();
+  applyUiSettingChange(&CrossPointSettings::sdDebugLog);
+  requestUpdate();
+}
+
 bool SettingsActivity::handleCustomInput() {
   return optionPopup.handleInput(mappedInput, [this] { requestUpdate(); });
 }
@@ -330,6 +365,16 @@ void SettingsActivity::toggleSelectedSetting() {
 
   if (setting.nameId == StrId::STR_AUTO_POWER_OFF) {
     openAutoPowerOffPicker();
+    return;
+  }
+
+  // Enabling the SD debug log offers to clear the existing log file first:
+  // a stale soak log would otherwise keep growing from the new session's
+  // first flush. Confirm deletes the file (the sink reopens it lazily on its
+  // next flush), Cancel keeps appending; both answers enable the setting.
+  if (setting.type == SettingType::TOGGLE && setting.valuePtr == &CrossPointSettings::sdDebugLog &&
+      SETTINGS.sdDebugLog == 0 && sdDebugLogFileHasContent()) {
+    promptSdLogTruncate();
     return;
   }
 
