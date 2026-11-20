@@ -10,6 +10,12 @@ class Print;
 bool calculateBmpOutputSize(int sourceWidth, int sourceHeight, int targetWidth, int targetHeight, bool crop,
                             int& outputWidth, int& outputHeight);
 
+// The tone bake writeRow() applies (design 2026-11-20-cover-image-pipeline.md
+// section 2). BlueNoise is the reader's ordered blue-noise bake; Legacy keeps
+// the Atkinson error-diffusion ditherers (GIF covers stay on it this PR,
+// design decision 3).
+enum class BmpBake { Legacy, BlueNoise };
+
 class BmpStreamWriter {
  public:
   BmpStreamWriter();
@@ -18,7 +24,8 @@ class BmpStreamWriter {
   BmpStreamWriter(const BmpStreamWriter&) = delete;
   BmpStreamWriter& operator=(const BmpStreamWriter&) = delete;
 
-  bool begin(Print& output, int width, int height, bool oneBit, bool originalThresholds = false);
+  bool begin(Print& output, int width, int height, bool oneBit, bool originalThresholds = false,
+             BmpBake bake = BmpBake::Legacy);
   bool writeRow(const uint8_t* grayRow, int y);
 
   int getWidth() const { return width; }
@@ -31,6 +38,7 @@ class BmpStreamWriter {
   int height{0};
   int bytesPerRow{0};
   bool oneBit{false};
+  bool blueNoise{false};  // bake == BlueNoise && kUseBlueNoiseBake (BmpStreamWriter.cpp)
   uint8_t rowsSinceYield{0};
   std::unique_ptr<uint8_t[]> packedRow;
   std::unique_ptr<uint8_t[]> scratchRow;

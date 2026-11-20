@@ -467,7 +467,11 @@ static bool pngToBmpStreamCoreImpl(SourceView& pngFile, Print& bmpOut, int targe
           targetHeight);
 
   BmpStreamWriter output;
-  if (!output.begin(bmpOut, outWidth, outHeight, oneBit, originalThresholds)) return false;
+  // Covers bake through the shared blue-noise quantizer (design
+  // 2026-11-20-cover-image-pipeline.md section 2, decision 1: both
+  // originalThresholds variants); the revert is kUseBlueNoiseBake in
+  // BmpStreamWriter.cpp.
+  if (!output.begin(bmpOut, outWidth, outHeight, oneBit, originalThresholds, BmpBake::BlueNoise)) return false;
 
   GrayRowScaler scaler;
   if (!scaler.begin(width, height, output)) return false;

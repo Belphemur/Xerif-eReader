@@ -10,8 +10,16 @@
 #include <cstring>
 
 #include "BitmapHelpers.h"
+#include "ImageBakeQuantizer.h"
 
 namespace {
+
+// Revert switch for the blue-noise cover bake (design
+// 2026-11-20-cover-image-pipeline.md section 2): flip to false and every
+// BlueNoise request falls back to the Atkinson error-diffusion ditherer it
+// replaced — the Atkinson classes stay compiled and begin() allocates their
+// row state again.
+constexpr bool kUseBlueNoiseBake = true;
 
 bool writeByte(Print& out, const uint8_t value) { return out.write(value) == 1; }
 
@@ -77,13 +85,14 @@ BmpStreamWriter::BmpStreamWriter() = default;
 BmpStreamWriter::~BmpStreamWriter() = default;
 
 bool BmpStreamWriter::begin(Print& output, const int width, const int height, const bool oneBit,
-                            const bool originalThresholds) {
+                            const bool originalThresholds, const BmpBake bake) {
   if (width <= 0 || height <= 0) return false;
 
   this->output = &output;
   this->width = width;
   this->height = height;
   this->oneBit = oneBit;
+  blueNoise = bake == BmpBake::BlueNoise && kUseBlueNoiseBake;
   bytesPerRow = (width * (oneBit ? 1 : 2) + 31) / 32 * 4;
 
   packedRow = makeUniqueNoThrow<uint8_t[]>(bytesPerRow);
@@ -92,17 +101,23 @@ bool BmpStreamWriter::begin(Print& output, const int width, const int height, co
     return false;
   }
 
-  if (oneBit) {
-    atkinson1BitDitherer = makeUniqueNoThrow<Atkinson1BitDitherer>(width);
-    if (!atkinson1BitDitherer || !atkinson1BitDitherer->isValid()) {
-      LOG_ERR("BMP", "OOM: 1-bit ditherer");
-      return false;
-    }
-  } else {
-    atkinsonDitherer = makeUniqueNoThrow<AtkinsonDitherer>(width, originalThresholds);
-    if (!atkinsonDitherer || !atkinsonDitherer->isValid()) {
-      LOG_ERR("BMP", "OOM: 2-bit ditherer");
-      return false;
+  // The blue-noise bake is stateless per pixel (no error-diffusion row
+  // state): the Atkinson allocation only happens on the legacy bake. With
+  // kUseBlueNoiseBake false the ditherers come back and originalThresholds
+  // is honored again.
+  if (!blueNoise) {
+    if (oneBit) {
+      atkinson1BitDitherer = makeUniqueNoThrow<Atkinson1BitDitherer>(width);
+      if (!atkinson1BitDitherer || !atkinson1BitDitherer->isValid()) {
+        LOG_ERR("BMP", "OOM: 1-bit ditherer");
+        return false;
+      }
+    } else {
+      atkinsonDitherer = makeUniqueNoThrow<AtkinsonDitherer>(width, originalThresholds);
+      if (!atkinsonDitherer || !atkinsonDitherer->isValid()) {
+        LOG_ERR("BMP", "OOM: 2-bit ditherer");
+        return false;
+      }
     }
   }
 
@@ -118,16 +133,29 @@ bool BmpStreamWriter::writeRow(const uint8_t* grayRow, const int y) {
   memset(packedRow.get(), 0, bytesPerRow);
 
   if (oneBit) {
-    for (int x = 0; x < width; x++) {
-      packedRow[x / 8] |= atkinson1BitDitherer->processPixel(grayRow[x], x) << (7 - x % 8);
+    if (blueNoise) {
+      for (int x = 0; x < width; x++) {
+        packedRow[x / 8] |= imagebake::quantizeGray1bit(x, y, adjustPixel(grayRow[x])) << (7 - x % 8);
+      }
+    } else {
+      for (int x = 0; x < width; x++) {
+        packedRow[x / 8] |= atkinson1BitDitherer->processPixel(grayRow[x], x) << (7 - x % 8);
+      }
+      atkinson1BitDitherer->nextRow();
     }
-    atkinson1BitDitherer->nextRow();
   } else {
-    for (int x = 0; x < width; x++) {
-      const uint8_t gray = adjustPixel(grayRow[x]);
-      packedRow[(x * 2) / 8] |= atkinsonDitherer->processPixel(gray, x) << (6 - (x * 2) % 8);
+    if (blueNoise) {
+      for (int x = 0; x < width; x++) {
+        const uint8_t gray = adjustPixel(grayRow[x]);
+        packedRow[(x * 2) / 8] |= imagebake::quantizeGray2bit(x, y, gray) << (6 - (x * 2) % 8);
+      }
+    } else {
+      for (int x = 0; x < width; x++) {
+        const uint8_t gray = adjustPixel(grayRow[x]);
+        packedRow[(x * 2) / 8] |= atkinsonDitherer->processPixel(gray, x) << (6 - (x * 2) % 8);
+      }
+      atkinsonDitherer->nextRow();
     }
-    atkinsonDitherer->nextRow();
   }
 
   if (output->write(packedRow.get(), bytesPerRow) != static_cast<size_t>(bytesPerRow)) {

@@ -371,7 +371,11 @@ bool JpegToBmpConverter::jpegToBmpStreamOpen(JPEGDEC& jpeg, Print& bmpOut, int t
   ctx.blocksSinceYield = 0;
   ctx.error = false;
 
-  if (!ctx.output.begin(bmpOut, outWidth, outHeight, oneBit, originalThresholds)) return false;
+  // Covers bake through the shared blue-noise quantizer (design
+  // 2026-11-20-cover-image-pipeline.md section 2, decision 1: both
+  // originalThresholds variants); the revert is kUseBlueNoiseBake in
+  // BmpStreamWriter.cpp.
+  if (!ctx.output.begin(bmpOut, outWidth, outHeight, oneBit, originalThresholds, BmpBake::BlueNoise)) return false;
   if (!smoothUpscale && !ctx.scaler.begin(scaleSrcWidth, scaleSrcHeight, ctx.output)) return false;
 
   // MCU row buffer: MAX_MCU_HEIGHT rows × decoded srcWidth columns of grayscale
