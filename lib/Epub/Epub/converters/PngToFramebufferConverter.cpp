@@ -15,6 +15,7 @@
 
 #include "DirectPixelWriter.h"
 #include "DitherUtils.h"
+#include "ImageBakeQuantizer.h"
 #include "PixelCache.h"
 
 namespace {
@@ -265,6 +266,13 @@ int pngDrawCallback(PNGDRAW* pDraw) {
   // Pre-compute orientation and render-mode state once per callback.
   DirectPixelWriter pw;
   pw.init(*ctx->renderer);
+  // Details/OPDS cover paint (design 2026-11-20-cover-image-pipeline.md
+  // section 4, amended 2026-11-20 to cover the PNG path): the same
+  // grayscale-capability predicate the reader's paint gates use decides the
+  // bake — grayscale-capable panels quantize the placement box through the
+  // shared blue-noise quantizer, non-gray panels keep the legacy Bayer
+  // texture.
+  const bool blueNoisePaint = ctx->renderer->grayscaleCapabilities().supported();
 
   for (int dstY = firstDstY; dstY < endDstY; dstY++) {
     ctx->lastDstY = dstY;
@@ -301,7 +309,8 @@ int pngDrawCallback(PNGDRAW* pDraw) {
 
           uint8_t ditheredGray;
           if (useDithering) {
-            ditheredGray = applyBayerDither4Level(gray, outX, outY);
+            ditheredGray = blueNoisePaint ? imagebake::quantizeGray2bit(dstX, dstY, gray)
+                                          : applyBayerDither4Level(gray, outX, outY);
           } else {
             ditheredGray = gray >> 6;
           }
