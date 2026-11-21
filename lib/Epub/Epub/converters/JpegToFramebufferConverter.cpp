@@ -16,8 +16,9 @@
 
 #include "DirectPixelWriter.h"
 #include "DitherUtils.h"
-#include "ImageBakeQuantizer.h"
 #include "ImageBakeCache.h"
+#include "ImageBakeQuantizer.h"
+#include "ImageDecodeSource.h"
 
 namespace {
 
@@ -57,48 +58,40 @@ struct JpegContext {
   uint32_t lastYieldMs{0};  // throttle state for yieldDuringDecode()
 };
 
-// File I/O callbacks use pFile->fHandle to access the HalFile*,
-// avoiding the need for global file state.
+// Decode source (design Amendment B.2): every JPEGDEC open goes through one
+// DataSource — the file path wraps a caller-owned HalFile (the per-open heap
+// handle is gone), the memory path keeps JPEGDEC's native openRAM. The
+// decode entries are not concurrent (same single-threaded contract every
+// converter carries), so one module-static source serves them.
+imagebake::DataSource s_jpegSource;
+
 void* jpegOpen(const char* filename, int32_t* size) {
-  // JPEGDEC releases this handle through jpegClose().
-  HalFile* f = new (std::nothrow) HalFile();
-  if (!f) {
-    LOG_ERR("JPG", "OOM: JPEG file handle");
-    return nullptr;
-  }
-  if (!Storage.openFileForRead("JPG", std::string(filename), *f)) {
-    delete f;
-    return nullptr;
-  }
-  *size = f->size();
-  return f;
+  (void)filename;  // the source is pre-built by the decode entry
+  if (!s_jpegSource.openSource(size)) return nullptr;
+  return &s_jpegSource;
 }
 
 void jpegClose(void* handle) {
-  HalFile* f = reinterpret_cast<HalFile*>(handle);
-  if (f) {
-    f->close();
-    delete f;
-  }
+  if (handle != nullptr) s_jpegSource.closeSource();
 }
 
 // JPEGDEC tracks file position via pFile->iPos internally (e.g. JPEGGetMoreData
 // checks iPos < iSize to decide whether more data is available). The callbacks
-// MUST maintain iPos to match the actual file position, otherwise progressive
+// MUST maintain iPos to match the actual source position, otherwise progressive
 // JPEGs with large headers fail during parsing.
 int32_t jpegRead(JPEGFILE* pFile, uint8_t* pBuf, int32_t len) {
-  HalFile* f = reinterpret_cast<HalFile*>(pFile->fHandle);
-  if (!f) return 0;
-  int32_t bytesRead = f->read(pBuf, len);
+  auto* src = reinterpret_cast<imagebake::DataSource*>(pFile->fHandle);
+  if (src == nullptr) return 0;
+  const int32_t bytesRead = src->readSource(pBuf, len);
   if (bytesRead < 0) return 0;
   pFile->iPos += bytesRead;
   return bytesRead;
 }
 
 int32_t jpegSeek(JPEGFILE* pFile, int32_t pos) {
-  HalFile* f = reinterpret_cast<HalFile*>(pFile->fHandle);
-  if (!f) return -1;
-  if (!f->seek(pos)) return -1;
+  auto* src = reinterpret_cast<imagebake::DataSource*>(pFile->fHandle);
+  if (src == nullptr) return -1;
+  if (!src->seekSource(pos)) return -1;
   pFile->iPos = pos;
   return pos;
 }
@@ -165,12 +158,6 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
   const int32_t fineScaleFPY = ctx->fineScaleFPY;
   const int32_t invScaleFPY = ctx->invScaleFPY;
   GfxRenderer& renderer = *ctx->renderer;
-  // Details/OPDS cover paint (design 2026-11-20-cover-image-pipeline.md
-  // section 4): the same grayscale-capability predicate the reader's paint
-  // gates use decides the bake — grayscale-capable panels quantize the
-  // placement box through the shared blue-noise quantizer, non-gray panels
-  // keep the legacy Bayer texture.
-  const bool blueNoisePaint = renderer.grayscaleCapabilities().supported();
   const int cfgX = ctx->config->x;
   const int cfgY = ctx->config->y;
   const int blockX = pDraw->x - ctx->cropLeft;
@@ -231,12 +218,10 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
         uint8_t gray = row[dstX - blockX];
         uint8_t dithered;
         if (useDithering) {
-          // Grayscale-capable panels bake through the shared blue-noise
-          // quantizer (placement-local coordinates, like the reader bake);
-          // non-gray panels keep the legacy Bayer texture (design
-          // 2026-11-20-cover-image-pipeline.md section 4).
-          dithered =
-              blueNoisePaint ? imagebake::quantizeGray2bit(dstX, dstY, gray) : applyBayerDither4Level(gray, outX, outY);
+          // Build-time sink selection (design Amendment B.2): the shared
+          // quantizer dispatch picks the blue-noise bake on PSRAM builds,
+          // the legacy Bayer texture elsewhere.
+          dithered = imagebake::sinkQuantize2bit(dstX, dstY, outX, outY, gray);
         } else {
           dithered = gray / 85;
           if (dithered > 3) dithered = 3;
@@ -295,12 +280,10 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
 
         uint8_t dithered;
         if (useDithering) {
-          // Grayscale-capable panels bake through the shared blue-noise
-          // quantizer (placement-local coordinates, like the reader bake);
-          // non-gray panels keep the legacy Bayer texture (design
-          // 2026-11-20-cover-image-pipeline.md section 4).
-          dithered =
-              blueNoisePaint ? imagebake::quantizeGray2bit(dstX, dstY, gray) : applyBayerDither4Level(gray, outX, outY);
+          // Build-time sink selection (design Amendment B.2): the shared
+          // quantizer dispatch picks the blue-noise bake on PSRAM builds,
+          // the legacy Bayer texture elsewhere.
+          dithered = imagebake::sinkQuantize2bit(dstX, dstY, outX, outY, gray);
         } else {
           dithered = gray / 85;
           if (dithered > 3) dithered = 3;
@@ -323,12 +306,10 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
 
         uint8_t dithered;
         if (useDithering) {
-          // Grayscale-capable panels bake through the shared blue-noise
-          // quantizer (placement-local coordinates, like the reader bake);
-          // non-gray panels keep the legacy Bayer texture (design
-          // 2026-11-20-cover-image-pipeline.md section 4).
-          dithered =
-              blueNoisePaint ? imagebake::quantizeGray2bit(dstX, dstY, gray) : applyBayerDither4Level(gray, outX, outY);
+          // Build-time sink selection (design Amendment B.2): the shared
+          // quantizer dispatch picks the blue-noise bake on PSRAM builds,
+          // the legacy Bayer texture elsewhere.
+          dithered = imagebake::sinkQuantize2bit(dstX, dstY, outX, outY, gray);
         } else {
           dithered = gray / 85;
           if (dithered > 3) dithered = 3;
@@ -354,12 +335,10 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
 
         uint8_t dithered;
         if (useDithering) {
-          // Grayscale-capable panels bake through the shared blue-noise
-          // quantizer (placement-local coordinates, like the reader bake);
-          // non-gray panels keep the legacy Bayer texture (design
-          // 2026-11-20-cover-image-pipeline.md section 4).
-          dithered =
-              blueNoisePaint ? imagebake::quantizeGray2bit(dstX, dstY, gray) : applyBayerDither4Level(gray, outX, outY);
+          // Build-time sink selection (design Amendment B.2): the shared
+          // quantizer dispatch picks the blue-noise bake on PSRAM builds,
+          // the legacy Bayer texture elsewhere.
+          dithered = imagebake::sinkQuantize2bit(dstX, dstY, outX, outY, gray);
         } else {
           dithered = gray / 85;
           if (dithered > 3) dithered = 3;
@@ -392,12 +371,10 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
 
       uint8_t dithered;
       if (useDithering) {
-        // Grayscale-capable panels bake through the shared blue-noise
-        // quantizer (placement-local coordinates, like the reader bake);
-        // non-gray panels keep the legacy Bayer texture (design
-        // 2026-11-20-cover-image-pipeline.md section 4).
-        dithered =
-            blueNoisePaint ? imagebake::quantizeGray2bit(dstX, dstY, gray) : applyBayerDither4Level(gray, outX, outY);
+        // Build-time sink selection (design Amendment B.2): the shared
+        // quantizer dispatch picks the blue-noise bake on PSRAM builds,
+        // the legacy Bayer texture elsewhere.
+        dithered = imagebake::sinkQuantize2bit(dstX, dstY, outX, outY, gray);
       } else {
         dithered = gray / 85;
         if (dithered > 3) dithered = 3;
@@ -430,7 +407,13 @@ bool JpegToFramebufferConverter::getDimensionsStatic(const std::string& imagePat
     return false;
   }
 
-  int rc = jpeg->open(imagePath.c_str(), jpegOpen, jpegClose, jpegRead, jpegSeek, nullptr);
+  HalFile sourceFile;
+  if (!Storage.openFileForRead("JPG", imagePath, sourceFile)) {
+    LOG_ERR("JPG", "Failed to open JPEG for dimensions: %s", imagePath.c_str());
+    return false;
+  }
+  s_jpegSource = imagebake::halFileSource(sourceFile);
+  const int rc = jpeg->open("", jpegOpen, jpegClose, jpegRead, jpegSeek, nullptr);
   const ScopedCleanup cleanup{[&jpeg]() { jpeg->close(); }};
   if (rc != 1) {
     LOG_ERR("JPG", "Failed to open JPEG for dimensions (err=%d): %s", jpeg->getLastError(), imagePath.c_str());
@@ -496,7 +479,13 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
     return false;
   }
 
-  const int rc = jpeg->open(imagePath.c_str(), jpegOpen, jpegClose, jpegRead, jpegSeek, jpegDrawCallback);
+  HalFile sourceFile;
+  if (!Storage.openFileForRead("JPG", imagePath, sourceFile)) {
+    LOG_ERR("JPG", "Failed to open JPEG: %s", imagePath.c_str());
+    return false;
+  }
+  s_jpegSource = imagebake::halFileSource(sourceFile);
+  const int rc = jpeg->open("", jpegOpen, jpegClose, jpegRead, jpegSeek, jpegDrawCallback);
   const ScopedCleanup cleanup{[&jpeg]() { jpeg->close(); }};
   if (rc != 1) {
     LOG_ERR("JPG", "Failed to open JPEG (err=%d): %s", jpeg->getLastError(), imagePath.c_str());
@@ -631,7 +620,7 @@ static bool decodeToFramebufferFromOpen(JPEGDEC& jpeg, GfxRenderer& renderer, co
   if (ctx.caching) {
     const int maxBlockDstRows = (int)(((int64_t)16 * ctx.fineScaleFPY) >> FP_SHIFT) + 2;
     if (!ctx.cache.begin(config.cachePath.c_str(), destWidth, destHeight, config.x, config.y, maxBlockDstRows,
-                        imagebake::pathIdentity(config.cachePath.c_str(), imagebake::kFramebufferCacheLetter))) {
+                         imagebake::pathIdentity(config.cachePath.c_str(), imagebake::kFramebufferCacheLetter))) {
       LOG_ERR("JPG", "Failed to start cache stream, continuing without caching");
       ctx.caching = false;
     }

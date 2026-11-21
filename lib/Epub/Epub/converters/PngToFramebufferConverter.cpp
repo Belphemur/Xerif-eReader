@@ -15,8 +15,8 @@
 
 #include "DirectPixelWriter.h"
 #include "DitherUtils.h"
-#include "ImageBakeQuantizer.h"
 #include "ImageBakeCache.h"
+#include "ImageBakeQuantizer.h"
 
 namespace {
 
@@ -266,14 +266,6 @@ int pngDrawCallback(PNGDRAW* pDraw) {
   // Pre-compute orientation and render-mode state once per callback.
   DirectPixelWriter pw;
   pw.init(*ctx->renderer);
-  // Details/OPDS cover paint (design 2026-11-20-cover-image-pipeline.md
-  // section 4, amended 2026-11-20 to cover the PNG path): the same
-  // grayscale-capability predicate the reader's paint gates use decides the
-  // bake — grayscale-capable panels quantize the placement box through the
-  // shared blue-noise quantizer, non-gray panels keep the legacy Bayer
-  // texture.
-  const bool blueNoisePaint = ctx->renderer->grayscaleCapabilities().supported();
-
   for (int dstY = firstDstY; dstY < endDstY; dstY++) {
     ctx->lastDstY = dstY;
     int outY = ctx->config->y + dstY;
@@ -309,8 +301,9 @@ int pngDrawCallback(PNGDRAW* pDraw) {
 
           uint8_t ditheredGray;
           if (useDithering) {
-            ditheredGray = blueNoisePaint ? imagebake::quantizeGray2bit(dstX, dstY, gray)
-                                          : applyBayerDither4Level(gray, outX, outY);
+            // Build-time sink selection (design Amendment B.2): blue-noise
+            // on PSRAM builds, the legacy Bayer texture elsewhere.
+            ditheredGray = imagebake::sinkQuantize2bit(dstX, dstY, outX, outY, gray);
           } else {
             ditheredGray = gray >> 6;
           }
@@ -540,7 +533,7 @@ bool PngToFramebufferConverter::decodeFromOpen(PNG& png, GfxRenderer& renderer, 
   ctx.caching = !config.preserveAlpha && !config.cachePath.empty();
   if (ctx.caching) {
     if (!ctx.cache.begin(config.cachePath.c_str(), ctx.dstWidth, ctx.dstHeight, config.x, config.y, 1,
-                        imagebake::pathIdentity(config.cachePath.c_str(), imagebake::kFramebufferCacheLetter))) {
+                         imagebake::pathIdentity(config.cachePath.c_str(), imagebake::kFramebufferCacheLetter))) {
       LOG_ERR("PNG", "Failed to start cache stream, continuing without caching");
       ctx.caching = false;
     }
