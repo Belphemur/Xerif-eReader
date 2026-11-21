@@ -229,15 +229,13 @@ class HalFile::Impl {
     return file.seekSet(pos);
   }
   bool seekCurInView(int64_t offset) {
+    if (!hasView()) return file.seekCur(offset);  // ordinary handle: unchanged
     uint64_t abs = file.position();
-    if (hasView()) {
-      // Translate through the window: out-of-window ends fail rather than
-      // silently leaving the view.
-      const int64_t rel = static_cast<int64_t>(abs) - static_cast<int64_t>(viewBase) + offset;
-      if (rel < 0 || static_cast<uint64_t>(rel) > viewLen) return false;
-      abs = viewBase + static_cast<uint64_t>(rel);
-    }
-    return file.seekSet(abs);
+    // Translate through the window: out-of-window ends fail rather than
+    // silently leaving the view.
+    const int64_t rel = static_cast<int64_t>(abs) - static_cast<int64_t>(viewBase) + offset;
+    if (rel < 0 || static_cast<uint64_t>(rel) > viewLen) return false;
+    return file.seekSet(viewBase + static_cast<uint64_t>(rel));
   }
   size_t readInView(void* buf, size_t count) {
     if (hasView()) {
@@ -297,13 +295,23 @@ bool HalStorage::openFileSubview(const char* moduleName, const char* path, uint6
   StorageLock lock;  // ensure thread safety for the duration of this function
   FsFile fsFile;
   const bool ok = SDCard.openFileForRead(moduleName, path, fsFile);
+  // Read the extent BEFORE the handle is moved into the Impl: FsBaseFile::move
+  // nulls the source's internal handles (SdFat FsFile.cpp:50), so a post-move
+  // fileSize() reports 0 and refuses every nonempty section.
+  const uint64_t fileSize = ok ? fsFile.fileSize() : 0;
   file = HalFile(std::make_unique<HalFile::Impl>(std::move(fsFile)));
   if (!ok) return false;
   // A window outside the file's extent is an invalid section (a stale
   // directory from another generation) — refuse it instead of serving a
   // short read.
-  const uint64_t fileSize = fsFile.fileSize();
   if (length == 0 || offset > fileSize || length > fileSize - offset) {
+    file.close();
+    return false;
+  }
+  // The view's seek/read translations assume the backing cursor starts
+  // inside the window: a fresh open sits at 0, so an immediate read would
+  // serve the file's header bytes for a nonzero offset.
+  if (!file.impl->file.seekSet(offset)) {
     file.close();
     return false;
   }
