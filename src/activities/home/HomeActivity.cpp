@@ -1,6 +1,7 @@
 #include "HomeActivity.h"
 
 #include <Bitmap.h>
+#include <CoverCache.h>
 #include <Epub.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
@@ -157,7 +158,12 @@ void HomeActivity::loadGridCover(RecentBook& book, int height, bool& showingLoad
     // kind, so probe both shapes before deciding to regenerate.
     {
       const std::string coverCachePath = epub->getCoverCachePath(height, homeSleepCoverCropped());
-      if (Storage.exists(coverCachePath.c_str())) {
+      // Validate before accepting the hit: a stale or damaged cache would
+      // otherwise satisfy the exists() shortcut forever while openCoverBitmap
+      // rejects it at draw time — the cover stays missing on every grid load.
+      // Falling through regenerates over the stale file.
+      if (Storage.exists(coverCachePath.c_str()) &&
+          imagebake::coverBitmapIsValid(coverCachePath.c_str(), height, imagebake::CoverSection::Thumb)) {
         book.coverBmpPath = epub->getCoverCacheTemplate(homeSleepCoverCropped());
         return;
       }

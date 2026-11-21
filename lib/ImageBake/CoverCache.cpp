@@ -99,7 +99,11 @@ bool validateCoverCache(HalFile& f, const int thumbHeight, const bool cropped, c
   if (e.w == 0 || e.h == 0 || e.length == 0) return false;
   if (e.offset < kCoverPrefixBytes) return false;
   if (static_cast<uint64_t>(e.offset) + e.length > f.size()) return false;
-  if (section == CoverSection::Thumb && e.h != static_cast<uint16_t>(thumbHeight)) return false;  // height keying
+  // The requested thumb height is keyed by the NAME and the identity hash
+  // (parseCoverCacheName + coverCacheHash32 above); the directory's h is
+  // the writer's OUTPUT height — crop-mode wide sources legitimately
+  // produce a taller thumb (calculateBmpOutputSize), exactly like the
+  // legacy thumb_<h>.bmp the themes crop-fill at draw time.
   outSection = e;
   return true;
 }
@@ -134,16 +138,18 @@ bool openCoverBitmap(const char* moduleName, const char* path, const int thumbHe
   if (!Storage.openFileForRead(moduleName, path, probe)) return false;
 
   // Kind probe: a legacy standalone BMP (GIF-covered books keep one, design
-  // decision 3) opens whole-file; anything else must validate as a combined
-  // cover cache.
+  // decision 3) opens whole-file; 'C','P' must validate as a combined cover
+  // cache; anything else (a damaged cache, a foreign file) is rejected so
+  // the caller regenerates (review 2026-11-21).
   uint8_t magic[2];
-  if (probe.seek(0) && probe.read(magic, sizeof(magic)) == static_cast<int>(sizeof(magic)) &&
-      (magic[0] != kCacheMagic0 || magic[1] != kCacheMagic1)) {
+  if (probe.seek(0) && probe.read(magic, sizeof(magic)) == static_cast<int>(sizeof(magic)) && magic[0] == 'B' &&
+      magic[1] == 'M') {
     // Legacy BMP: hand out the probe handle rewound to the start.
     probe.seek(0);
     out = std::move(probe);
     return true;
   }
+  if (magic[0] != kCacheMagic0 || magic[1] != kCacheMagic1) return false;
 
   int nameHeight = 0;
   bool nameCropped = false;
@@ -167,7 +173,10 @@ bool coverBitmapIsValid(const char* path, const int thumbHeight, const CoverSect
   if (!Storage.openFileForRead("CC", path, probe)) return false;
   uint8_t magic[2];
   if (!probe.seek(0) || probe.read(magic, sizeof(magic)) != static_cast<int>(sizeof(magic))) return false;
-  if (magic[0] != kCacheMagic0 || magic[1] != kCacheMagic1) return true;  // legacy standalone BMP
+  // Only 'BM' is a valid legacy standalone BMP; a damaged combined cache
+  // must not read as valid (the generation path would skip regeneration).
+  if (magic[0] == 'B' && magic[1] == 'M') return true;
+  if (magic[0] != kCacheMagic0 || magic[1] != kCacheMagic1) return false;
   int nameHeight = 0;
   bool nameCropped = false;
   if (!parseCoverCacheName(path, nameHeight, nameCropped)) return false;
