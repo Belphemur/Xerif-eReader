@@ -58,21 +58,44 @@ struct JpegContext {
   uint32_t lastYieldMs{0};  // throttle state for yieldDuringDecode()
 };
 
-// Decode source (design Amendment B.2): every JPEGDEC open goes through one
-// DataSource — the file path wraps a caller-owned HalFile (the per-open heap
-// handle is gone), the memory path keeps JPEGDEC's native openRAM. The
-// decode entries are not concurrent (same single-threaded contract every
-// converter carries), so one module-static source serves them.
-imagebake::DataSource s_jpegSource;
+// Decode source (design Amendment B.2): the file path wraps a HalFile in
+// the shared DataSource shape. The state is PER OPEN and owned by the
+// callback pair — a module-static source would let a concurrent dimension
+// probe overwrite the source a decode is reading (the dimension fallbacks
+// do not hold the decode bus, review 2026-11-21). The memory path keeps
+// JPEGDEC's native openRAM.
+namespace {
+struct JpegFileSource {
+  HalFile file;
+  imagebake::DataSource source;
+};
+}  // namespace
 
 void* jpegOpen(const char* filename, int32_t* size) {
-  (void)filename;  // the source is pre-built by the decode entry
-  if (!s_jpegSource.openSource(size)) return nullptr;
-  return &s_jpegSource;
+  auto* src = new (std::nothrow) JpegFileSource();
+  if (src == nullptr) {
+    LOG_ERR("JPG", "OOM: JPEG source handle");
+    return nullptr;
+  }
+  // JPEGDEC releases this handle through jpegClose().
+  if (!Storage.openFileForRead("JPG", std::string(filename), src->file)) {
+    delete src;
+    return nullptr;
+  }
+  src->source = imagebake::halFileSource(src->file);
+  if (!src->source.openSource(size)) {
+    delete src;
+    return nullptr;
+  }
+  return src;
 }
 
 void jpegClose(void* handle) {
-  if (handle != nullptr) s_jpegSource.closeSource();
+  auto* src = reinterpret_cast<JpegFileSource*>(handle);
+  if (src != nullptr) {
+    src->source.closeSource();
+    delete src;
+  }
 }
 
 // JPEGDEC tracks file position via pFile->iPos internally (e.g. JPEGGetMoreData
@@ -407,13 +430,7 @@ bool JpegToFramebufferConverter::getDimensionsStatic(const std::string& imagePat
     return false;
   }
 
-  HalFile sourceFile;
-  if (!Storage.openFileForRead("JPG", imagePath, sourceFile)) {
-    LOG_ERR("JPG", "Failed to open JPEG for dimensions: %s", imagePath.c_str());
-    return false;
-  }
-  s_jpegSource = imagebake::halFileSource(sourceFile);
-  const int rc = jpeg->open("", jpegOpen, jpegClose, jpegRead, jpegSeek, nullptr);
+  const int rc = jpeg->open(imagePath.c_str(), jpegOpen, jpegClose, jpegRead, jpegSeek, nullptr);
   const ScopedCleanup cleanup{[&jpeg]() { jpeg->close(); }};
   if (rc != 1) {
     LOG_ERR("JPG", "Failed to open JPEG for dimensions (err=%d): %s", jpeg->getLastError(), imagePath.c_str());
@@ -479,13 +496,7 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
     return false;
   }
 
-  HalFile sourceFile;
-  if (!Storage.openFileForRead("JPG", imagePath, sourceFile)) {
-    LOG_ERR("JPG", "Failed to open JPEG: %s", imagePath.c_str());
-    return false;
-  }
-  s_jpegSource = imagebake::halFileSource(sourceFile);
-  const int rc = jpeg->open("", jpegOpen, jpegClose, jpegRead, jpegSeek, jpegDrawCallback);
+  const int rc = jpeg->open(imagePath.c_str(), jpegOpen, jpegClose, jpegRead, jpegSeek, jpegDrawCallback);
   const ScopedCleanup cleanup{[&jpeg]() { jpeg->close(); }};
   if (rc != 1) {
     LOG_ERR("JPG", "Failed to open JPEG (err=%d): %s", jpeg->getLastError(), imagePath.c_str());
