@@ -128,6 +128,10 @@ class HalPowerManager {
   BatteryHealthState getBatteryHealthState() const;
   bool isBatteryHealthStale() const;  // true only when state == STALE
 
+  // One fresh reading. False when the battery cannot be read, which
+  // getBatteryPercentage() reports as its last value or 0.
+  bool readBatteryPercentage(uint16_t& percent) const;
+
   // HAL-routed stock-parity shutdown marker (the freeink::PowerManager calls
   // stay inside the HAL; main.cpp must not touch SDK classes directly). See
   // docs/design/shutdown-reason-marker.md.
