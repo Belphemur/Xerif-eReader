@@ -1,5 +1,7 @@
 #pragma once
 
+#include <utility>
+
 // Host-side HalStorage shim over <cstdio> for the section-incremental test.
 // Mirrors the device API surface used by Epub.cpp / Section.cpp /
 // BookMetadataCache.cpp / ZipFile.cpp / CssParser.cpp: open-for-read/write,
@@ -29,6 +31,15 @@ class HalFile : public Print {
   ~HalFile() override { close(); }
   HalFile(const HalFile&) = delete;
   HalFile& operator=(const HalFile&) = delete;
+  // Move semantics of the real HalFile (the combined cover cache hands a
+  // probe handle out; CoverCache.cpp move-assigns it).
+  HalFile(HalFile&& other) { *this = std::move(other); }
+  HalFile& operator=(HalFile&& other) {
+    close();
+    file_ = std::exchange(other.file_, nullptr);
+    path_ = std::move(other.path_);
+    return *this;
+  }
 
   bool open(const char* path, const char* mode) {
     close();
@@ -98,6 +109,16 @@ class HalStorage {
   bool openFileForRead(const char*, const std::string& path, HalFile& file) { return file.open(path.c_str(), "rb"); }
   bool openFileForWrite(const char*, const char* path, HalFile& file) { return file.open(path, "wb"); }
   bool openFileForWrite(const char*, const std::string& path, HalFile& file) { return file.open(path.c_str(), "wb"); }
+  // Sub-file views (design Amendment B.1, the combined cover cache): no host
+  // test in this suite drives one — the symbol exists so CoverCache.cpp
+  // links; callers treat a failed view as "regenerate".
+  bool openFileSubview(const char*, const char* path, uint64_t offset, uint64_t length, HalFile& file) {
+    (void)path;
+    (void)offset;
+    (void)length;
+    (void)file;
+    return false;
+  }
 
   bool exists(const char* path) const {
     std::FILE* file = std::fopen(path, "rb");

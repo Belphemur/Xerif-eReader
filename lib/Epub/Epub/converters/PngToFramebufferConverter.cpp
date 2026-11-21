@@ -15,7 +15,8 @@
 
 #include "DirectPixelWriter.h"
 #include "DitherUtils.h"
-#include "PixelCache.h"
+#include "ImageBakeCache.h"
+#include "ImageBakeQuantizer.h"
 
 namespace {
 
@@ -40,7 +41,7 @@ struct PngContext {
   int dstWidth{0};
   int dstHeight{0};
   int lastDstY{-1};  // Track last rendered destination Y to avoid duplicates
-  PixelCache cache;
+  imagebake::BandCacheWriter cache;
   bool caching{false};
   bool aborted{false};  // predecode abort fired mid-decode (see pngDrawCallback)
 
@@ -265,7 +266,6 @@ int pngDrawCallback(PNGDRAW* pDraw) {
   // Pre-compute orientation and render-mode state once per callback.
   DirectPixelWriter pw;
   pw.init(*ctx->renderer);
-
   for (int dstY = firstDstY; dstY < endDstY; dstY++) {
     ctx->lastDstY = dstY;
     int outY = ctx->config->y + dstY;
@@ -301,7 +301,9 @@ int pngDrawCallback(PNGDRAW* pDraw) {
 
           uint8_t ditheredGray;
           if (useDithering) {
-            ditheredGray = applyBayerDither4Level(gray, outX, outY);
+            // Build-time sink selection (design Amendment B.2): blue-noise
+            // on PSRAM builds, the legacy Bayer texture elsewhere.
+            ditheredGray = imagebake::sinkQuantize2bit(dstX, dstY, outX, outY, gray);
           } else {
             ditheredGray = gray >> 6;
           }
@@ -530,7 +532,8 @@ bool PngToFramebufferConverter::decodeFromOpen(PNG& png, GfxRenderer& renderer, 
   // re-decode on every one of an image page's ~14 render passes.
   ctx.caching = !config.preserveAlpha && !config.cachePath.empty();
   if (ctx.caching) {
-    if (!ctx.cache.begin(config.cachePath, ctx.dstWidth, ctx.dstHeight, config.x, config.y, 1)) {
+    if (!ctx.cache.begin(config.cachePath.c_str(), ctx.dstWidth, ctx.dstHeight, config.x, config.y, 1,
+                         imagebake::pathIdentity(config.cachePath.c_str(), imagebake::kFramebufferCacheLetter))) {
       LOG_ERR("PNG", "Failed to start cache stream, continuing without caching");
       ctx.caching = false;
     }

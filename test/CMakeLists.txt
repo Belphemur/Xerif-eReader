@@ -158,6 +158,7 @@ add_subdirectory(bmp_to_bmp)
 
 add_subdirectory(sd_card_font)
 add_subdirectory(psram_image_staging)
+add_subdirectory(image_bake)
 add_subdirectory(ttf_image_engine)
 add_subdirectory(ttf_image_fit)
 add_subdirectory(ttf_reader_runtime)

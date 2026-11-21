@@ -14,6 +14,9 @@
 #include "components/icons/cover.h"
 #include "fontIds.h"
 
+// Combined cover cache reads (openCoverBitmap validates + sub-file views).
+#include "CoverCache.h"
+
 // Internal constants
 namespace {
 constexpr int hPaddingInSelection = 8;
@@ -50,9 +53,11 @@ void Lyra3CoversTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, con
         } else {
           const std::string coverBmpPath = UITheme::getCoverThumbPath(coverPath, homeCoverThumbHeight(renderer));
 
-          // First time: load cover from SD and render
+          // First time: load cover from SD and render (combined cover cache
+          // files open as the thumb section's sub-file view).
           HalFile file;
-          if (Storage.openFileForRead("HOME", coverBmpPath, file)) {
+          if (imagebake::openCoverBitmap("HOME", coverBmpPath.c_str(), homeCoverThumbHeight(renderer),
+                                         imagebake::CoverSection::Thumb, file)) {
             Bitmap bitmap(file);
             if (bitmap.parseHeaders() == BmpReaderError::Ok) {
               // Fill the fixed tile 1:1 and crop the overflow; the old crop

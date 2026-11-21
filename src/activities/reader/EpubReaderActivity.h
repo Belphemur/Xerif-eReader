@@ -676,7 +676,13 @@ class EpubReaderActivity final : public ReaderActivity {
   void beginLoanTimeSync();
   std::string getBookTitle() const override { return epub ? epub->getTitle() : ""; }
   std::string getBookAuthor() const override { return epub ? epub->getAuthor() : ""; }
-  std::string getBookThumbBmpPath() const override { return epub ? epub->getThumbBmpPath() : ""; }
+  std::string getBookThumbBmpPath() const override {
+    return epub ? epub->getThumbBmpPath(sleepCoverCroppedForCache()) : "";
+  }
+  // The sleep cover geometry keys the combined cover cache's name (design
+  // Amendment B.1); the reader hands it to Epub rather than lib code reading
+  // the settings store.
+  bool sleepCoverCroppedForCache() const;
   int getProgressBasisPoints() const override;
   void renderBook() override;
   void onEndOfBookRendered() override;

@@ -3,6 +3,7 @@ add_executable(SectionIncrementalTest
   ParserLinkStubs.cpp
   ContentProtectionHostStub.cpp
   ${REPO_ROOT}/lib/Epub/Epub.cpp
+  ${REPO_ROOT}/lib/ImageBake/ImageBakeCache.cpp
   ${REPO_ROOT}/lib/Epub/Epub/Section.cpp
   ${REPO_ROOT}/lib/Epub/Epub/BookMetadataCache.cpp
   ${REPO_ROOT}/lib/Epub/Epub/parsers/ChapterHtmlSlimParser.cpp
@@ -39,6 +40,7 @@ add_executable(SectionIncrementalReproTest
   ParserLinkStubs.cpp
   ContentProtectionHostStub.cpp
   ${REPO_ROOT}/lib/Epub/Epub.cpp
+  ${REPO_ROOT}/lib/ImageBake/ImageBakeCache.cpp
   ${REPO_ROOT}/lib/Epub/Epub/Section.cpp
   ${REPO_ROOT}/lib/Epub/Epub/BookMetadataCache.cpp
   ${REPO_ROOT}/lib/Epub/Epub/parsers/ChapterHtmlSlimParser.cpp
@@ -75,6 +77,7 @@ target_include_directories(SectionIncrementalTest PRIVATE
   ${REPO_ROOT}/lib/hal
   ${REPO_ROOT}/lib/GfxRenderer
   ${REPO_ROOT}/lib/Epub
+  ${REPO_ROOT}/lib/ImageBake
   ${REPO_ROOT}/lib/Epub/Epub
   ${REPO_ROOT}/lib/Epub/Epub/parsers
   ${REPO_ROOT}/lib/Epub/Epub/css
@@ -102,6 +105,7 @@ target_include_directories(SectionIncrementalReproTest PRIVATE
   ${REPO_ROOT}/lib/hal
   ${REPO_ROOT}/lib/GfxRenderer
   ${REPO_ROOT}/lib/Epub
+  ${REPO_ROOT}/lib/ImageBake
   ${REPO_ROOT}/lib/Epub/Epub
   ${REPO_ROOT}/lib/Epub/Epub/parsers
   ${REPO_ROOT}/lib/Epub/Epub/css

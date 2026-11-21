@@ -32,6 +32,9 @@
 #include "fontIds.h"
 #include "util/ClockFormat.h"
 
+// Combined cover cache reads (openCoverBitmap validates + sub-file views).
+#include "CoverCache.h"
+
 void BaseTheme::setCheckboxRow(freeink::ui::ListItem& item, const bool checked) {
   item.value = nullptr;
   item.toggle = true;
@@ -527,7 +530,10 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
         UITheme::getCoverThumbPath(recentBooks[0].coverBmpPath, BaseMetrics::values.homeCoverHeight);
 
     HalFile file;
-    if (Storage.openFileForRead("HOME", coverBmpPath, file)) {
+    // Combined cover cache files open as a sub-file view of the 1-bit thumb
+    // section; legacy standalone BMPs open whole-file (openCoverBitmap probes).
+    if (imagebake::openCoverBitmap("HOME", coverBmpPath.c_str(), BaseMetrics::values.homeCoverHeight,
+                                   imagebake::CoverSection::Thumb, file)) {
       Bitmap bitmap(file);
       if (bitmap.parseHeaders() == BmpReaderError::Ok) {
         hasCoverImage = true;
@@ -575,9 +581,11 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
       const std::string coverBmpPath =
           UITheme::getCoverThumbPath(recentBooks[0].coverBmpPath, BaseMetrics::values.homeCoverHeight);
 
-      // First time: load cover from SD and render
+      // First time: load cover from SD and render (combined cover cache
+      // files open as the thumb section's sub-file view).
       HalFile file;
-      if (Storage.openFileForRead("HOME", coverBmpPath, file)) {
+      if (imagebake::openCoverBitmap("HOME", coverBmpPath.c_str(), BaseMetrics::values.homeCoverHeight,
+                                     imagebake::CoverSection::Thumb, file)) {
         Bitmap bitmap(file);
         if (bitmap.parseHeaders() == BmpReaderError::Ok) {
           LOG_DBG("THEME", "Rendering bmp");

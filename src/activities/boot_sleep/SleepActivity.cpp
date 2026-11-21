@@ -16,6 +16,7 @@
 #include <PNGdec.h>
 #include <Xtc.h>
 
+// Combined cover cache consumers (openCoverBitmap validates + sub-file views).
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -25,6 +26,7 @@
 #include <limits>
 #include <string>
 
+#include "CoverCache.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "activities/reader/BookCachePath.h"
@@ -520,7 +522,7 @@ void setLCGState(const SleepRecentKind kind, uint32_t seed, uint32_t state, uint
   }
 }
 
-bool findNextValidSleepImage(HalFile& dir, const SleepRecentKind recentKind, char* name) {
+bool findNextValidSleepImage(HalFile& dir, const SleepRecentKind recentKind, const bool allowPng, char* name) {
   for (auto dirFile = dir.openNextFile(); dirFile; dirFile = dir.openNextFile()) {
     if (dirFile.isDirectory()) continue;
 
@@ -528,7 +530,15 @@ bool findNextValidSleepImage(HalFile& dir, const SleepRecentKind recentKind, cha
     if (name[0] == '\0' || name[0] == '.') continue;
 
     const bool isBmp = FsHelpers::hasBmpExtension(name);
+#if defined(BOARD_HAS_PSRAM)
+    // PSRAM builds accept PNG for the sleep-screen renderers (design
+    // Amendment B.2): the decode front end paints it directly, no
+    // re-encode. BMP-only consumers (the shutdown screen's framed renderer)
+    // opt out via allowPng=false. No-PSRAM builds keep the BMP-only filter.
+    const bool isPng = allowPng && FsHelpers::hasPngExtension(std::string_view{name});
+#else
     const bool isPng = recentKind == SleepRecentKind::Overlay && FsHelpers::hasPngExtension(std::string_view{name});
+#endif
     if (!isBmp && !isPng) {
       LOG_DBG("SLP", "Skipping unsupported sleep image: %s", name);
       continue;
@@ -549,7 +559,7 @@ bool findNextValidSleepImage(HalFile& dir, const SleepRecentKind recentKind, cha
 }
 
 bool selectRandomSleepFile(const char* firstDirPath, const char* secondDirPath, const SleepRecentKind recentKind,
-                           std::string& selectedPath, const bool commitRecent = true) {
+                           std::string& selectedPath, const bool commitRecent = true, const bool allowPng = true) {
   auto name = makeUniqueNoThrow<char[]>(MAX_SLEEP_FILE_NAME_LEN);
   if (!name) {
     LOG_ERR("SLP", "OOM: sleep filename buffer");
@@ -565,7 +575,7 @@ bool selectRandomSleepFile(const char* firstDirPath, const char* secondDirPath, 
     if (!dir || !dir.isDirectory()) continue;
 
     const auto remainingCapacity = static_cast<uint16_t>(UINT16_MAX - fileCount);
-    while (directoryCounts[i] < remainingCapacity && findNextValidSleepImage(dir, recentKind, name.get())) {
+    while (directoryCounts[i] < remainingCapacity && findNextValidSleepImage(dir, recentKind, allowPng, name.get())) {
       directoryCounts[i]++;
     }
     fileCount = static_cast<uint16_t>(fileCount + directoryCounts[i]);
@@ -675,7 +685,7 @@ bool selectRandomSleepFile(const char* firstDirPath, const char* secondDirPath, 
     return false;
   }
   for (uint16_t index = 0; index <= localIndex; ++index) {
-    if (!findNextValidSleepImage(dir, recentKind, name.get())) return false;
+    if (!findNextValidSleepImage(dir, recentKind, allowPng, name.get())) return false;
   }
 
   const char* selectedDirPath = dirPaths[directoryIndex];
@@ -892,7 +902,11 @@ bool selectShutdownCustomImage(std::string& outPath) {
     }
   }
 
-  selectRandomSleepFile("/.sleep", "/sleep", SleepRecentKind::Standard, outPath, /*commitRecent=*/false);
+  // The shutdown renderer (renderShutdownImageFramed) parses BMP only — keep
+  // the selection BMP-only so mixed directories don't strand custom art
+  // behind the logo fallback.
+  selectRandomSleepFile("/.sleep", "/sleep", SleepRecentKind::Standard, outPath, /*commitRecent=*/false,
+                        /*allowPng=*/false);
   if (!outPath.empty()) delay(100);  // Same settle window as the sleep random pick.
   return !outPath.empty();
 }
@@ -1110,11 +1124,117 @@ void SleepActivity::renderCustomSleepScreen() const {
   selectRandomSleepFile("/.sleep", "/sleep", SleepRecentKind::Standard, selectedPath);
   if (!selectedPath.empty()) {
     delay(100);
+#if defined(BOARD_HAS_PSRAM)
+    // PNG custom art decodes through the engine (Amendment B.2); BMP art
+    // keeps the existing screen-ready / re-encode path.
+    if (FsHelpers::hasPngExtension(selectedPath)) {
+      if (renderEngineSleepPng(selectedPath)) return;
+    } else if (renderCustomSleepBmp(selectedPath)) {
+      return;
+    }
+#else
     if (renderCustomSleepBmp(selectedPath)) return;
+#endif
   }
 
   renderDefaultSleepScreen();
 }
+
+#ifdef BOARD_HAS_PSRAM
+// Engine-painted PNG custom sleep art (design Amendment B.2): the placement
+// and the gray-plane pipeline mirror renderBitmapSleepScreen's, but the
+// image comes from the PNG framebuffer decode (build-time quality bake)
+// instead of a Bitmap re-encode — the sleep_<hash>.bmp intermediate never
+// exists for PNG sources.
+bool SleepActivity::renderEngineSleepPng(const std::string& path) const {
+  ImageDimensions dimensions;
+  if (!PngToFramebufferConverter::getDimensionsStatic(path, dimensions)) return false;
+
+  const auto placement = calculateBitmapPlacement(dimensions.width, dimensions.height, renderer);
+  RenderConfig config;
+  config.x = placement.x;
+  config.y = placement.y;
+  config.maxWidth = renderer.getScreenWidth();
+  config.maxHeight = renderer.getScreenHeight();
+  config.useDithering = true;  // the build-time sink bakes the 4-level tones
+  config.sourceCropX = placement.cropX;
+  config.sourceCropY = placement.cropY;
+  config.useExactDimensions = placement.cropX > 0.0f || placement.cropY > 0.0f;
+
+  PngToFramebufferConverter converter;
+  LOG_DBG("SLP", "Rendering engine sleep PNG: %s (%dx%d)", path.c_str(), dimensions.width, dimensions.height);
+
+  // Same filter semantics as renderBitmapSleepScreen: the inverted filter
+  // flips the painted frame and never reaches a gray base pass, and only
+  // NO_FILTER keeps the gray pipeline — the monochrome (BLACK_AND_WHITE)
+  // filter renders plain B/W, not 4-level art.
+  const bool inverted =
+      SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE;
+  const bool noFilter = SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER;
+  const bool absolute = renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported();
+  const bool grayPipeline = noFilter && absolute;
+  // Same pre-clean policy as renderBitmapSleepScreen: a gray base pass (or
+  // the OEM fold's real B/W activation) replaces the deferred clean; a
+  // monochrome/filtered render issues it before painting.
+  if (sleepPreCleanPending_ && !grayPipeline) issueDeferredPreClean();
+
+  renderer.clearScreen();
+  if (!converter.decodeToFramebuffer(path, renderer, config)) {
+    LOG_ERR("SLP", "Engine sleep PNG decode failed: %s", path.c_str());
+    // Leave the pre-clean pending: the caller's fallback (ultimately
+    // renderDefaultSleepScreen) issues it before painting its own frame.
+    renderer.displayBuffer(kSleepClean);
+    return false;
+  }
+  if (inverted) renderer.invertScreen();
+
+  if (!grayPipeline) {
+    renderer.displayBuffer(kSleepClean);
+    return true;
+  }
+
+  const BwFrameKeeper bwFrame(renderer, !absolute);
+  if (!bwFrame.ready()) {
+    // Same degradation as displayImageWithGrayscale: plain B/W content.
+    renderer.displayBuffer(kSleepClean);
+    return true;
+  }
+  // The base pass repaints the whole panel from the drawn frame — it
+  // replaces the clean onEnter deferred for this path.
+  sleepPreCleanPending_ = false;
+  if (absolute) {
+    if (!renderer.displayGrayscaleBase(sleepGrayscaleMode(renderer), sleepBaseRefreshMode())) return true;
+  } else {
+    // OEM fold pipeline: the HALF base is the ghosting protection.
+    renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
+  }
+
+  bool planesReady = true;
+  for (const auto mode : {GfxRenderer::GRAYSCALE_LSB, GfxRenderer::GRAYSCALE_MSB}) {
+    renderer.clearScreen(absolute ? 0xFF : 0x00);
+    renderer.setRenderMode(mode);
+    if (!converter.decodeToFramebuffer(path, renderer, config)) {
+      // Same degradation as displayImageWithGrayscale: keep the current
+      // display (the base pass already showed the frame) instead of
+      // activating grayscale with a stale plane.
+      planesReady = false;
+      break;
+    }
+    if (mode == GfxRenderer::GRAYSCALE_LSB) {
+      renderer.copyGrayscaleLsbBuffers();
+    } else {
+      renderer.copyGrayscaleMsbBuffers();
+    }
+  }
+  if (planesReady) {
+    renderer.displayGrayBuffer();
+  } else {
+    LOG_ERR("SLP", "Incomplete grayscale image; keeping the current display");
+  }
+  renderer.setRenderMode(GfxRenderer::BW);
+  return true;
+}
+#endif  // BOARD_HAS_PSRAM
 
 void SleepActivity::issueDeferredPreClean() const {
   if (!sleepPreCleanPending_) return;
@@ -1362,7 +1482,9 @@ void SleepActivity::renderCoverSleepScreen() const {
   }
 
   HalFile file;
-  if (Storage.openFileForRead("SLP", coverBmpPath, file)) {
+  // Combined cover cache files open as a sub-file view of the 2-bit cover
+  // section; legacy standalone BMPs open whole-file (openCoverBitmap probes).
+  if (imagebake::openCoverBitmap("SLP", coverBmpPath.c_str(), 0, imagebake::CoverSection::Cover, file)) {
     Bitmap bitmap(file);
     if (bitmap.parseHeaders() == BmpReaderError::Ok) {
       LOG_DBG("SLP", "Rendering sleep cover: %s", coverBmpPath.c_str());
@@ -1429,6 +1551,26 @@ bool SleepActivity::resolveCoverBmpPath(const GfxRenderer& renderer, const std::
       return false;
     }
 
+#ifdef BOARD_HAS_PSRAM
+    // Combined cover cache (Amendment B.1): the sleep cover decodes the
+    // book's cover art once and reads it back as the file's 2-bit section —
+    // the cover BMP intermediates and the second thumb decode die here.
+    // The identity keys on the theme thumb height (the same pair home
+    // generates with); the thresholds variant is folded into the single
+    // blue-noise bake (design decision 1). GIF-covered books and any decode
+    // failure fall back to the legacy per-surface BMP below.
+    {
+      const int themeThumbHeight = GUI.homeCoverThumbHeight(renderer);
+      const int identityHeight =
+          themeThumbHeight > 0 ? themeThumbHeight : UITheme::getInstance().getMetrics().homeCoverHeight;
+      if (lastEpub.generateCoverCache(identityHeight, cropped)) {
+        outPath = lastEpub.getCoverCachePath(identityHeight, cropped);
+        return !outPath.empty();
+      }
+      LOG_DBG("SLP", "Cover cache unavailable, falling back to legacy cover BMP");
+    }
+#endif
+
     if (!lastEpub.generateCoverBmp(cropped, originalThresholds)) {
       LOG_ERR("SLP", "Failed to generate cover bmp");
       return false;
@@ -1482,7 +1624,10 @@ void SleepActivity::renderShutdownScreen(GfxRenderer& renderer) {
     }
     const std::string& coverPath = APP_STATE.autoPowerOffCoverBmpPath;
     HalFile file;
-    if (!coverPath.empty() && Storage.openFileForRead("SLP", coverPath, file)) {
+    // resolveCoverBmpPath may have staged the combined cover cache — its
+    // cover section opens as a sub-file view; legacy BMPs open whole-file.
+    if (!coverPath.empty() &&
+        imagebake::openCoverBitmap("SLP", coverPath.c_str(), 0, imagebake::CoverSection::Cover, file)) {
       haveImage = renderShutdownImageFramed(renderer, file, /*dithering=*/false, coverPath.c_str(), progressPercent,
                                             timeLeftSeconds, pagesLeft);
     }

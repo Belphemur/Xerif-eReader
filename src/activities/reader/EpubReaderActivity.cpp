@@ -598,7 +598,8 @@ void EpubReaderActivity::handleBookStatsReturn() {
     if (!wasCompleted && stats.isCompleted) {
       RECENT_BOOKS.removeByPath(epub->getPath());
     } else if (wasCompleted && !stats.isCompleted) {
-      RECENT_BOOKS.addBook(epub->getPath(), epub->getTitle(), epub->getAuthor(), epub->getThumbBmpPath());
+      RECENT_BOOKS.addBook(epub->getPath(), epub->getTitle(), epub->getAuthor(),
+                           epub->getThumbBmpPath(sleepCoverCroppedForCache()));
     }
   }
   if (!wasCompleted && stats.isCompleted && SETTINGS.moveFinishedToReadFolder && !isInReadFolder(epub->getPath())) {
@@ -850,7 +851,8 @@ void EpubReaderActivity::setBookCompleted(bool completed) {
     APP_STATE.openBookTimeLeftSeconds = 0;
     APP_STATE.openBookPagesLeft = -1;
     if (SETTINGS.removeReadBooksFromRecents) {
-      RECENT_BOOKS.addBook(epub->getPath(), epub->getTitle(), epub->getAuthor(), epub->getThumbBmpPath());
+      RECENT_BOOKS.addBook(epub->getPath(), epub->getTitle(), epub->getAuthor(),
+                           epub->getThumbBmpPath(sleepCoverCroppedForCache()));
     }
     pendingReadFolderMove = false;
     if (globalStats.completedBooks > 0) --globalStats.completedBooks;
@@ -1804,7 +1806,8 @@ void EpubReaderActivity::loop() {
     if (atEndOfBook && !recentsEntryRemoved) {
       recentsEntryRemoved = RECENT_BOOKS.removeByPath(epub->getPath());
     } else if (!atEndOfBook && recentsEntryRemoved) {
-      RECENT_BOOKS.addBook(epub->getPath(), epub->getTitle(), epub->getAuthor(), epub->getThumbBmpPath());
+      RECENT_BOOKS.addBook(epub->getPath(), epub->getTitle(), epub->getAuthor(),
+                           epub->getThumbBmpPath(sleepCoverCroppedForCache()));
       recentsEntryRemoved = false;
     }
   }
@@ -7962,4 +7965,8 @@ CrossPointPosition EpubReaderActivity::getCurrentPosition() const {
     localPos.hasParagraphIndex = true;
   }
   return localPos;
+}
+
+bool EpubReaderActivity::sleepCoverCroppedForCache() const {
+  return SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP;
 }
