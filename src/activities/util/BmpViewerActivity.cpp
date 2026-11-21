@@ -11,6 +11,11 @@
 #include <Memory.h>
 #include <render/PageRenderer.h>
 
+// The sleep-pixel cache header check (saveJpegSleepCover) uses the shared
+// identity-headered cache core — board-independent like the converter it
+// validates.
+#include "ImageBakeCache.h"
+
 // fitPlacement (the shared placement derivation) is unguarded engine surface;
 // the TTF-only decode/draw pieces below it are not.
 #include "activities/reader/TtfImageEngine.h"
@@ -611,15 +616,18 @@ bool BmpViewerActivity::saveJpegSleepCover() {
 
   HalFile input, output;
   if (!Storage.openFileForRead("BMP", JPEG_SLEEP_TMP_PXC, input)) return false;
+  // The pixel cache carries the shared identity header (ImageBakeCache.h):
+  // validate magic + bake letter + dims against the decode's placement.
   uint16_t width, height;
-  if (input.read(&width, sizeof(width)) != sizeof(width) || input.read(&height, sizeof(height)) != sizeof(height) ||
-      width != config.maxWidth || height != config.maxHeight) {
+  if (!imagebake::readValidCacheHeader(input, config.maxWidth, config.maxHeight,
+                                       imagebake::pathIdentity(JPEG_SLEEP_TMP_PXC, imagebake::kFramebufferCacheLetter),
+                                       width, height)) {
     LOG_ERR("BMP", "Invalid sleep image pixels");
     return false;
   }
   const size_t pixelRowBytes = (width + 3) / 4;
   const size_t bmpRowBytes = (width + 15) / 16 * 4;
-  if (input.size() != 4 + pixelRowBytes * height) {
+  if (input.size() != imagebake::kCacheHeaderBytes + pixelRowBytes * height) {
     LOG_ERR("BMP", "Incomplete sleep image pixels");
     return false;
   }

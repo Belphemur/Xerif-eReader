@@ -17,9 +17,11 @@ add_library(animatedgif_host STATIC ${ANIMATEDGIF_SOURCE_DIR}/src/AnimatedGIF.cp
 target_include_directories(animatedgif_host PUBLIC ${ANIMATEDGIF_SOURCE_DIR}/src)
 target_compile_definitions(animatedgif_host PUBLIC __LINUX__ MAX_WIDTH=3072)
 
-add_executable(GifSupportTest GifSupportTest.cpp PixelCacheTest.cpp GifDecoderTest.cpp)
+add_executable(GifSupportTest GifSupportTest.cpp BandCacheWriterTest.cpp GifDecoderTest.cpp
+  ${REPO_ROOT}/lib/ImageBake/ImageBakeCache.cpp)
 target_include_directories(GifSupportTest PRIVATE
   ${REPO_ROOT}/lib/GifSupport
+  ${REPO_ROOT}/lib/ImageBake
   ${REPO_ROOT}/lib/Memory
   ${REPO_ROOT}/test/chapter_html_slim_parser/stubs)
 target_link_libraries(GifSupportTest PRIVATE crosspoint_test_common GTest::gtest_main animatedgif_host)

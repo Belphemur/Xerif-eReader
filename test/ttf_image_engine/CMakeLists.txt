@@ -1,6 +1,7 @@
 add_executable(TtfImageEngineTest
   TtfImageEngineTest.cpp
   ${REPO_ROOT}/src/activities/reader/TtfImageCache.cpp
+  ${REPO_ROOT}/lib/ImageBake/ImageBakeCache.cpp
   ${REPO_ROOT}/lib/ImageBake/BlueNoise64.cpp
   ${REPO_ROOT}/lib/Epub/Epub/blocks/ImageDecodeGate.cpp
   stubs/Stubs.cpp

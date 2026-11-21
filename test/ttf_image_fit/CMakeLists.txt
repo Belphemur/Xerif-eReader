@@ -11,6 +11,7 @@ add_executable(TtfImageFitTest
   stubs/Stubs.cpp
   stubs/ImageDecoderFactory.cpp
   ${REPO_ROOT}/src/activities/reader/TtfImageCache.cpp
+  ${REPO_ROOT}/lib/ImageBake/ImageBakeCache.cpp
   ${REPO_ROOT}/lib/ImageBake/BlueNoise64.cpp
   ${REPO_ROOT}/src/activities/reader/TtfImageEngine.cpp
   ${REPO_ROOT}/lib/ImageBake/DpidScaler.cpp

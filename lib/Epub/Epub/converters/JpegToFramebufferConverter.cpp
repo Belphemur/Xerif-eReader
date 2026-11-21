@@ -17,7 +17,7 @@
 #include "DirectPixelWriter.h"
 #include "DitherUtils.h"
 #include "ImageBakeQuantizer.h"
-#include "PixelCache.h"
+#include "ImageBakeCache.h"
 
 namespace {
 
@@ -50,7 +50,7 @@ struct JpegContext {
   int32_t fineScaleFPY{1 << 16};  // Y: src -> dst row mapping
   int32_t invScaleFPY{1 << 16};   // Y: dst -> src row mapping
 
-  PixelCache cache;
+  imagebake::BandCacheWriter cache;
   bool caching{false};
   bool aborted{false};  // predecode abort fired mid-decode (see jpegDrawCallback)
 
@@ -630,7 +630,8 @@ static bool decodeToFramebufferFromOpen(JPEGDEC& jpeg, GfxRenderer& renderer, co
   ctx.caching = !config.cachePath.empty();
   if (ctx.caching) {
     const int maxBlockDstRows = (int)(((int64_t)16 * ctx.fineScaleFPY) >> FP_SHIFT) + 2;
-    if (!ctx.cache.begin(config.cachePath, destWidth, destHeight, config.x, config.y, maxBlockDstRows)) {
+    if (!ctx.cache.begin(config.cachePath.c_str(), destWidth, destHeight, config.x, config.y, maxBlockDstRows,
+                        imagebake::pathIdentity(config.cachePath.c_str(), imagebake::kFramebufferCacheLetter))) {
       LOG_ERR("JPG", "Failed to start cache stream, continuing without caching");
       ctx.caching = false;
     }

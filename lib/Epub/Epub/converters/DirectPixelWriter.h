@@ -225,7 +225,7 @@ struct DirectPixelWriter {
   }
 };
 
-// Direct cache writer that eliminates per-pixel overhead from PixelCache::setPixel().
+// Direct cache writer that eliminates per-pixel overhead from the band cache.
 // Pre-computes row pointer so the inner loop is just byte index + bit manipulation.
 //
 // The cache buffer is a small streaming band (e.g. 16 rows), not the full image,

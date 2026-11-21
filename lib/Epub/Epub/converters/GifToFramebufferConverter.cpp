@@ -14,7 +14,7 @@
 
 #include "DirectPixelWriter.h"
 #include "DitherUtils.h"
-#include "PixelCache.h"
+#include "ImageBakeCache.h"
 
 namespace {
 
@@ -34,7 +34,7 @@ struct GifContext {
   uint8_t grayPalette[256] = {0};
   std::unique_ptr<uint8_t[]> grayRow;
   std::unique_ptr<uint8_t[]> whiteRow;
-  PixelCache cache;
+  imagebake::BandCacheWriter cache;
   bool caching{false};
   bool success{true};
   uint32_t lastYieldMs{0};
@@ -247,7 +247,7 @@ void renderCanvasRow(const uint8_t* grayRow, int srcY, GifContext& ctx) {
         ctx.success = false;
         return;
       } else {
-        // Fork: PixelCache::buffer is a PoolBytes (PSRAM-backed), not a raw pointer.
+        // Fork: the band buffer is a PoolBytes (PSRAM-backed), not a raw pointer.
         cw.init(ctx.cache.buffer.get(), ctx.cache.bytesPerRow, ctx.cache.bandRows, ctx.cache.originX);
         cw.beginRow(outY, ctx.config->y + ctx.cache.bandStart);
       }
@@ -555,7 +555,8 @@ bool GifToFramebufferConverter::decodeGifSource(const char* imagePath, uint8_t* 
 
   ctx.caching = !config.cachePath.empty();
   if (ctx.caching) {
-    if (!ctx.cache.begin(config.cachePath, ctx.dstWidth, ctx.dstHeight, config.x, config.y, 1)) {
+    if (!ctx.cache.begin(config.cachePath.c_str(), ctx.dstWidth, ctx.dstHeight, config.x, config.y, 1,
+                        imagebake::pathIdentity(config.cachePath.c_str(), imagebake::kFramebufferCacheLetter))) {
       // Storage failure on the cache stream is not a decode failure: keep
       // painting the frame and skip the cache (the next pass re-decodes).
       LOG_ERR("GIF", "Cache stream start failed — painting uncached: %s", label);
