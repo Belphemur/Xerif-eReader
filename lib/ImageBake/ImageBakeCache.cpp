@@ -215,8 +215,8 @@ bool BandCacheWriter::finalize() {
     abort();
     return false;
   }
-  LOG_DBG("IMG", "Cache written: %s (%dx%d, %d bytes)", cachePathStr.c_str(), width, height,
-          kCacheHeaderBytes + bytesPerRow * height);
+  LOG_DBG("IMG", "Cache written: %s (%dx%d, %u bytes)", cachePathStr.c_str(), width, height,
+          static_cast<unsigned>(kCacheHeaderBytes + bytesPerRow * height));
   ok = false;  // file handed off; nothing left to clean up
   return true;
 }

@@ -556,7 +556,7 @@ bool GifToFramebufferConverter::decodeGifSource(const char* imagePath, uint8_t* 
   ctx.caching = !config.cachePath.empty();
   if (ctx.caching) {
     if (!ctx.cache.begin(config.cachePath.c_str(), ctx.dstWidth, ctx.dstHeight, config.x, config.y, 1,
-                        imagebake::pathIdentity(config.cachePath.c_str(), imagebake::kFramebufferCacheLetter))) {
+                         imagebake::pathIdentity(config.cachePath.c_str(), imagebake::kFramebufferCacheLetter))) {
       // Storage failure on the cache stream is not a decode failure: keep
       // painting the frame and skip the cache (the next pass re-decodes).
       LOG_ERR("GIF", "Cache stream start failed — painting uncached: %s", label);

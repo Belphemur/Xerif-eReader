@@ -140,11 +140,11 @@ struct FloydSteinberg4 {
 // the reader's existing call sites; the spec-dependent naming (cacheNameFor /
 // cacheIdentity / cacheRevisionLetter over ImageSpec) stays here.
 using imagebake::CacheIdentity;
-using imagebake::ToneCacheWriter;
 using imagebake::kCacheHeaderBytes;
 using imagebake::kCacheMagic0;
 using imagebake::kCacheMagic1;
 using imagebake::readValidCacheHeader;
+using imagebake::ToneCacheWriter;
 
 // The filename's identity components, shared with the in-file header.
 uint64_t cacheHash64(const ImageSpec& spec);

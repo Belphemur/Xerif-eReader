@@ -90,15 +90,15 @@ struct ToneCacheWriter {
 // finalize zero-filling rows the decode never covered (image clipped by the
 // screen). Same identity header as ToneCacheWriter, same 2-bit rows.
 struct BandCacheWriter {
-  PoolBytes buffer;                // band buffer: (bandRows + 1) rows; last row kept zeroed
-  uint8_t* zeroRow = nullptr;     // points at the spare zeroed row, for gap/clip fill
+  PoolBytes buffer;            // band buffer: (bandRows + 1) rows; last row kept zeroed
+  uint8_t* zeroRow = nullptr;  // points at the spare zeroed row, for gap/clip fill
   int width = 0;
   int height = 0;
   int bytesPerRow = 0;
   int originX = 0;  // config.x - to convert screen coords to cache coords
   int originY = 0;  // config.y
   int bandRows = 0;
-  int bandStart = 0;   // image-local row index of band buffer row 0
+  int bandStart = 0;    // image-local row index of band buffer row 0
   int flushedRows = 0;  // image-local rows already written to file
   HalFile file;
   std::string cachePathStr;

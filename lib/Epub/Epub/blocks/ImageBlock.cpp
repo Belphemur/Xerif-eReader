@@ -205,7 +205,7 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
 
   uint16_t cachedWidth, cachedHeight;
   if (!imagebake::readValidCacheHeader(cacheFile, expectedWidth, expectedHeight, cacheIdentityFor(cachePath),
-                                      cachedWidth, cachedHeight)) {
+                                       cachedWidth, cachedHeight)) {
     LOG_ERR("IMG", "Invalid image cache: %s", cachePath.c_str());
     return false;
   }
