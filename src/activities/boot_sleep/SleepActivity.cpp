@@ -522,7 +522,7 @@ void setLCGState(const SleepRecentKind kind, uint32_t seed, uint32_t state, uint
   }
 }
 
-bool findNextValidSleepImage(HalFile& dir, const SleepRecentKind recentKind, char* name) {
+bool findNextValidSleepImage(HalFile& dir, const SleepRecentKind recentKind, const bool allowPng, char* name) {
   for (auto dirFile = dir.openNextFile(); dirFile; dirFile = dir.openNextFile()) {
     if (dirFile.isDirectory()) continue;
 
@@ -531,10 +531,11 @@ bool findNextValidSleepImage(HalFile& dir, const SleepRecentKind recentKind, cha
 
     const bool isBmp = FsHelpers::hasBmpExtension(name);
 #if defined(BOARD_HAS_PSRAM)
-    // PSRAM builds accept PNG for the standard custom sleep screens too
-    // (design Amendment B.2): the decode front end paints it directly, no
-    // re-encode. No-PSRAM builds keep the BMP-only filter.
-    const bool isPng = FsHelpers::hasPngExtension(std::string_view{name});
+    // PSRAM builds accept PNG for the sleep-screen renderers (design
+    // Amendment B.2): the decode front end paints it directly, no
+    // re-encode. BMP-only consumers (the shutdown screen's framed renderer)
+    // opt out via allowPng=false. No-PSRAM builds keep the BMP-only filter.
+    const bool isPng = allowPng && FsHelpers::hasPngExtension(std::string_view{name});
 #else
     const bool isPng = recentKind == SleepRecentKind::Overlay && FsHelpers::hasPngExtension(std::string_view{name});
 #endif
@@ -558,7 +559,7 @@ bool findNextValidSleepImage(HalFile& dir, const SleepRecentKind recentKind, cha
 }
 
 bool selectRandomSleepFile(const char* firstDirPath, const char* secondDirPath, const SleepRecentKind recentKind,
-                           std::string& selectedPath, const bool commitRecent = true) {
+                           std::string& selectedPath, const bool commitRecent = true, const bool allowPng = true) {
   auto name = makeUniqueNoThrow<char[]>(MAX_SLEEP_FILE_NAME_LEN);
   if (!name) {
     LOG_ERR("SLP", "OOM: sleep filename buffer");
@@ -574,7 +575,7 @@ bool selectRandomSleepFile(const char* firstDirPath, const char* secondDirPath, 
     if (!dir || !dir.isDirectory()) continue;
 
     const auto remainingCapacity = static_cast<uint16_t>(UINT16_MAX - fileCount);
-    while (directoryCounts[i] < remainingCapacity && findNextValidSleepImage(dir, recentKind, name.get())) {
+    while (directoryCounts[i] < remainingCapacity && findNextValidSleepImage(dir, recentKind, allowPng, name.get())) {
       directoryCounts[i]++;
     }
     fileCount = static_cast<uint16_t>(fileCount + directoryCounts[i]);
@@ -684,7 +685,7 @@ bool selectRandomSleepFile(const char* firstDirPath, const char* secondDirPath, 
     return false;
   }
   for (uint16_t index = 0; index <= localIndex; ++index) {
-    if (!findNextValidSleepImage(dir, recentKind, name.get())) return false;
+    if (!findNextValidSleepImage(dir, recentKind, allowPng, name.get())) return false;
   }
 
   const char* selectedDirPath = dirPaths[directoryIndex];
@@ -901,7 +902,11 @@ bool selectShutdownCustomImage(std::string& outPath) {
     }
   }
 
-  selectRandomSleepFile("/.sleep", "/sleep", SleepRecentKind::Standard, outPath, /*commitRecent=*/false);
+  // The shutdown renderer (renderShutdownImageFramed) parses BMP only — keep
+  // the selection BMP-only so mixed directories don't strand custom art
+  // behind the logo fallback.
+  selectRandomSleepFile("/.sleep", "/sleep", SleepRecentKind::Standard, outPath, /*commitRecent=*/false,
+                        /*allowPng=*/false);
   if (!outPath.empty()) delay(100);  // Same settle window as the sleep random pick.
   return !outPath.empty();
 }
@@ -1160,11 +1165,14 @@ bool SleepActivity::renderEngineSleepPng(const std::string& path) const {
   LOG_DBG("SLP", "Rendering engine sleep PNG: %s (%dx%d)", path.c_str(), dimensions.width, dimensions.height);
 
   // Same filter semantics as renderBitmapSleepScreen: the inverted filter
-  // flips the painted frame and never reaches a gray base pass.
+  // flips the painted frame and never reaches a gray base pass, and only
+  // NO_FILTER keeps the gray pipeline — the monochrome (BLACK_AND_WHITE)
+  // filter renders plain B/W, not 4-level art.
   const bool inverted =
       SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE;
+  const bool noFilter = SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER;
   const bool absolute = renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported();
-  const bool grayPipeline = !inverted && absolute;
+  const bool grayPipeline = noFilter && absolute;
   // Same pre-clean policy as renderBitmapSleepScreen: a gray base pass (or
   // the OEM fold's real B/W activation) replaces the deferred clean; a
   // monochrome/filtered render issues it before painting.
@@ -1201,17 +1209,28 @@ bool SleepActivity::renderEngineSleepPng(const std::string& path) const {
     renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
   }
 
+  bool planesReady = true;
   for (const auto mode : {GfxRenderer::GRAYSCALE_LSB, GfxRenderer::GRAYSCALE_MSB}) {
     renderer.clearScreen(absolute ? 0xFF : 0x00);
     renderer.setRenderMode(mode);
-    if (!converter.decodeToFramebuffer(path, renderer, config)) break;
+    if (!converter.decodeToFramebuffer(path, renderer, config)) {
+      // Same degradation as displayImageWithGrayscale: keep the current
+      // display (the base pass already showed the frame) instead of
+      // activating grayscale with a stale plane.
+      planesReady = false;
+      break;
+    }
     if (mode == GfxRenderer::GRAYSCALE_LSB) {
       renderer.copyGrayscaleLsbBuffers();
     } else {
       renderer.copyGrayscaleMsbBuffers();
     }
   }
-  renderer.displayGrayBuffer();
+  if (planesReady) {
+    renderer.displayGrayBuffer();
+  } else {
+    LOG_ERR("SLP", "Incomplete grayscale image; keeping the current display");
+  }
   renderer.setRenderMode(GfxRenderer::BW);
   return true;
 }
