@@ -103,6 +103,10 @@ upstream and periodically synced from it.
   with a dedicated e-ink pipeline: detail-preserving downscale and edge-aware
   processing that keeps text and line art sharp, plus blue-noise dithering for
   smooth grayscale. Full-quality page images, no washed-out screenshots.
+- **Every cover, gallery-quality.** A new blue-noise image engine renders book
+  covers, home-screen thumbnails, and sleep-screen cover art through the same
+  pipeline as the pages you read — smooth grayscale tones instead of coarse
+  dot patterns (PSRAM-equipped devices).
 - **Tilt page turn** (X3 and Sticky).
 
 ### 📊 Reading statistics
@@ -243,6 +247,10 @@ releases. All fonts carry the SIL Open Font License (OFL).
   reading progress — `42% • ~2h 15m • 134 pages left` — drawn slightly above
   the bottom edge. Toggle the line in *Settings → Display → Sleep screen cover
   progress*.
+- **Custom sleep screens in PNG.** Drop your own image into the `/.sleep`
+  folder — PNG files render directly with no conversion step, so whatever you
+  save is exactly what your e-ink shows (PSRAM-equipped devices; BMP works
+  everywhere).
 - **Auto power off.** After a configurable idle (default 4 h, range 2–12 h, "12 h" =
   Off) the device wakes on the RTC, paints a shutdown screen, and cuts the peripheral
   rail instead of draining in deep sleep. Next power press is a cold boot.
