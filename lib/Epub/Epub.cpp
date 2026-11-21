@@ -1163,20 +1163,22 @@ bool Epub::generateCoverCache(const int thumbHeight, const bool cropped) const {
   const int thumbTargetWidth = static_cast<int>(thumbHeight * 0.6f);
 
   uint16_t coverW = 0, coverH = 0, thumbW = 0, thumbH = 0;
+  // The section temps live until the assembly consumed them: assembleCoverCache
+  // removes them on success, and this guard covers every other exit (decode
+  // failure, assembly failure). Declaring it inside the handle scope below
+  // would remove them BEFORE the assembly opens them (review 2026-11-21).
+  const ScopedCleanup dropTemps{[&coverTemp, &thumbTemp]() {
+    Storage.remove(coverTemp.c_str());
+    Storage.remove(thumbTemp.c_str());
+  }};
   bool success = false;
   {
     HalFile coverFile;
     HalFile thumbFile;
     if (!Storage.openFileForWrite("EBP", coverTemp, coverFile) ||
         !Storage.openFileForWrite("EBP", thumbTemp, thumbFile)) {
-      Storage.remove(coverTemp.c_str());
-      Storage.remove(thumbTemp.c_str());
       return false;
     }
-    const ScopedCleanup dropTemps{[&coverTemp, &thumbTemp]() {
-      Storage.remove(coverTemp.c_str());
-      Storage.remove(thumbTemp.c_str());
-    }};
     if (companionOnSd) {
       HalFile src;
       if (!Storage.openFileForRead("EBP", coverImageHref, src)) return false;
