@@ -1,11 +1,14 @@
 add_executable(BmpStreamWriterTest
   BmpStreamWriterTest.cpp
   ${REPO_ROOT}/lib/GfxRenderer/BmpStreamWriter.cpp
+  ${REPO_ROOT}/lib/ImageBake/BlueNoise64.cpp
 )
 
 target_include_directories(BmpStreamWriterTest PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/stubs
+  ${REPO_ROOT}/lib/Epub
   ${REPO_ROOT}/lib/GfxRenderer
+  ${REPO_ROOT}/lib/ImageBake
   ${REPO_ROOT}/lib/Memory
 )
 

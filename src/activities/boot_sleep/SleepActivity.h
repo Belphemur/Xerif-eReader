@@ -22,6 +22,12 @@ class SleepActivity final : public Activity {
   void renderDefaultSleepScreen() const;
   void renderCustomSleepScreen() const;
   bool renderCustomSleepBmp(const std::string& path) const;
+#ifdef BOARD_HAS_PSRAM
+  // PSRAM builds decode PNG custom sleep art directly through the engine
+  // (design Amendment B.2): the build-time quality sink bakes it, no
+  // BMP-only filter and no re-encode pass.
+  bool renderEngineSleepPng(const std::string& path) const;
+#endif
   void renderCoverSleepScreen() const;
   void renderBitmapSleepScreen(const Bitmap& bitmap, bool preserveBackground = false, int progressPercent = -1,
                                uint32_t timeLeftSeconds = 0, int pagesLeft = -1) const;

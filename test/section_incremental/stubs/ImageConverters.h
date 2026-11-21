@@ -16,6 +16,15 @@ class JpegToBmpConverter {
                                  bool originalThresholds = false);
   static bool jpegMemTo1BitBmpStreamWithSize(uint8_t* jpegData, size_t jpegSize, Print& bmpOut, int targetWidth,
                                              int targetHeight);
+  // Dual-sink entries (design Amendment B.1): reached only from
+  // generateCoverCache(), which these tests never call. The stub HalFile
+  // derives Print, so the real Print& signatures line up directly.
+  static bool jpegFileToCoverSections(HalFile& jpegFile, Print& coverOut, Print& thumbOut, int thumbTargetWidth,
+                                      int thumbTargetHeight, bool cropped, uint16_t& coverW, uint16_t& coverH,
+                                      uint16_t& thumbW, uint16_t& thumbH);
+  static bool jpegMemToCoverSections(uint8_t* jpegData, size_t jpegSize, Print& coverOut, Print& thumbOut,
+                                     int thumbTargetWidth, int thumbTargetHeight, bool cropped, uint16_t& coverW,
+                                     uint16_t& coverH, uint16_t& thumbW, uint16_t& thumbH);
 };
 
 class PngToBmpConverter {
@@ -26,6 +35,13 @@ class PngToBmpConverter {
                                 bool originalThresholds = false);
   static bool pngMemTo1BitBmpStreamWithSize(uint8_t* pngData, size_t pngSize, Print& bmpOut, int targetWidth,
                                             int targetHeight);
+  // Dual-sink entries (design Amendment B.1) — see the JPEG stub's note.
+  static bool pngFileToCoverSections(HalFile& pngFile, Print& coverOut, Print& thumbOut, int thumbTargetWidth,
+                                     int thumbTargetHeight, bool cropped, uint16_t& coverW, uint16_t& coverH,
+                                     uint16_t& thumbW, uint16_t& thumbH);
+  static bool pngMemToCoverSections(uint8_t* pngData, size_t pngSize, Print& coverOut, Print& thumbOut,
+                                    int thumbTargetWidth, int thumbTargetHeight, bool cropped, uint16_t& coverW,
+                                    uint16_t& coverH, uint16_t& thumbW, uint16_t& thumbH);
 };
 
 class GifToBmpConverter {

@@ -12,11 +12,16 @@
 
 #include "Epub/converters/DirectPixelWriter.h"
 #include "Epub/converters/ImageDecoderFactory.h"
+#include "ImageBakeCache.h"
 
-// Cache file format:
-// - uint16_t width
-// - uint16_t height
-// - uint8_t pixels[...] - 2 bits per pixel, packed (4 pixels per byte), row-major order
+// Cache file format (shared identity-headered core, lib/ImageBake/
+// ImageBakeCache.h — design Amendment B.1):
+// - CacheIdentity header: magic 'C','P', bake letter, u32 identity hash32
+// - uint16 width, uint16 height
+// - uint8 pixels[...] - 2 bits per pixel, packed (4 pixels per byte), row-major order
+// The letter inside the file is the only revision channel: a legacy
+// headerless cache (pre-blue-noise) fails the magic check at open and
+// regenerates, so stale files sweep out with the next decode.
 
 ImageBlock::ImageBlock(const std::string& imagePath, const std::string& srcPath, int16_t width, int16_t height)
     : imagePath(imagePath), srcPath(srcPath), width(width), height(height) {}
@@ -39,7 +44,10 @@ void ImageBlock::setPsramExtractor(void* ctx, PsramExtractFn fn) {
 namespace {
 
 std::string getCachePath(const std::string& imagePath) {
-  // Replace extension with .pxc (pixel cache)
+  // One '.pxc' token (Amendment B.1): the in-file identity header carries
+  // the bake revision letter, so pre-blue-noise headerless caches fail the
+  // magic check at open and regenerate — no extension-token wave. The .pxc2
+  // token from the earlier revision is retired with it.
   size_t dotPos = imagePath.rfind('.');
   if (dotPos != std::string::npos) {
     return imagePath.substr(0, dotPos) + ".pxc";
@@ -47,21 +55,12 @@ std::string getCachePath(const std::string& imagePath) {
   return imagePath + ".pxc";
 }
 
-bool readValidCacheHeader(HalFile& cacheFile, const int expectedWidth, const int expectedHeight, uint16_t& cachedWidth,
-                          uint16_t& cachedHeight) {
-  if (cacheFile.read(&cachedWidth, 2) != 2 || cacheFile.read(&cachedHeight, 2) != 2) {
-    return false;
-  }
-
-  const int widthDiff = abs(cachedWidth - expectedWidth);
-  const int heightDiff = abs(cachedHeight - expectedHeight);
-  if (widthDiff > 1 || heightDiff > 1) {
-    return false;
-  }
-
-  const size_t bytesPerRow = (cachedWidth + 3) / 4;
-  const size_t expectedSize = 4 + bytesPerRow * cachedHeight;
-  return cacheFile.size() >= expectedSize;
+// Identity for the image-page cache: the letter keys the paint bake
+// (imagebake::kFramebufferCacheLetter — build-time sink selection), the
+// hash keys the cache path itself. Shared by the writer (the converters'
+// band stream) and both readers below.
+imagebake::CacheIdentity cacheIdentityFor(const std::string& cachePath) {
+  return imagebake::pathIdentity(cachePath.c_str(), imagebake::kFramebufferCacheLetter);
 }
 
 // Suppress repeated failures across the BW/grayscale passes of one page render.
@@ -205,7 +204,8 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
   }
 
   uint16_t cachedWidth, cachedHeight;
-  if (!readValidCacheHeader(cacheFile, expectedWidth, expectedHeight, cachedWidth, cachedHeight)) {
+  if (!imagebake::readValidCacheHeader(cacheFile, expectedWidth, expectedHeight, cacheIdentityFor(cachePath),
+                                       cachedWidth, cachedHeight)) {
     LOG_ERR("IMG", "Invalid image cache: %s", cachePath.c_str());
     return false;
   }
@@ -228,8 +228,8 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
   }
 
   // Streaming fallback (slot didn't fit). A failed slot load may have consumed
-  // part of the payload; rewind to just past the header.
-  cacheFile.seek(4);
+  // part of the payload; rewind to just past the identity header.
+  cacheFile.seek(imagebake::kCacheHeaderBytes);
 
   // Read several rows per SD access. A one-row-per-read loop here means
   // cachedHeight (~728) tiny reads through the storage mutex + SdFat; batching
@@ -300,7 +300,8 @@ bool ImageBlock::hasValidCache() const {
   }
 
   uint16_t cachedWidth, cachedHeight;
-  return readValidCacheHeader(cacheFile, width, height, cachedWidth, cachedHeight);
+  return imagebake::readValidCacheHeader(cacheFile, width, height, cacheIdentityFor(cachePath), cachedWidth,
+                                         cachedHeight);
 }
 
 bool ImageBlock::needsDecode() const { return !imageFailedThisRender(imagePath) && !hasValidCache(); }

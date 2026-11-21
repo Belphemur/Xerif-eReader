@@ -1,6 +1,7 @@
 #include "HomeActivity.h"
 
 #include <Bitmap.h>
+#include <CoverCache.h>
 #include <Epub.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
@@ -107,6 +108,16 @@ void HomeActivity::fillCoverGridFromLibrary() {
   }
 }
 
+// The combined cover cache's cover section is baked in the sleep cover
+// geometry (Amendment B.1) — the same setting Epub reads at generation time.
+static bool homeSleepCoverCropped() {
+#if defined(BOARD_HAS_PSRAM)
+  return SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP;
+#else
+  return false;
+#endif
+}
+
 void HomeActivity::resolveGridCoverPaths() {
   for (auto& book : recentBooks) {
     if (!book.coverBmpPath.empty()) continue;
@@ -118,7 +129,7 @@ void HomeActivity::resolveGridCoverPaths() {
         LOG_ERR("HOME", "OOM: EPUB thumbnail path");
         continue;
       }
-      book.coverBmpPath = epub->getThumbBmpPath();
+      book.coverBmpPath = epub->getThumbBmpPath(homeSleepCoverCropped());
     } else if (FsHelpers::hasXtcExtension(book.path)) {
       auto xtc = makeUniqueNoThrow<Xtc>(book.path, "/.crosspoint");
       if (!xtc) {
@@ -140,14 +151,35 @@ void HomeActivity::loadGridCover(RecentBook& book, int height, bool& showingLoad
       LOG_ERR("HOME", "OOM: cover EPUB");
       return;
     }
-    book.coverBmpPath = epub->getThumbBmpPath();
+    book.coverBmpPath = epub->getThumbBmpPath(homeSleepCoverCropped());
+#if defined(BOARD_HAS_PSRAM)
+    // JPG/PNG-covered books carry their thumb inside the combined cover
+    // cache (Amendment B.1) — a constructor-only Epub cannot know the cover
+    // kind, so probe both shapes before deciding to regenerate.
+    {
+      const std::string coverCachePath = epub->getCoverCachePath(height, homeSleepCoverCropped());
+      // Validate before accepting the hit: a stale or damaged cache would
+      // otherwise satisfy the exists() shortcut forever while openCoverBitmap
+      // rejects it at draw time — the cover stays missing on every grid load.
+      // Falling through regenerates over the stale file.
+      if (Storage.exists(coverCachePath.c_str()) &&
+          imagebake::coverBitmapIsValid(coverCachePath.c_str(), height, imagebake::CoverSection::Thumb)) {
+        book.coverBmpPath = epub->getCoverCacheTemplate(homeSleepCoverCropped());
+        return;
+      }
+    }
+#endif
     if (Storage.exists(epub->getThumbBmpPath(height).c_str())) return;
     if (!showingLoading) {
       showingLoading = true;
       popupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
       GUI.fillPopupProgress(renderer, popupRect, 0);
     }
-    if (epub->generateThumbBmpFromSource(height)) {
+    if (epub->generateThumbBmpFromSource(height, homeSleepCoverCropped())) {
+      // Adopt the template the generation actually produced (combined cover
+      // cache on PSRAM builds, legacy thumb otherwise) so the exists check
+      // above passes on the next frame.
+      if (!epub->lastThumbTemplate().empty()) book.coverBmpPath = epub->lastThumbTemplate();
       return;
     }
   } else if (FsHelpers::hasXtcExtension(book.path)) {
@@ -206,9 +238,20 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
           // Same for a reflowable book without a cache (e.g. after "Delete Book
           // Cache"): read the cover location straight from the source.
           const bool isTxtOrMd = FsHelpers::hasTxtExtension(book.path) || FsHelpers::hasMarkdownExtension(book.path);
-          bool success = (isTxtOrMd || !cacheLoaded) ? epub.generateThumbBmpFromSource(thumbHeight)
-                                                     : epub.generateThumbBmp(thumbHeight);
-          if (!success) {
+          bool success = (isTxtOrMd || !cacheLoaded)
+                             ? epub.generateThumbBmpFromSource(thumbHeight, homeSleepCoverCropped())
+                             : epub.generateThumbBmp(thumbHeight, homeSleepCoverCropped());
+          if (success) {
+            // Persist the template the generation actually produced: the
+            // combined cover cache on PSRAM builds, the legacy thumb
+            // otherwise (a stale persisted template would re-open as
+            // missing forever).
+            const std::string& produced = epub.lastThumbTemplate();
+            if (!produced.empty() && produced != book.coverBmpPath) {
+              book.coverBmpPath = produced;
+              RECENT_BOOKS.updateBook(book.path, book.title, book.author, produced);
+            }
+          } else {
             RECENT_BOOKS.updateBook(book.path, book.title, book.author, "");
             book.coverBmpPath = "";
           }

@@ -21,6 +21,7 @@
 #include <string_view>
 #include <vector>
 
+#include "CoverCache.h"
 #include "Epub/ImageStaging.h"
 #include "Epub/parsers/ContainerParser.h"
 #include "Epub/parsers/ContentOpfParser.h"
@@ -853,8 +854,11 @@ const std::string& Epub::getLanguage() const {
 }
 
 std::string Epub::getCoverBmpPath(bool cropped, bool originalThresholds) const {
+  // v3: the blue-noise cover bake (design 2026-11-20-cover-image-pipeline.md
+  // section 3). The rename orphans the Atkinson-era v2 files so a stale baked
+  // cover is never re-served; both threshold variants changed content.
   const auto coverFileName =
-      std::string("cover") + (originalThresholds ? "_original" : "_legacy_v2") + (cropped ? "_crop" : "");
+      std::string("cover") + (originalThresholds ? "_original_v3" : "_legacy_v3") + (cropped ? "_crop" : "");
   return cachePath + "/" + coverFileName + ".bmp";
 }
 
@@ -1101,10 +1105,142 @@ bool Epub::generateCoverBmp(bool cropped, bool originalThresholds) const {
   return false;
 }
 
-std::string Epub::getThumbBmpPath() const { return cachePath + "/thumb_[HEIGHT].bmp"; }
+#ifdef BOARD_HAS_PSRAM
+std::string Epub::getCoverCachePath(const int thumbHeight, const bool cropped) const {
+  char path[280];
+  if (!imagebake::coverCachePath(cachePath.c_str(), thumbHeight, cropped, path, sizeof(path))) return {};
+  return path;
+}
+
+std::string Epub::getCoverCacheTemplate(const bool cropped) const {
+  char path[280];
+  if (!imagebake::coverCacheTemplate(cachePath.c_str(), cropped, path, sizeof(path))) return {};
+  return path;
+}
+
+bool Epub::generateCoverCache(const int thumbHeight, const bool cropped) const {
+  if (!bookMetadataCache || !bookMetadataCache->isLoaded()) {
+    LOG_ERR("EBP", "Cannot generate cover cache, cache not loaded");
+    return false;
+  }
+
+  std::string coverImageHref = bookMetadataCache->coreMetadata.coverItemHref;
+  // TXT/MD: the companion cover can appear (or vanish) after the cache was
+  // built; re-probe instead of trusting the cached href. Companion art lives
+  // on SD already, so it decodes from the file rather than PSRAM staging.
+  bool companionOnSd = false;
+  if (Txt::isTxtOrMd(filepath)) {
+    companionOnSd = true;
+    if (coverImageHref.empty() || !Storage.exists(coverImageHref.c_str())) {
+      coverImageHref = Txt::findCompanionCoverImage(filepath);
+    }
+  }
+  if (coverImageHref.empty()) {
+    LOG_ERR("EBP", "No known cover image");
+    return false;
+  }
+  // GIF covers keep the legacy per-surface BMPs (design decision 3): the GIF
+  // cover decode is a separate converter; forcing it through the dual-sink
+  // file emitter is a follow-up, not this change.
+  if (FsHelpers::hasGifExtension(coverImageHref)) return false;
+  const bool isJpg = FsHelpers::hasJpgExtension(coverImageHref);
+  if (!isJpg && !FsHelpers::hasPngExtension(coverImageHref)) return false;
+
+  const std::string finalPath = getCoverCachePath(thumbHeight, cropped);
+  if (finalPath.empty()) return false;
+  if (Storage.exists(finalPath.c_str()) &&
+      imagebake::coverBitmapIsValid(finalPath.c_str(), thumbHeight, imagebake::CoverSection::Thumb)) {
+    lastThumbTemplate_ = getCoverCacheTemplate(cropped);
+    return true;
+  }
+
+  // One decode streams BOTH sections into their temp files (the decode
+  // interleaves row flushes between the two scalers, so the sections cannot
+  // stream into one file directly), then the assembly publishes the
+  // identity-headered combined file over them.
+  const std::string thumbTemp = getCachePath() + "/.ccthumb.tmp";
+  const std::string coverTemp = getCachePath() + "/.cccover.tmp";
+  const int thumbTargetWidth = static_cast<int>(thumbHeight * 0.6f);
+
+  uint16_t coverW = 0, coverH = 0, thumbW = 0, thumbH = 0;
+  // The section temps live until the assembly consumed them: assembleCoverCache
+  // removes them on success, and this guard covers every other exit (decode
+  // failure, assembly failure). Declaring it inside the handle scope below
+  // would remove them BEFORE the assembly opens them (review 2026-11-21).
+  const ScopedCleanup dropTemps{[&coverTemp, &thumbTemp]() {
+    Storage.remove(coverTemp.c_str());
+    Storage.remove(thumbTemp.c_str());
+  }};
+  bool success = false;
+  {
+    HalFile coverFile;
+    HalFile thumbFile;
+    if (!Storage.openFileForWrite("EBP", coverTemp, coverFile) ||
+        !Storage.openFileForWrite("EBP", thumbTemp, thumbFile)) {
+      return false;
+    }
+    if (companionOnSd) {
+      HalFile src;
+      if (!Storage.openFileForRead("EBP", coverImageHref, src)) return false;
+      success = isJpg
+                    ? JpegToBmpConverter::jpegFileToCoverSections(src, coverFile, thumbFile, thumbTargetWidth,
+                                                                  thumbHeight, cropped, coverW, coverH, thumbW, thumbH)
+                    : PngToBmpConverter::pngFileToCoverSections(src, coverFile, thumbFile, thumbTargetWidth,
+                                                                thumbHeight, cropped, coverW, coverH, thumbW, thumbH);
+    } else {
+      size_t coverSize = 0;
+      PoolBytes coverBuf = extractItemToPsram(coverImageHref, &coverSize);
+      if (!coverBuf) {
+        LOG_DBG("EBP", "Cover PSRAM staging unavailable");
+        return false;
+      }
+      success = isJpg ? JpegToBmpConverter::jpegMemToCoverSections(coverBuf.get(), coverSize, coverFile, thumbFile,
+                                                                   thumbTargetWidth, thumbHeight, cropped, coverW,
+                                                                   coverH, thumbW, thumbH)
+                      : PngToBmpConverter::pngMemToCoverSections(coverBuf.get(), coverSize, coverFile, thumbFile,
+                                                                 thumbTargetWidth, thumbHeight, cropped, coverW, coverH,
+                                                                 thumbW, thumbH);
+    }
+    success = success && coverFile.close() && thumbFile.close();
+  }
+  if (!success) {
+    LOG_ERR("EBP", "Cover section decode failed: %s", coverImageHref.c_str());
+    return false;
+  }
+
+  if (!imagebake::assembleCoverCache(finalPath.c_str(), thumbTemp.c_str(), thumbW, thumbH, coverTemp.c_str(), coverW,
+                                     coverH, thumbHeight, cropped)) {
+    return false;
+  }
+  LOG_DBG("EBP", "Combined cover cache generated: %s", finalPath.c_str());
+  lastThumbTemplate_ = getCoverCacheTemplate(cropped);
+  return true;
+}
+#endif  // BOARD_HAS_PSRAM
+
+std::string Epub::lastThumbTemplate() const { return lastThumbTemplate_; }
+
+std::string Epub::getThumbBmpPath(const bool sleepCoverCropped) const {
+#if defined(BOARD_HAS_PSRAM)
+  // Combined cover cache (Amendment B.1): JPG/PNG-covered books serve home
+  // thumbs from the sectioned file's thumb section. A metadata-free instance
+  // (constructor-only path resolution) or a GIF-covered book keeps the legacy
+  // thumb template; generation adopts the effective template via
+  // lastThumbTemplate().
+  if (bookMetadataCache && bookMetadataCache->isLoaded()) {
+    const auto& href = bookMetadataCache->coreMetadata.coverItemHref;
+    if ((FsHelpers::hasJpgExtension(href) || FsHelpers::hasPngExtension(href)) && !FsHelpers::hasGifExtension(href)) {
+      return getCoverCacheTemplate(sleepCoverCropped);
+    }
+  }
+#else
+  (void)sleepCoverCropped;
+#endif
+  return cachePath + "/thumb_[HEIGHT].bmp";
+}
 std::string Epub::getThumbBmpPath(int height) const { return cachePath + "/thumb_" + std::to_string(height) + ".bmp"; }
 
-bool Epub::generateThumbBmp(int height) const {
+bool Epub::generateThumbBmp(const int height, const bool sleepCoverCropped) const {
   // Already generated, return true
   if (Storage.exists(getThumbBmpPath(height).c_str())) {
     return true;
@@ -1115,16 +1251,16 @@ bool Epub::generateThumbBmp(int height) const {
     return false;
   }
 
-  return generateThumbBmpForCover(height, bookMetadataCache->coreMetadata.coverItemHref);
+  return generateThumbBmpForCover(height, bookMetadataCache->coreMetadata.coverItemHref, sleepCoverCropped);
 }
 
-bool Epub::generateThumbBmpFromSource(int height) {
+bool Epub::generateThumbBmpFromSource(const int height, const bool sleepCoverCropped) {
   if (Storage.exists(getThumbBmpPath(height).c_str())) return true;
   if (Txt::isTxtOrMd(filepath)) {
     std::string companionCover = Txt::findCompanionCoverImage(filepath);
     if (companionCover.empty()) return false;
     setupCacheDir();
-    return generateThumbBmpForCover(height, companionCover);
+    return generateThumbBmpForCover(height, companionCover, sleepCoverCropped);
   }
   // Parser input and metadata outlive parsing but exceed the small task stack budget.
   auto metadata = makeUniqueNoThrow<BookMetadataCache::BookMetadata>();
@@ -1142,10 +1278,11 @@ bool Epub::generateThumbBmpFromSource(int height) {
   // The cover of a protected book is encrypted like everything else.
   if (!decryptor && !openProtection()) return false;
   setupCacheDir();
-  return generateThumbBmpForCover(height, metadata->coverItemHref);
+  return generateThumbBmpForCover(height, metadata->coverItemHref, sleepCoverCropped);
 }
 
-bool Epub::generateThumbBmpForCover(int height, const std::string& coverImageHref) const {
+bool Epub::generateThumbBmpForCover(const int height, const std::string& coverImageHref,
+                                    const bool sleepCoverCropped) const {
   if (coverImageHref.empty()) {
     LOG_DBG("EBP", "No known cover image for thumbnail");
   } else {
@@ -1158,21 +1295,38 @@ bool Epub::generateThumbBmpForCover(int height, const std::string& coverImageHre
       if (companion.empty()) {
         return false;
       }
-      return Txt::convertCoverImageToBmp(companion, getThumbBmpPath(height), height);
+#if defined(BOARD_HAS_PSRAM)
+      // Combined cover cache first (Amendment B.1); GIF companions and any
+      // decode failure fall back to the legacy per-surface BMP below.
+      if (FsHelpers::hasJpgExtension(companion) || FsHelpers::hasPngExtension(companion)) {
+        if (generateCoverCache(height, sleepCoverCropped)) return true;
+        LOG_DBG("EBP", "Cover cache generation failed, falling back to legacy thumb BMP");
+      }
+#endif
+      if (Txt::convertCoverImageToBmp(companion, getThumbBmpPath(height), height)) {
+        lastThumbTemplate_ = cachePath + "/thumb_[HEIGHT].bmp";
+        return true;
+      }
+      return false;
     }
 
 #ifdef BOARD_HAS_PSRAM
+    // Combined cover cache first (Amendment B.1): one decode emits BOTH the
+    // thumb section and the sleep cover section. Falls back to the legacy
+    // thumb BMP on GIF covers or any failure.
+    if (FsHelpers::hasJpgExtension(coverImageHref) || FsHelpers::hasPngExtension(coverImageHref)) {
+      if (generateCoverCache(height, sleepCoverCropped)) return true;
+      LOG_DBG("EBP", "Cover cache generation failed, falling back to legacy thumb BMP");
+    }
     // PSRAM boards decode the thumbnail from a pool buffer: no .cover.jpg/
     // .cover.png temp ever reaches SD. Falls back to the SD path below on
     // oversized (>4 MB), OOM, or decode failure.
-    if (FsHelpers::hasJpgExtension(coverImageHref) || FsHelpers::hasPngExtension(coverImageHref)) {
-      const int thumbTargetWidth = static_cast<int>(height * 0.6);
-      if (generateBmpFromPsram(coverImageHref, getThumbBmpPath(height), /*oneBit=*/true, thumbTargetWidth, height,
-                               /*crop=*/true, /*originalThresholds=*/false)) {
-        return true;
-      }
-      LOG_DBG("EBP", "Falling back to SD staging for thumb");
+    if (generateBmpFromPsram(coverImageHref, getThumbBmpPath(height), /*oneBit=*/true, static_cast<int>(height * 0.6),
+                             height, /*crop=*/true, /*originalThresholds=*/false)) {
+      lastThumbTemplate_ = cachePath + "/thumb_[HEIGHT].bmp";
+      return true;
     }
+    LOG_DBG("EBP", "Falling back to SD staging for thumb");
 #endif
     if (FsHelpers::hasJpgExtension(coverImageHref)) {
       LOG_DBG("EBP", "Generating thumb BMP from JPG cover image");
@@ -1209,6 +1363,7 @@ bool Epub::generateThumbBmpForCover(int height, const std::string& coverImageHre
         Storage.remove(getThumbBmpPath(height).c_str());
       }
       LOG_DBG("EBP", "Generated thumb BMP from JPG cover image, success: %s", success ? "yes" : "no");
+      if (success) lastThumbTemplate_ = cachePath + "/thumb_[HEIGHT].bmp";
       return success;
     } else if (FsHelpers::hasPngExtension(coverImageHref)) {
       LOG_DBG("EBP", "Generating thumb BMP from PNG cover image");
@@ -1243,6 +1398,7 @@ bool Epub::generateThumbBmpForCover(int height, const std::string& coverImageHre
         Storage.remove(getThumbBmpPath(height).c_str());
       }
       LOG_DBG("EBP", "Generated thumb BMP from PNG cover image, success: %s", success ? "yes" : "no");
+      if (success) lastThumbTemplate_ = cachePath + "/thumb_[HEIGHT].bmp";
       return success;
     } else if (FsHelpers::hasGifExtension(coverImageHref)) {
       return generateGifBmp(*this, coverImageHref, getThumbBmpPath(height), [height](HalFile& gif, Print& bmp) {

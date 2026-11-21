@@ -3,6 +3,8 @@ add_executable(ZipFileCacheTest
   ${CMAKE_CURRENT_SOURCE_DIR}/../section_incremental/ParserLinkStubs.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../section_incremental/ContentProtectionHostStub.cpp
   ${REPO_ROOT}/lib/Epub/Epub.cpp
+  ${REPO_ROOT}/lib/ImageBake/ImageBakeCache.cpp
+  ${REPO_ROOT}/lib/ImageBake/CoverCache.cpp
   ${REPO_ROOT}/lib/Epub/Epub/Section.cpp
   ${REPO_ROOT}/lib/Epub/Epub/BookMetadataCache.cpp
   ${REPO_ROOT}/lib/Epub/Epub/parsers/ChapterHtmlSlimParser.cpp
@@ -47,6 +49,7 @@ target_include_directories(ZipFileCacheTest PRIVATE
   ${REPO_ROOT}/lib/hal
   ${REPO_ROOT}/lib/GfxRenderer
   ${REPO_ROOT}/lib/Epub
+  ${REPO_ROOT}/lib/ImageBake
   ${REPO_ROOT}/lib/Epub/Epub
   ${REPO_ROOT}/lib/Epub/Epub/parsers
   ${REPO_ROOT}/lib/Epub/Epub/css

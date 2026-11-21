@@ -17,9 +17,11 @@ add_library(animatedgif_host STATIC ${ANIMATEDGIF_SOURCE_DIR}/src/AnimatedGIF.cp
 target_include_directories(animatedgif_host PUBLIC ${ANIMATEDGIF_SOURCE_DIR}/src)
 target_compile_definitions(animatedgif_host PUBLIC __LINUX__ MAX_WIDTH=3072)
 
-add_executable(GifSupportTest GifSupportTest.cpp PixelCacheTest.cpp GifDecoderTest.cpp)
+add_executable(GifSupportTest GifSupportTest.cpp BandCacheWriterTest.cpp GifDecoderTest.cpp
+  ${REPO_ROOT}/lib/ImageBake/ImageBakeCache.cpp)
 target_include_directories(GifSupportTest PRIVATE
   ${REPO_ROOT}/lib/GifSupport
+  ${REPO_ROOT}/lib/ImageBake
   ${REPO_ROOT}/lib/Memory
   ${REPO_ROOT}/test/chapter_html_slim_parser/stubs)
 target_link_libraries(GifSupportTest PRIVATE crosspoint_test_common GTest::gtest_main animatedgif_host)
@@ -29,13 +31,16 @@ add_test(NAME PatchAnimatedGif COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/t
 add_executable(GifBmpTest GifBmpTest.cpp
   ${REPO_ROOT}/lib/GifToBmpConverter/GifToBmpConverter.cpp
   ${REPO_ROOT}/lib/GfxRenderer/BitmapHelpers.cpp
-  ${REPO_ROOT}/lib/GfxRenderer/BmpStreamWriter.cpp)
+  ${REPO_ROOT}/lib/GfxRenderer/BmpStreamWriter.cpp
+  ${REPO_ROOT}/lib/ImageBake/BlueNoise64.cpp)
 target_include_directories(GifBmpTest PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/stubs
   ${REPO_ROOT}/test/chapter_html_slim_parser/stubs
   ${REPO_ROOT}/lib/GifToBmpConverter
   ${REPO_ROOT}/lib/GifSupport
+  ${REPO_ROOT}/lib/Epub
   ${REPO_ROOT}/lib/GfxRenderer
+  ${REPO_ROOT}/lib/ImageBake
   ${REPO_ROOT}/lib/Memory)
 target_link_libraries(GifBmpTest PRIVATE crosspoint_test_common GTest::gtest_main animatedgif_host)
 gtest_discover_tests(GifBmpTest)

@@ -20,6 +20,12 @@ class HalStorage {
   bool openFileForRead(const char* moduleName, const String& path, HalFile& file) {
     return openFileForRead(moduleName, path.c_str(), file);
   }
+  // Sub-file view: opens the file, clamps the window to its extent, and
+  // marks the handle as a view (see HalFile.h).
+  bool openFileSubview(const char* moduleName, const char* path, uint64_t offset, uint64_t length, HalFile& file) {
+    if (!openFileForRead(moduleName, path, file)) return false;
+    return file.setSubview(static_cast<size_t>(offset), static_cast<size_t>(length));
+  }
   bool openFileForWrite(const char* moduleName, const char* path, HalFile& file);
   bool openFileForWrite(const char* moduleName, const String& path, HalFile& file) {
     return openFileForWrite(moduleName, path.c_str(), file);

@@ -16,7 +16,9 @@
 
 #include "DirectPixelWriter.h"
 #include "DitherUtils.h"
-#include "PixelCache.h"
+#include "ImageBakeCache.h"
+#include "ImageBakeQuantizer.h"
+#include "ImageDecodeSource.h"
 
 namespace {
 
@@ -49,55 +51,70 @@ struct JpegContext {
   int32_t fineScaleFPY{1 << 16};  // Y: src -> dst row mapping
   int32_t invScaleFPY{1 << 16};   // Y: dst -> src row mapping
 
-  PixelCache cache;
+  imagebake::BandCacheWriter cache;
   bool caching{false};
   bool aborted{false};  // predecode abort fired mid-decode (see jpegDrawCallback)
 
   uint32_t lastYieldMs{0};  // throttle state for yieldDuringDecode()
 };
 
-// File I/O callbacks use pFile->fHandle to access the HalFile*,
-// avoiding the need for global file state.
+// Decode source (design Amendment B.2): the file path wraps a HalFile in
+// the shared DataSource shape. The state is PER OPEN and owned by the
+// callback pair — a module-static source would let a concurrent dimension
+// probe overwrite the source a decode is reading (the dimension fallbacks
+// do not hold the decode bus, review 2026-11-21). The memory path keeps
+// JPEGDEC's native openRAM.
+namespace {
+struct JpegFileSource {
+  HalFile file;
+  imagebake::DataSource source;
+};
+}  // namespace
+
 void* jpegOpen(const char* filename, int32_t* size) {
+  auto* src = new (std::nothrow) JpegFileSource();
+  if (src == nullptr) {
+    LOG_ERR("JPG", "OOM: JPEG source handle");
+    return nullptr;
+  }
   // JPEGDEC releases this handle through jpegClose().
-  HalFile* f = new (std::nothrow) HalFile();
-  if (!f) {
-    LOG_ERR("JPG", "OOM: JPEG file handle");
+  if (!Storage.openFileForRead("JPG", std::string(filename), src->file)) {
+    delete src;
     return nullptr;
   }
-  if (!Storage.openFileForRead("JPG", std::string(filename), *f)) {
-    delete f;
+  src->source = imagebake::halFileSource(src->file);
+  if (!src->source.openSource(size)) {
+    delete src;
     return nullptr;
   }
-  *size = f->size();
-  return f;
+  return src;
 }
 
 void jpegClose(void* handle) {
-  HalFile* f = reinterpret_cast<HalFile*>(handle);
-  if (f) {
-    f->close();
-    delete f;
+  auto* src = reinterpret_cast<JpegFileSource*>(handle);
+  if (src != nullptr) {
+    src->source.closeSource();
+    delete src;
   }
 }
 
 // JPEGDEC tracks file position via pFile->iPos internally (e.g. JPEGGetMoreData
 // checks iPos < iSize to decide whether more data is available). The callbacks
-// MUST maintain iPos to match the actual file position, otherwise progressive
+// MUST maintain iPos to match the actual source position, otherwise progressive
 // JPEGs with large headers fail during parsing.
 int32_t jpegRead(JPEGFILE* pFile, uint8_t* pBuf, int32_t len) {
-  HalFile* f = reinterpret_cast<HalFile*>(pFile->fHandle);
-  if (!f) return 0;
-  int32_t bytesRead = f->read(pBuf, len);
+  auto* src = reinterpret_cast<imagebake::DataSource*>(pFile->fHandle);
+  if (src == nullptr) return 0;
+  const int32_t bytesRead = src->readSource(pBuf, len);
   if (bytesRead < 0) return 0;
   pFile->iPos += bytesRead;
   return bytesRead;
 }
 
 int32_t jpegSeek(JPEGFILE* pFile, int32_t pos) {
-  HalFile* f = reinterpret_cast<HalFile*>(pFile->fHandle);
-  if (!f) return -1;
-  if (!f->seek(pos)) return -1;
+  auto* src = reinterpret_cast<imagebake::DataSource*>(pFile->fHandle);
+  if (src == nullptr) return -1;
+  if (!src->seekSource(pos)) return -1;
   pFile->iPos = pos;
   return pos;
 }
@@ -224,7 +241,10 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
         uint8_t gray = row[dstX - blockX];
         uint8_t dithered;
         if (useDithering) {
-          dithered = applyBayerDither4Level(gray, outX, outY);
+          // Build-time sink selection (design Amendment B.2): the shared
+          // quantizer dispatch picks the blue-noise bake on PSRAM builds,
+          // the legacy Bayer texture elsewhere.
+          dithered = imagebake::sinkQuantize2bit(dstX, dstY, outX, outY, gray);
         } else {
           dithered = gray / 85;
           if (dithered > 3) dithered = 3;
@@ -283,7 +303,10 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
 
         uint8_t dithered;
         if (useDithering) {
-          dithered = applyBayerDither4Level(gray, outX, outY);
+          // Build-time sink selection (design Amendment B.2): the shared
+          // quantizer dispatch picks the blue-noise bake on PSRAM builds,
+          // the legacy Bayer texture elsewhere.
+          dithered = imagebake::sinkQuantize2bit(dstX, dstY, outX, outY, gray);
         } else {
           dithered = gray / 85;
           if (dithered > 3) dithered = 3;
@@ -306,7 +329,10 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
 
         uint8_t dithered;
         if (useDithering) {
-          dithered = applyBayerDither4Level(gray, outX, outY);
+          // Build-time sink selection (design Amendment B.2): the shared
+          // quantizer dispatch picks the blue-noise bake on PSRAM builds,
+          // the legacy Bayer texture elsewhere.
+          dithered = imagebake::sinkQuantize2bit(dstX, dstY, outX, outY, gray);
         } else {
           dithered = gray / 85;
           if (dithered > 3) dithered = 3;
@@ -332,7 +358,10 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
 
         uint8_t dithered;
         if (useDithering) {
-          dithered = applyBayerDither4Level(gray, outX, outY);
+          // Build-time sink selection (design Amendment B.2): the shared
+          // quantizer dispatch picks the blue-noise bake on PSRAM builds,
+          // the legacy Bayer texture elsewhere.
+          dithered = imagebake::sinkQuantize2bit(dstX, dstY, outX, outY, gray);
         } else {
           dithered = gray / 85;
           if (dithered > 3) dithered = 3;
@@ -365,7 +394,10 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
 
       uint8_t dithered;
       if (useDithering) {
-        dithered = applyBayerDither4Level(gray, outX, outY);
+        // Build-time sink selection (design Amendment B.2): the shared
+        // quantizer dispatch picks the blue-noise bake on PSRAM builds,
+        // the legacy Bayer texture elsewhere.
+        dithered = imagebake::sinkQuantize2bit(dstX, dstY, outX, outY, gray);
       } else {
         dithered = gray / 85;
         if (dithered > 3) dithered = 3;
@@ -398,7 +430,7 @@ bool JpegToFramebufferConverter::getDimensionsStatic(const std::string& imagePat
     return false;
   }
 
-  int rc = jpeg->open(imagePath.c_str(), jpegOpen, jpegClose, jpegRead, jpegSeek, nullptr);
+  const int rc = jpeg->open(imagePath.c_str(), jpegOpen, jpegClose, jpegRead, jpegSeek, nullptr);
   const ScopedCleanup cleanup{[&jpeg]() { jpeg->close(); }};
   if (rc != 1) {
     LOG_ERR("JPG", "Failed to open JPEG for dimensions (err=%d): %s", jpeg->getLastError(), imagePath.c_str());
@@ -598,7 +630,8 @@ static bool decodeToFramebufferFromOpen(JPEGDEC& jpeg, GfxRenderer& renderer, co
   ctx.caching = !config.cachePath.empty();
   if (ctx.caching) {
     const int maxBlockDstRows = (int)(((int64_t)16 * ctx.fineScaleFPY) >> FP_SHIFT) + 2;
-    if (!ctx.cache.begin(config.cachePath, destWidth, destHeight, config.x, config.y, maxBlockDstRows)) {
+    if (!ctx.cache.begin(config.cachePath.c_str(), destWidth, destHeight, config.x, config.y, maxBlockDstRows,
+                         imagebake::pathIdentity(config.cachePath.c_str(), imagebake::kFramebufferCacheLetter))) {
       LOG_ERR("JPG", "Failed to start cache stream, continuing without caching");
       ctx.caching = false;
     }

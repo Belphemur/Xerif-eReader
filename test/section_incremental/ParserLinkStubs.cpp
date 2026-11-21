@@ -49,5 +49,21 @@ bool PngToBmpConverter::pngFileToBmpStream(HalFile&, HalFile&, bool, bool) { ret
 bool PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(HalFile&, HalFile&, int, int) { return false; }
 bool PngToBmpConverter::pngMemToBmpStream(uint8_t*, size_t, Print&, bool, bool) { return false; }
 bool PngToBmpConverter::pngMemTo1BitBmpStreamWithSize(uint8_t*, size_t, Print&, int, int) { return false; }
+bool JpegToBmpConverter::jpegFileToCoverSections(HalFile&, Print&, Print&, int, int, bool, uint16_t&, uint16_t&,
+                                                 uint16_t&, uint16_t&) {
+  return false;
+}
+bool JpegToBmpConverter::jpegMemToCoverSections(uint8_t*, size_t, Print&, Print&, int, int, bool, uint16_t&, uint16_t&,
+                                                uint16_t&, uint16_t&) {
+  return false;
+}
+bool PngToBmpConverter::pngFileToCoverSections(HalFile&, Print&, Print&, int, int, bool, uint16_t&, uint16_t&,
+                                               uint16_t&, uint16_t&) {
+  return false;
+}
+bool PngToBmpConverter::pngMemToCoverSections(uint8_t*, size_t, Print&, Print&, int, int, bool, uint16_t&, uint16_t&,
+                                              uint16_t&, uint16_t&) {
+  return false;
+}
 bool GifToBmpConverter::gifFileToBmpStream(HalFile&, Print&, bool, bool) { return false; }
 bool GifToBmpConverter::gifFileTo1BitBmpStreamWithSize(HalFile&, Print&, int, int) { return false; }

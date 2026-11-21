@@ -45,11 +45,13 @@ class Epub {
   std::unique_ptr<freeink::content::ContentDecryptor> decryptor;
   // User-presentable reason the encrypted-entry accessor could not be opened.
   std::string protectionError;
+  // Set by the thumb/cover generate calls (see lastThumbTemplate()).
+  mutable std::string lastThumbTemplate_;
 
   bool findContentOpfFile(std::string* contentOpfFile, ZipFile* sharedZip = nullptr) const;
   bool parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, bool writeSpineEntries = true,
                        bool metadataOnly = false, ZipFile* sharedZip = nullptr);
-  bool generateThumbBmpForCover(int height, const std::string& coverImageHref) const;
+  bool generateThumbBmpForCover(int height, const std::string& coverImageHref, bool sleepCoverCropped) const;
   bool openProtection();
   bool parseTocNcxFile() const;
   bool parseTocNavFile() const;
@@ -75,11 +77,34 @@ class Epub {
   const std::string& getLanguage() const;
   std::string getCoverBmpPath(bool cropped = false, bool originalThresholds = false) const;
   bool generateCoverBmp(bool cropped = false, bool originalThresholds = false) const;
-  std::string getThumbBmpPath() const;
+  // The sleep cover geometry keys the combined cache's name (Amendment B.1)
+  // — callers pass the sleep cover mode; lib code deliberately does not read
+  // the settings store.
+  std::string getThumbBmpPath(bool sleepCoverCropped) const;
   std::string getThumbBmpPath(int height) const;
-  bool generateThumbBmp(int height) const;
+  bool generateThumbBmp(int height, bool sleepCoverCropped) const;
   // Locate the cover without building spine, TOC, or reading caches.
-  bool generateThumbBmpFromSource(int height);
+  bool generateThumbBmpFromSource(int height, bool sleepCoverCropped);
+#ifdef BOARD_HAS_PSRAM
+  // Combined cover cache (design Amendment B.1): ONE decode emits the
+  // sectioned file (1-bit thumb + 2-bit cover) replacing cover_legacy_v3/
+  // cover_original_v3/thumb_<h>. `thumbHeight` is the home-card height the
+  // themes request; `cropped` is the sleep cover geometry. Returns false
+  // for GIF-covered books (design decision 3: the GIF cover stays on the
+  // legacy per-surface BMPs) and on any decode/storage failure — callers
+  // fall back to the legacy BMP pair.
+  bool generateCoverCache(int thumbHeight, bool cropped) const;
+  std::string getCoverCachePath(int thumbHeight, bool cropped) const;
+  // [HEIGHT]-substitutable template for the RecentBook cover path (the
+  // same shape UITheme::getCoverThumbPath substitutes into).
+  std::string getCoverCacheTemplate(bool cropped) const;
+#endif
+  // The thumb template the last generate* call actually produced (empty
+  // before any generation on this instance): the combined cover cache on
+  // PSRAM builds, the legacy thumb_[HEIGHT].bmp elsewhere or for
+  // GIF-covered books. Callers that generate on a metadata-free instance
+  // adopt it so their stored path matches the file on disk.
+  std::string lastThumbTemplate() const;
   uint8_t* readItemContentsToBytes(const std::string& itemHref, size_t* size = nullptr,
                                    bool trailingNullByte = false) const;
   bool readItemContentsToStream(const std::string& itemHref, Print& out, size_t chunkSize,

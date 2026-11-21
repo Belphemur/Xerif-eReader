@@ -293,10 +293,18 @@ static void convertScanlineToGray(const PngDecodeContextT<SourceView>& ctx, uint
 // Decode core, source-agnostic: the view must provide read(void*, size_t)
 // and seekCur(int64_t). File path instantiates it with HalFileView, PSRAM
 // staging with HalMemoryFile.
+// The dual-sink tail (thumbOut + its target box + emitted-dims out-params)
+// serves the combined cover cache (design Amendment B.1): one decode emits
+// the sleep-cover 2-bit BMP and the home-thumb 1-bit BMP together. Null
+// thumbOut keeps the single-sink behavior every other caller uses.
 template <typename SourceView>
 static bool pngToBmpStreamCoreImpl(SourceView& pngFile, Print& bmpOut, int targetWidth, int targetHeight, bool oneBit,
-                                   bool crop, bool originalThresholds) {
-  LOG_DBG("PNG", "Converting PNG to %s BMP (target: %dx%d)", oneBit ? "1-bit" : "2-bit", targetWidth, targetHeight);
+                                   bool crop, bool originalThresholds, Print* thumbOut = nullptr,
+                                   int thumbTargetWidth = 0, int thumbTargetHeight = 0, uint16_t* outCoverW = nullptr,
+                                   uint16_t* outCoverH = nullptr, uint16_t* outThumbW = nullptr,
+                                   uint16_t* outThumbH = nullptr) {
+  LOG_DBG("PNG", "Converting PNG to %s BMP (target: %dx%d)%s", oneBit ? "1-bit" : "2-bit", targetWidth, targetHeight,
+          thumbOut != nullptr ? " + thumb section" : "");
 
   // Verify PNG signature
   uint8_t sig[8];
@@ -467,10 +475,30 @@ static bool pngToBmpStreamCoreImpl(SourceView& pngFile, Print& bmpOut, int targe
           targetHeight);
 
   BmpStreamWriter output;
-  if (!output.begin(bmpOut, outWidth, outHeight, oneBit, originalThresholds)) return false;
+  // Covers bake through the shared blue-noise quantizer (design
+  // 2026-11-20-cover-image-pipeline.md section 2, decision 1: both
+  // originalThresholds variants); the revert is kUseBlueNoiseBake in
+  // BmpStreamWriter.cpp.
+  if (!output.begin(bmpOut, outWidth, outHeight, oneBit, originalThresholds, BmpBake::BlueNoise)) return false;
 
   GrayRowScaler scaler;
   if (!scaler.begin(width, height, output)) return false;
+
+  BmpStreamWriter output2;
+  GrayRowScaler scaler2;
+  const bool dual = thumbOut != nullptr;
+  if (dual) {
+    // The thumb is always 1-bit crop (the home card geometry, design
+    // 2026-11-20 section 3): same scanlines, its own box scaler.
+    int thumbW;
+    int thumbH;
+    if (!calculateBmpOutputSize(static_cast<int>(width), static_cast<int>(height), thumbTargetWidth, thumbTargetHeight,
+                                true, thumbW, thumbH) ||
+        !output2.begin(*thumbOut, thumbW, thumbH, true, false, BmpBake::BlueNoise)) {
+      return false;
+    }
+    if (!scaler2.begin(static_cast<int>(width), static_cast<int>(height), output2)) return false;
+  }
 
   auto grayRow = makeUniqueNoThrow<uint8_t[]>(width);
   if (!grayRow) {
@@ -488,6 +516,10 @@ static bool pngToBmpStreamCoreImpl(SourceView& pngFile, Print& bmpOut, int targe
     }
 
     convertScanlineToGray(ctx, grayRow.get());
+    if (dual && !scaler2.writeRow(grayRow.get(), y)) {
+      success = false;
+      break;
+    }
     if (!scaler.writeRow(grayRow.get(), y)) {
       success = false;
       break;
@@ -500,6 +532,10 @@ static bool pngToBmpStreamCoreImpl(SourceView& pngFile, Print& bmpOut, int targe
   }
 
   if (success) {
+    if (outCoverW != nullptr) *outCoverW = static_cast<uint16_t>(outWidth);
+    if (outCoverH != nullptr) *outCoverH = static_cast<uint16_t>(outHeight);
+    if (outThumbW != nullptr) *outThumbW = static_cast<uint16_t>(output2.getWidth());
+    if (outThumbH != nullptr) *outThumbH = static_cast<uint16_t>(output2.getHeight());
     LOG_DBG("PNG", "Successfully converted PNG to BMP");
   }
   return success;
@@ -562,4 +598,32 @@ bool PngToBmpConverter::pngFileToBmpStream(HalFile& pngFile, Print& bmpOut, bool
 bool PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(HalFile& pngFile, Print& bmpOut, int targetMaxWidth,
                                                        int targetMaxHeight) {
   return pngFileToBmpStreamInternal(pngFile, bmpOut, targetMaxWidth, targetMaxHeight, true, true);
+}
+
+// Dual-sink entries (design Amendment B.1): the cover target is the runtime
+// display pair (swapped for portrait), exactly like pngFileToBmpStream; the
+// thumb target is the caller's home-card box.
+bool PngToBmpConverter::pngMemToCoverSections(uint8_t* pngData, const size_t pngSize, Print& coverOut, Print& thumbOut,
+                                              const int thumbTargetWidth, const int thumbTargetHeight,
+                                              const bool cropped, uint16_t& coverW, uint16_t& coverH, uint16_t& thumbW,
+                                              uint16_t& thumbH) {
+  if (pngData == nullptr || pngSize == 0) {
+    LOG_ERR("PNG", "Invalid memory source for cover sections");
+    return false;
+  }
+  HalMemoryFile view;
+  view.attach(pngData, pngSize);
+  return pngToBmpStreamCoreImpl(view, coverOut, display.getDisplayHeight(), display.getDisplayWidth(), false, cropped,
+                                false, &thumbOut, thumbTargetWidth, thumbTargetHeight, &coverW, &coverH, &thumbW,
+                                &thumbH);
+}
+
+bool PngToBmpConverter::pngFileToCoverSections(HalFile& pngFile, Print& coverOut, Print& thumbOut,
+                                               const int thumbTargetWidth, const int thumbTargetHeight,
+                                               const bool cropped, uint16_t& coverW, uint16_t& coverH, uint16_t& thumbW,
+                                               uint16_t& thumbH) {
+  HalFileView view{pngFile};
+  return pngToBmpStreamCoreImpl(view, coverOut, display.getDisplayHeight(), display.getDisplayWidth(), false, cropped,
+                                false, &thumbOut, thumbTargetWidth, thumbTargetHeight, &coverW, &coverH, &thumbW,
+                                &thumbH);
 }

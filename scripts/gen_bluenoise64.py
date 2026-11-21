@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the TTF image engine's 64x64 blue-noise bake tables.
 
-Emits src/activities/reader/BlueNoise64.cpp:
+Emits lib/ImageBake/BlueNoise64.cpp:
 
 1. kBlueNoise64[64][64] — Ulichney's toroidal Void-and-Cluster blue-noise
    pattern (n=64, sigma=1.9, deterministic seed 1), tiled seamlessly at
@@ -99,7 +99,7 @@ def linear_lut():
 
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
-    out = os.path.join(here, "..", "src", "activities", "reader", "BlueNoise64.cpp")
+    out = os.path.join(here, "..", "lib", "ImageBake", "BlueNoise64.cpp")
 
     pattern = void_and_cluster()
     # Table invariants the tests pin too.
