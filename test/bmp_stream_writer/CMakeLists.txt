@@ -6,6 +6,7 @@ add_executable(BmpStreamWriterTest
 
 target_include_directories(BmpStreamWriterTest PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/stubs
+  ${REPO_ROOT}/lib/Epub
   ${REPO_ROOT}/lib/GfxRenderer
   ${REPO_ROOT}/lib/ImageBake
   ${REPO_ROOT}/lib/Memory

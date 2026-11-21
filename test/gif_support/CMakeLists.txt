@@ -38,6 +38,7 @@ target_include_directories(GifBmpTest PRIVATE
   ${REPO_ROOT}/test/chapter_html_slim_parser/stubs
   ${REPO_ROOT}/lib/GifToBmpConverter
   ${REPO_ROOT}/lib/GifSupport
+  ${REPO_ROOT}/lib/Epub
   ${REPO_ROOT}/lib/GfxRenderer
   ${REPO_ROOT}/lib/ImageBake
   ${REPO_ROOT}/lib/Memory)
