@@ -197,6 +197,35 @@ TEST(ImageBakeBmpStream, OneBitPackingMatchesQuantizer) {
   ASSERT_EQ(output.bytes.size(), static_cast<size_t>(kHeaderBytes + bytesPerRow * kHeight));
 }
 
+// Under the blue-noise bake both originalThresholds variants produce
+// identical bytes (qodo PRRT_kwDOUDrzps66OPtR): the LUT carries the tone
+// mapping, so the legacy Atkinson tuning has no input. The cover cache
+// keeps the two variant names on purpose — the kUseBlueNoiseBake revert
+// re-differentiates the content, and the names let that land without
+// another cache-token wave.
+TEST(ImageBakeBmpStream, BlueNoiseIgnoresLegacyThresholdTuning) {
+  constexpr int kWidth = 200;
+  constexpr int kHeight = 3;
+
+  VectorPrint legacyTuning;
+  BmpStreamWriter legacyWriter;
+  ASSERT_TRUE(legacyWriter.begin(legacyTuning, kWidth, kHeight, /*oneBit=*/false, /*originalThresholds=*/false,
+                                 BmpBake::BlueNoise));
+  VectorPrint originalTuning;
+  BmpStreamWriter originalWriter;
+  ASSERT_TRUE(originalWriter.begin(originalTuning, kWidth, kHeight, /*oneBit=*/false, /*originalThresholds=*/true,
+                                   BmpBake::BlueNoise));
+
+  std::vector<uint8_t> gray(kWidth);
+  for (int y = 0; y < kHeight; ++y) {
+    for (int x = 0; x < kWidth; ++x) gray[x] = rampGray(x, y);
+    ASSERT_TRUE(legacyWriter.writeRow(gray.data(), y));
+    ASSERT_TRUE(originalWriter.writeRow(gray.data(), y));
+  }
+  ASSERT_EQ(legacyTuning.bytes.size(), originalTuning.bytes.size());
+  EXPECT_EQ(legacyTuning.bytes, originalTuning.bytes);
+}
+
 // The legacy bake stays reachable: begin() without the bake argument keeps
 // the Atkinson ditherers (GIF covers, and the kUseBlueNoiseBake revert).
 TEST(ImageBakeBmpStream, LegacyModeStillAllocatesAndWrites) {

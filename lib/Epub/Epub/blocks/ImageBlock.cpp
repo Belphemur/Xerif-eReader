@@ -39,12 +39,18 @@ void ImageBlock::setPsramExtractor(void* ctx, PsramExtractFn fn) {
 namespace {
 
 std::string getCachePath(const std::string& imagePath) {
-  // Replace extension with .pxc (pixel cache)
+  // Replace extension with .pxc2 (pixel cache, revision 2): the 2 in the
+  // token orphans the pre-blue-noise .pxc caches (design
+  // 2026-11-20-cover-image-pipeline.md §4) so a Bayer-era cache is never
+  // served after the upgrade — the header stores only width/height, so the
+  // file name is the only revision channel. Stale .pxc files live until the
+  // book cache sweep removes them, the same accepted pattern as the
+  // cover_legacy_v2 orphans.
   size_t dotPos = imagePath.rfind('.');
   if (dotPos != std::string::npos) {
-    return imagePath.substr(0, dotPos) + ".pxc";
+    return imagePath.substr(0, dotPos) + ".pxc2";
   }
-  return imagePath + ".pxc";
+  return imagePath + ".pxc2";
 }
 
 bool readValidCacheHeader(HalFile& cacheFile, const int expectedWidth, const int expectedHeight, uint16_t& cachedWidth,
