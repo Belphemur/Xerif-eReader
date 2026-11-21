@@ -8,6 +8,9 @@
 
 #include "UITheme.h"
 
+// Combined cover cache reads (openCoverBitmap validates + sub-file views).
+#include "CoverCache.h"
+
 namespace fui = freeink::ui;
 
 void HomeCoverCache::begin() {
@@ -53,7 +56,9 @@ bool HomeCoverCache::paint(fui::Rect rect, size_t index, const std::string& path
   }
   cached.valid = false;
   bool drawn = false;
-  if (!path.empty() && Storage.openFileForRead("HOME", path, coverFile)) {
+  // Combined cover cache files open as the thumb section's sub-file view;
+  // legacy standalone BMPs open whole-file (openCoverBitmap probes).
+  if (!path.empty() && imagebake::openCoverBitmap("HOME", path.c_str(), 0, imagebake::CoverSection::Thumb, coverFile)) {
     if (coverBitmap.parseHeaders() == BmpReaderError::Ok && coverBitmap.getWidth() > 0 && coverBitmap.getHeight() > 0) {
       // The art nudges a few px right of center; the spine below hugs its
       // left edge either way.

@@ -3,9 +3,13 @@
 # and the tiled toneRow fast path) and against the BmpStreamWriter packing the
 # BMP cover converters emit, plus the 1-bit quantizer regression contract.
 add_executable(ImageBakeTest
+  CoverCacheTest.cpp
   ImageBakeQuantizerTest.cpp
   ${REPO_ROOT}/lib/ImageBake/BlueNoise64.cpp
+  ${REPO_ROOT}/lib/ImageBake/CoverCache.cpp
+  ${REPO_ROOT}/lib/ImageBake/ImageBakeCache.cpp
   ${REPO_ROOT}/lib/GfxRenderer/BmpStreamWriter.cpp
+  ${REPO_ROOT}/test/ttf_image_engine/stubs/Stubs.cpp
 )
 
 target_include_directories(ImageBakeTest PRIVATE

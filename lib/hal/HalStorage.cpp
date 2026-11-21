@@ -204,6 +204,50 @@ class HalFile::Impl {
     file.close();
   }
   FsFile file;
+
+  // Sub-file view (design Amendment B.1, the combined cover cache): a view
+  // handle translates view-local seeks to [viewBase, viewBase + viewLen) and
+  // clamps reads at the window end so a section's Bitmap parse can never
+  // bleed into the next section. Base 0 + len UINT64_MAX = plain handle, the
+  // common path every regular open uses.
+  uint64_t viewBase = 0;
+  uint64_t viewLen = UINT64_MAX;
+
+  bool hasView() const { return viewLen != UINT64_MAX; }
+  // Non-const on purpose: SdFat's FsFile::position() is not a const member,
+  // and every caller reaches this through the (non-const-pointee) impl
+  // pointer, including HalFile's const observers.
+  uint64_t positionInView() {
+    const uint64_t abs = file.position();
+    return hasView() && abs >= viewBase ? abs - viewBase : abs;
+  }
+  bool seekInView(uint64_t pos) {
+    if (hasView()) {
+      if (pos > viewLen) return false;
+      pos += viewBase;
+    }
+    return file.seekSet(pos);
+  }
+  bool seekCurInView(int64_t offset) {
+    uint64_t abs = file.position();
+    if (hasView()) {
+      // Translate through the window: out-of-window ends fail rather than
+      // silently leaving the view.
+      const int64_t rel = static_cast<int64_t>(abs) - static_cast<int64_t>(viewBase) + offset;
+      if (rel < 0 || static_cast<uint64_t>(rel) > viewLen) return false;
+      abs = viewBase + static_cast<uint64_t>(rel);
+    }
+    return file.seekSet(abs);
+  }
+  size_t readInView(void* buf, size_t count) {
+    if (hasView()) {
+      const uint64_t pos = positionInView();
+      if (pos >= viewLen) return 0;
+      const uint64_t avail = viewLen - pos;
+      if (count > avail) count = static_cast<size_t>(avail);
+    }
+    return file.read(buf, count);
+  }
 };
 
 HalFile::HalFile() = default;
@@ -248,6 +292,26 @@ bool HalStorage::openFileForRead(const char* moduleName, const std::string& path
   return openFileForRead(moduleName, path.c_str(), file);
 }
 
+bool HalStorage::openFileSubview(const char* moduleName, const char* path, uint64_t offset, uint64_t length,
+                                 HalFile& file) {
+  StorageLock lock;  // ensure thread safety for the duration of this function
+  FsFile fsFile;
+  const bool ok = SDCard.openFileForRead(moduleName, path, fsFile);
+  file = HalFile(std::make_unique<HalFile::Impl>(std::move(fsFile)));
+  if (!ok) return false;
+  // A window outside the file's extent is an invalid section (a stale
+  // directory from another generation) — refuse it instead of serving a
+  // short read.
+  const uint64_t fileSize = fsFile.fileSize();
+  if (length == 0 || offset > fileSize || length > fileSize - offset) {
+    file.close();
+    return false;
+  }
+  file.impl->viewBase = offset;
+  file.impl->viewLen = length;
+  return true;
+}
+
 bool HalStorage::openFileForWrite(const char* moduleName, const char* path, HalFile& file) {
   StorageLock lock;  // ensure thread safety for the duration of this function
   FsFile fsFile;
@@ -281,7 +345,12 @@ bool HalStorage::removeDir(const char* path) { HAL_STORAGE_WRAPPED_CALL(removeDi
 
 void HalFile::flush() { HAL_FILE_WRAPPED_CALL(flush, ); }
 size_t HalFile::getName(char* name, size_t len) { HAL_FILE_WRAPPED_CALL(getName, name, len); }
-size_t HalFile::size() { HAL_FILE_FORWARD_CALL(size, ); }              // already thread-safe, no need to wrap
+size_t HalFile::size() {
+  assert(impl != nullptr);
+  // A view handle reports its window — size() stays coherent with the
+  // clamped reads. Regular handles: the whole file, unchanged.
+  return impl->hasView() ? static_cast<size_t>(impl->viewLen) : impl->file.size();
+}
 size_t HalFile::fileSize() { HAL_FILE_FORWARD_CALL(fileSize, ); }      // already thread-safe, no need to wrap
 uint64_t HalFile::fileSize64() { HAL_FILE_FORWARD_CALL(fileSize, ); }  // already thread-safe, no need to wrap
 uint32_t HalFile::modificationTime() {
@@ -291,16 +360,53 @@ uint32_t HalFile::modificationTime() {
   if (!impl || !impl->file.getModifyDateTime(&date, &time) || date == 0) return 0;
   return (static_cast<uint32_t>(date) << 16) | time;
 }
-bool HalFile::seek(size_t pos) { HAL_FILE_WRAPPED_CALL(seekSet, pos); }
-bool HalFile::seek64(uint64_t pos) { HAL_FILE_WRAPPED_CALL(seekSet, pos); }
-bool HalFile::seekCur(int64_t offset) { HAL_FILE_WRAPPED_CALL(seekCur, offset); }
-bool HalFile::seekSet(size_t offset) { HAL_FILE_WRAPPED_CALL(seekSet, offset); }
+bool HalFile::seek(size_t pos) {
+  HalStorage::StorageLock lock;
+  assert(impl != nullptr);
+  return impl->seekInView(pos);
+}
+bool HalFile::seek64(uint64_t pos) {
+  HalStorage::StorageLock lock;
+  assert(impl != nullptr);
+  return impl->seekInView(pos);
+}
+bool HalFile::seekCur(int64_t offset) {
+  HalStorage::StorageLock lock;
+  assert(impl != nullptr);
+  return impl->seekCurInView(offset);
+}
+bool HalFile::seekSet(size_t offset) {
+  HalStorage::StorageLock lock;
+  assert(impl != nullptr);
+  return impl->seekInView(offset);
+}
 bool HalFile::truncate(uint64_t size) { HAL_FILE_WRAPPED_CALL(truncate, size); }
 bool HalFile::sync() { HAL_FILE_WRAPPED_CALL(sync, ); }
-int HalFile::available() const { HAL_FILE_WRAPPED_CALL(available, ); }
-size_t HalFile::position() const { HAL_FILE_WRAPPED_CALL(position, ); }
-int HalFile::read(void* buf, size_t count) { HAL_FILE_WRAPPED_CALL(read, buf, count); }
-int HalFile::read() { HAL_FILE_WRAPPED_CALL(read, ); }
+int HalFile::available() const {
+  HalStorage::StorageLock lock;
+  assert(impl != nullptr);
+  if (impl->hasView()) {
+    const uint64_t pos = impl->positionInView();
+    return pos < impl->viewLen ? static_cast<int>(impl->viewLen - pos) : 0;
+  }
+  return impl->file.available();
+}
+size_t HalFile::position() const {
+  HalStorage::StorageLock lock;
+  assert(impl != nullptr);
+  return static_cast<size_t>(impl->positionInView());
+}
+int HalFile::read(void* buf, size_t count) {
+  HalStorage::StorageLock lock;
+  assert(impl != nullptr);
+  return static_cast<int>(impl->readInView(buf, count));
+}
+int HalFile::read() {
+  HalStorage::StorageLock lock;
+  assert(impl != nullptr);
+  if (impl->hasView() && impl->positionInView() >= impl->viewLen) return -1;  // the view's EOF
+  return impl->file.read();
+}
 size_t HalFile::write(const uint8_t* buf, size_t count) { HAL_FILE_WRAPPED_CALL(write, buf, count); }
 size_t HalFile::write(const void* buf, size_t count) { HAL_FILE_WRAPPED_CALL(write, buf, count); }
 size_t HalFile::write(uint8_t b) { HAL_FILE_WRAPPED_CALL(write, b); }
@@ -322,3 +428,9 @@ HalFile HalFile::openNextFile() {
 }
 bool HalFile::isOpen() const { return impl != nullptr && impl->file.isOpen(); }  // already thread-safe, no need to wrap
 HalFile::operator bool() const { return isOpen(); }
+
+void HalFile::setSubview(uint64_t offset, uint64_t length) {
+  assert(impl != nullptr);
+  impl->viewBase = offset;
+  impl->viewLen = length;
+}

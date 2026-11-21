@@ -76,6 +76,12 @@ struct BmpConvertCtx {
   uint32_t smoothScaleY_fp;
   BmpStreamWriter output;
   GrayRowScaler scaler;
+  // Dual-sink (design Amendment B.1): the same source rows also feed the
+  // home-thumb 1-bit sink when the combined cover cache is being emitted —
+  // one decode, two sections.
+  BmpStreamWriter output2;
+  GrayRowScaler scaler2;
+  bool dual{false};
 
   // Accumulates one MCU row (up to MAX_MCU_HEIGHT source rows × srcWidth pixels)
   // Filled column-by-column as JPEGDEC callbacks arrive for the same MCU row
@@ -224,6 +230,10 @@ int bmpDrawCallback(JPEGDRAW* pDraw) {
   for (int y = blockY; y < endRow && y < ctx->srcHeight; y++) {
     const uint8_t* srcRow = ctx->mcuBuf.get() + (y - blockY) * ctx->srcWidth;
 
+    if (ctx->dual && !ctx->scaler2.writeRow(srcRow, y)) {
+      ctx->error = true;
+      return 0;
+    }
     if (ctx->smoothUpscale) {
       processSmoothSourceRow(ctx, srcRow, y);
     } else if (!ctx->scaler.writeRow(srcRow, y)) {
@@ -313,10 +323,16 @@ bool JpegToBmpConverter::jpegMemToBmpStreamInternal(uint8_t* jpegData, const siz
   return jpegToBmpStreamOpen(*jpeg, bmpOut, targetWidth, targetHeight, oneBit, crop, originalThresholds);
 }
 
-// Internal implementation with configurable target size and bit depth
+// Internal implementation with configurable target size and bit depth.
+// The dual-sink parameters (thumbOut + its target box) emit the combined
+// cover cache's thumb section from the SAME decode (design Amendment B.1);
+// null thumbOut keeps the single-sink behavior every other caller uses.
 bool JpegToBmpConverter::jpegToBmpStreamOpen(JPEGDEC& jpeg, Print& bmpOut, int targetWidth, int targetHeight,
-                                             bool oneBit, bool crop, bool originalThresholds) {
-  LOG_DBG("JPG", "Converting JPEG to %s BMP (target: %dx%d)", oneBit ? "1-bit" : "2-bit", targetWidth, targetHeight);
+                                             bool oneBit, bool crop, bool originalThresholds, Print* thumbOut,
+                                             int thumbTargetWidth, int thumbTargetHeight, uint16_t* outCoverW,
+                                             uint16_t* outCoverH, uint16_t* outThumbW, uint16_t* outThumbH) {
+  LOG_DBG("JPG", "Converting JPEG to %s BMP (target: %dx%d)%s", oneBit ? "1-bit" : "2-bit", targetWidth, targetHeight,
+          thumbOut != nullptr ? " + thumb section" : "");
 
   const int srcWidth = jpeg.getWidth();
   const int srcHeight = jpeg.getHeight();
@@ -378,6 +394,19 @@ bool JpegToBmpConverter::jpegToBmpStreamOpen(JPEGDEC& jpeg, Print& bmpOut, int t
   if (!ctx.output.begin(bmpOut, outWidth, outHeight, oneBit, originalThresholds, BmpBake::BlueNoise)) return false;
   if (!smoothUpscale && !ctx.scaler.begin(scaleSrcWidth, scaleSrcHeight, ctx.output)) return false;
 
+  if (thumbOut != nullptr) {
+    // The thumb is always 1-bit crop (the home card geometry, design
+    // 2026-11-20 section 3): same source rows, its own box scaler.
+    int thumbW;
+    int thumbH;
+    if (!calculateBmpOutputSize(srcWidth, srcHeight, thumbTargetWidth, thumbTargetHeight, true, thumbW, thumbH) ||
+        !ctx.output2.begin(*thumbOut, thumbW, thumbH, true, false, BmpBake::BlueNoise)) {
+      return false;
+    }
+    if (!ctx.scaler2.begin(scaleSrcWidth, scaleSrcHeight, ctx.output2)) return false;
+    ctx.dual = true;
+  }
+
   // MCU row buffer: MAX_MCU_HEIGHT rows × decoded srcWidth columns of grayscale
   ctx.mcuBuf = makeUniqueNoThrow<uint8_t[]>(MAX_MCU_HEIGHT * ctx.srcWidth);
   if (!ctx.mcuBuf) {
@@ -415,6 +444,11 @@ bool JpegToBmpConverter::jpegToBmpStreamOpen(JPEGDEC& jpeg, Print& bmpOut, int t
     return false;
   }
 
+  if (outCoverW != nullptr) *outCoverW = static_cast<uint16_t>(outWidth);
+  if (outCoverH != nullptr) *outCoverH = static_cast<uint16_t>(outHeight);
+  if (outThumbW != nullptr) *outThumbW = static_cast<uint16_t>(ctx.output2.getWidth());
+  if (outThumbH != nullptr) *outThumbH = static_cast<uint16_t>(ctx.output2.getHeight());
+
   LOG_DBG("JPG", "Successfully converted JPEG to BMP");
   return true;
 }
@@ -431,4 +465,58 @@ bool JpegToBmpConverter::jpegFileToBmpStream(HalFile& jpegFile, Print& bmpOut, b
 bool JpegToBmpConverter::jpegFileTo1BitBmpStreamWithSize(HalFile& jpegFile, Print& bmpOut, int targetMaxWidth,
                                                          int targetMaxHeight) {
   return jpegFileToBmpStreamInternal(jpegFile, bmpOut, targetMaxWidth, targetMaxHeight, true, true);
+}
+
+// Dual-sink entries (design Amendment B.1): the cover target is the runtime
+// display pair (swapped for portrait), exactly like jpegFileToBmpStream; the
+// thumb target is the caller's home-card box.
+bool JpegToBmpConverter::jpegMemToCoverSections(uint8_t* jpegData, const size_t jpegSize, Print& coverOut,
+                                                Print& thumbOut, const int thumbTargetWidth,
+                                                const int thumbTargetHeight, const bool cropped, uint16_t& coverW,
+                                                uint16_t& coverH, uint16_t& thumbW, uint16_t& thumbH) {
+  if (jpegData == nullptr || jpegSize == 0) {
+    LOG_ERR("JPG", "Invalid memory source for cover sections");
+    return false;
+  }
+  if (ESP.getFreeHeap() < MIN_FREE_HEAP) {
+    LOG_ERR("JPG", "Not enough heap for JPEG decoder (%u free, need %u)", ESP.getFreeHeap(), MIN_FREE_HEAP);
+    return false;
+  }
+  const auto jpeg = makeUniqueNoThrow<JPEGDEC>();
+  if (!jpeg) {
+    LOG_ERR("JPG", "OOM: JPEG decoder");
+    return false;
+  }
+  const int rc = jpeg->openRAM(jpegData, static_cast<int>(jpegSize), bmpDrawCallback);
+  if (rc != 1) {
+    LOG_ERR("JPG", "JPEG open failed (err=%d)", jpeg->getLastError());
+    return false;
+  }
+  const ScopedCleanup cleanup{[&jpeg]() { jpeg->close(); }};
+  return jpegToBmpStreamOpen(*jpeg, coverOut, display.getDisplayHeight(), display.getDisplayWidth(), false, cropped,
+                             false, &thumbOut, thumbTargetWidth, thumbTargetHeight, &coverW, &coverH, &thumbW, &thumbH);
+}
+
+bool JpegToBmpConverter::jpegFileToCoverSections(HalFile& jpegFile, Print& coverOut, Print& thumbOut,
+                                                 const int thumbTargetWidth, const int thumbTargetHeight,
+                                                 const bool cropped, uint16_t& coverW, uint16_t& coverH,
+                                                 uint16_t& thumbW, uint16_t& thumbH) {
+  if (ESP.getFreeHeap() < MIN_FREE_HEAP) {
+    LOG_ERR("JPG", "Not enough heap for JPEG decoder (%u free, need %u)", ESP.getFreeHeap(), MIN_FREE_HEAP);
+    return false;
+  }
+  s_jpegFile = &jpegFile;
+  const auto jpeg = makeUniqueNoThrow<JPEGDEC>();
+  if (!jpeg) {
+    LOG_ERR("JPG", "OOM: JPEG decoder");
+    return false;
+  }
+  const int rc = jpeg->open("", bmpJpegOpen, bmpJpegClose, bmpJpegRead, bmpJpegSeek, bmpDrawCallback);
+  if (rc != 1) {
+    LOG_ERR("JPG", "JPEG open failed (err=%d)", jpeg->getLastError());
+    return false;
+  }
+  const ScopedCleanup cleanup{[&jpeg]() { jpeg->close(); }};
+  return jpegToBmpStreamOpen(*jpeg, coverOut, display.getDisplayHeight(), display.getDisplayWidth(), false, cropped,
+                             false, &thumbOut, thumbTargetWidth, thumbTargetHeight, &coverW, &coverH, &thumbW, &thumbH);
 }

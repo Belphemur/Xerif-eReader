@@ -16,6 +16,7 @@
 #include <PNGdec.h>
 #include <Xtc.h>
 
+// Combined cover cache consumers (openCoverBitmap validates + sub-file views).
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -25,6 +26,7 @@
 #include <limits>
 #include <string>
 
+#include "CoverCache.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "activities/reader/BookCachePath.h"
@@ -1362,7 +1364,9 @@ void SleepActivity::renderCoverSleepScreen() const {
   }
 
   HalFile file;
-  if (Storage.openFileForRead("SLP", coverBmpPath, file)) {
+  // Combined cover cache files open as a sub-file view of the 2-bit cover
+  // section; legacy standalone BMPs open whole-file (openCoverBitmap probes).
+  if (imagebake::openCoverBitmap("SLP", coverBmpPath.c_str(), 0, imagebake::CoverSection::Cover, file)) {
     Bitmap bitmap(file);
     if (bitmap.parseHeaders() == BmpReaderError::Ok) {
       LOG_DBG("SLP", "Rendering sleep cover: %s", coverBmpPath.c_str());
@@ -1429,6 +1433,26 @@ bool SleepActivity::resolveCoverBmpPath(const GfxRenderer& renderer, const std::
       return false;
     }
 
+#ifdef BOARD_HAS_PSRAM
+    // Combined cover cache (Amendment B.1): the sleep cover decodes the
+    // book's cover art once and reads it back as the file's 2-bit section —
+    // the cover BMP intermediates and the second thumb decode die here.
+    // The identity keys on the theme thumb height (the same pair home
+    // generates with); the thresholds variant is folded into the single
+    // blue-noise bake (design decision 1). GIF-covered books and any decode
+    // failure fall back to the legacy per-surface BMP below.
+    {
+      const int themeThumbHeight = GUI.homeCoverThumbHeight(renderer);
+      const int identityHeight =
+          themeThumbHeight > 0 ? themeThumbHeight : UITheme::getInstance().getMetrics().homeCoverHeight;
+      if (lastEpub.generateCoverCache(identityHeight, cropped)) {
+        outPath = lastEpub.getCoverCachePath(identityHeight, cropped);
+        return !outPath.empty();
+      }
+      LOG_DBG("SLP", "Cover cache unavailable, falling back to legacy cover BMP");
+    }
+#endif
+
     if (!lastEpub.generateCoverBmp(cropped, originalThresholds)) {
       LOG_ERR("SLP", "Failed to generate cover bmp");
       return false;
@@ -1482,7 +1506,10 @@ void SleepActivity::renderShutdownScreen(GfxRenderer& renderer) {
     }
     const std::string& coverPath = APP_STATE.autoPowerOffCoverBmpPath;
     HalFile file;
-    if (!coverPath.empty() && Storage.openFileForRead("SLP", coverPath, file)) {
+    // resolveCoverBmpPath may have staged the combined cover cache — its
+    // cover section opens as a sub-file view; legacy BMPs open whole-file.
+    if (!coverPath.empty() &&
+        imagebake::openCoverBitmap("SLP", coverPath.c_str(), 0, imagebake::CoverSection::Cover, file)) {
       haveImage = renderShutdownImageFramed(renderer, file, /*dithering=*/false, coverPath.c_str(), progressPercent,
                                             timeLeftSeconds, pagesLeft);
     }

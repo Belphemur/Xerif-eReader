@@ -71,6 +71,13 @@ class HalStorage {
 
   bool openFileForRead(const char* moduleName, const char* path, HalFile& file);
   bool openFileForRead(const char* moduleName, const std::string& path, HalFile& file);
+  // Sub-file view (design Amendment B.1, the combined cover cache): opens
+  // `path` read-only and hands out a handle whose seek/read surface is
+  // translated to the [offset, offset+length) window — seek(0) lands at the
+  // window start, reads clamp at the window end. Regular opens behave as
+  // before (base 0, whole file). Fails when the window falls outside the
+  // file's extent.
+  bool openFileSubview(const char* moduleName, const char* path, uint64_t offset, uint64_t length, HalFile& file);
   bool openFileForWrite(const char* moduleName, const char* path, HalFile& file);
   bool openFileForWrite(const char* moduleName, const std::string& path, HalFile& file);
   bool openFileForWrite(const char* moduleName, const String& path, HalFile& file);
@@ -135,6 +142,10 @@ class HalFile : public Print {
   HalFile openNextFile();
   bool isOpen() const;
   operator bool() const;
+
+  // View wiring for HalStorage::openFileSubview — storage is the only
+  // constructor of views.
+  void setSubview(uint64_t offset, uint64_t length);
 };
 
 // Downstream code must use Storage instead of SdMan

@@ -29,6 +29,9 @@
 #include "components/icons/wifi.h"
 #include "fontIds.h"
 
+// Combined cover cache reads (openCoverBitmap validates + sub-file views).
+#include "CoverCache.h"
+
 // Internal constants
 namespace {
 constexpr int hPaddingInSelection = 8;
@@ -234,9 +237,11 @@ void LyraTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
       } else {
         const std::string coverBmpPath = UITheme::getCoverThumbPath(coverPath, LyraMetrics::values.homeCoverHeight);
 
-        // First time: load cover from SD and render
+        // First time: load cover from SD and render (combined cover cache
+        // files open as the thumb section's sub-file view).
         HalFile file;
-        if (Storage.openFileForRead("HOME", coverBmpPath, file)) {
+        if (imagebake::openCoverBitmap("HOME", coverBmpPath.c_str(), LyraMetrics::values.homeCoverHeight,
+                                       imagebake::CoverSection::Thumb, file)) {
           Bitmap bitmap(file);
           if (bitmap.parseHeaders() == BmpReaderError::Ok) {
             coverWidth = bitmap.getWidth();
