@@ -87,6 +87,8 @@ namespace BoardConfig {
   } ACTIVE;
   bool x4Pro = false;
   bool isX4Pro() { return x4Pro; }
+  bool paperMono = false;
+  bool isPaperMono() { return paperMono; }
 }
 unsigned long clockMs = 1000;
 unsigned long millis() { return clockMs; }
@@ -99,6 +101,9 @@ struct CrossPointSettings {
     return BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::DigitalConfirmPowerHold;
   }
   uint16_t getPowerButtonDuration() const { return shortPwrBtn == SLEEP ? 10 : 400; }
+  // Fork keeps the configurable auto-sleep timeout in the spliced sleep-dispatch
+  // region; 0 disables it so harness frames only exercise power-button paths.
+  int getSleepTimeoutMs() const { return 0; }
   int vibration = VIBRATION_OFF, hapticIntensity = 0;
   int homeButtonTapAction = 0, homeButtonDoubleTapAction = 0, homeButtonLongPressAction = 0;
   int frontButtonFollowOrientation = 0, sideButtonFollowOrientation = 0;
@@ -378,21 +383,38 @@ void checkPowerClicks() {
   assert(!input.wasPowerSingleClick());
   // Configured Sleep is still dispatched separately from the single-click marker.
   SETTINGS.shortPwrBtn = CrossPointSettings::SLEEP;
+  // The Paper Mono SDK reports a PMIC click with a zero hold duration.
+  BoardConfig::paperMono = true;
+  const unsigned long allowSleepAt = 7200;
   frame(7000, true, true, false, 0);
-  frame(7020, false, false, true, 20);
-  assert(!input.powerSleepClick());
-  frame(7521, false, false, false, 20);
-  assert(input.powerSleepClick());
+  frame(7020, false, false, true, 0);
+  // Input was sampled during startup, but this loop reached sleep dispatch late.
+  clockMs = 7201;
+  dispatchSleep(input, gpio, true, allowSleepAt, 7020);
+  assert(!slept);
+  // The double-click wait would end after the startup sleep guard expires.
+  frame(7521, false, false, false, 0);
+  dispatchSleep(input, gpio, true, allowSleepAt);
+  assert(!slept);
+  // A fresh click after startup still sleeps after the double-click wait.
+  frame(7600, true, true, false, 0);
+  frame(7620, false, false, true, 0);
+  dispatchSleep(input, gpio, true, allowSleepAt);
+  assert(!slept);
+  frame(8121, false, false, false, 0);
+  dispatchSleep(input, gpio, true, allowSleepAt);
+  assert(slept && !forwardedRelease);
+  BoardConfig::paperMono = false;
 
   // Wake and restart contacts must never enter the configurable click classifier.
   SETTINGS.shortPwrBtn = CrossPointSettings::PWR_SYNC;
   for (const bool suppress : {false, true}) {
     input.beginPowerInput(suppress, true);
-    frame(8000, false, true, false, 0);
-    frame(8020, false, false, true, 20);
+    frame(8200, false, true, false, 0);
+    frame(8220, false, false, true, 20);
     assert(input.wasPowerReleaseConsumed());
     assert(!input.wasPowerSingleClick() && !pickerConfirms(input));
-    frame(8521, false, false, false, 20);
+    frame(8721, false, false, false, 20);
     assert(input.homeButtonAction() == HomeButtonAction::Ignore);
     assert(!input.powerSleepClick() && !input.wasPowerSingleClick());
   }
@@ -461,15 +483,22 @@ wake_validation_end = main_source.index("\n  }\n", wake_validation) + len("\n  }
 frontlight_init = main_source.index("  Frontlight.begin(")
 assert wake_validation_end < frontlight_init < main_source.index("  handleSlideSwitch();", wake_validation_end)
 release_guard = main_source.split("  if (mappedInputManager.wasPowerReleaseConsumed()) {", 1)[1].split(
-    "  if (mappedInputManager.powerSleepClick()) {", 1)[0]
+    "  const bool powerDoubleClickEnabled =", 1)[0]
 sleep_dispatch = main_source.split("  const bool awaitingClickWindow =", 1)[1].split(
     "#if FREEINK_DEVICE_PAPERMONO", 1)[0]
 dispatch_harness = r"""
 bool slept = false, forwardedRelease = false;
 void enterDeepSleep() { slept = true; }
 #define LOG_DBG(...) ((void)0)
+unsigned long lastActivityTime = 0;
+void enterDeepSleep(bool /*autoSleep*/) { slept = true; }
+// Fork's frontlight double-click window lives between the classified sleep
+// verdict and the double-click wait; neutral here so dispatch tests stay
+// power-button-only.
+bool handleX4ProFrontlightDoubleClick() { return false; }
 void dispatchSleep(MappedInputManager& mappedInputManager, HalGPIO& gpio,
-                   bool powerDoubleClickEnabled, unsigned long allowSleepAt) {
+                   bool powerDoubleClickEnabled, unsigned long allowSleepAt,
+                   unsigned long loopStartTime = millis()) {
   slept = forwardedRelease = false;
 #define LOG_INF(...) ((void)0)
 #define LOG_DBG(...) ((void)0)

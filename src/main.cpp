@@ -1994,7 +1994,10 @@ void loop() {
     if (!mappedInputManager.powerSleepRequested()) return;
   }
 
-  if (mappedInputManager.powerSleepClick()) {
+  if (loopStartTime < allowSleepAt && BoardConfig::isPaperMono()) {
+    // The PMIC wake click can arrive after setup. Drop it before it can outlast the sleep guard.
+    mappedInputManager.resetPowerButtonInput();
+  } else if (mappedInputManager.powerSleepClick()) {
     // Upstream's classified SLEEP verdict (X4 Pro click classifier).
     enterDeepSleep();
     return;
@@ -2073,7 +2076,7 @@ void loop() {
   // equivalent because a click is the only power-button event it can report.
   if ((SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP ||
        SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::IGNORE) &&
-      millis() >= allowSleepAt && mappedInputManager.wasPowerSingleClick()) {
+      loopStartTime >= allowSleepAt && mappedInputManager.wasPowerSingleClick()) {
     enterDeepSleep();
     return;
   }
