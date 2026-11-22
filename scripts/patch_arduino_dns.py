@@ -1,4 +1,4 @@
-"""Build Arduino 3.3.11's NetworkManager with the DNS cache clear in TCP/IP context."""
+"""Build Arduino's NetworkManager with the DNS cache clear in TCP/IP context."""
 
 import json
 from pathlib import Path
@@ -21,13 +21,19 @@ AFTER = """    // Clearing pending DNS requests can invoke the SNTP retry callba
     hasGlobalV4 = hasGlobalV4Now;"""
 
 
+# Versions whose NetworkManager.cpp carries BEFORE verbatim. 3.3.11 is the
+# upstream pin; 3.3.12 is the fork's (platform 55.03.312) — verified 2026-11-23
+# that the pattern and esp_netif_tcpip_exec are unchanged in 3.3.12.
+SUPPORTED_FRAMEWORK_VERSIONS = ("3.3.11", "3.3.12")
+
+
 def patch_network_manager(env, node):
     framework = Path(env.PioPlatform().get_package_dir("framework-arduinoespressif32"))
     upstream = framework / "libraries/Network/src/NetworkManager.cpp"
     if Path(node.srcnode().get_abspath()).resolve() != upstream.resolve():
         return node
     source = upstream.read_text(encoding="utf-8")
-    if json.loads((framework / "package.json").read_text())["version"] != "3.3.11" or source.count(BEFORE) != 1:
+    if json.loads((framework / "package.json").read_text())["version"] not in SUPPORTED_FRAMEWORK_VERSIONS or source.count(BEFORE) != 1:
         raise RuntimeError("Review the Arduino DNS cache patch for this framework version")
 
     patched = source.replace(BEFORE, AFTER)
