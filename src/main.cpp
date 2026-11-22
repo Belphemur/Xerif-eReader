@@ -2086,9 +2086,14 @@ void loop() {
   // ToggleFrontlight is dispatched by dispatchGlobalHomeButtonAction() below —
   // upstream #3516's inline call here was dropped in merge 1de718e14; keeping
   // both toggled the light twice per gesture (net zero, visible flash).
-  if (mappedInputManager.homeButtonAction() == HomeButtonAction::Refresh ||
-      (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FORCE_REFRESH &&
-       mappedInputManager.wasPowerSingleClick())) {
+  // Refresh is dispatched there too: the classifier boards route a FORCE_REFRESH
+  // power click through homeAction (MappedInputManager.cpp), so the old inline
+  // Refresh disjunct ran the same refresh twice per frame (double flash). This
+  // block remains only for boards without the classifier, whose power click
+  // never reaches homeAction.
+  if (mappedInputManager.homeButtonAction() != HomeButtonAction::Refresh &&
+      SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FORCE_REFRESH &&
+      mappedInputManager.wasPowerSingleClick()) {
     LOG_DBG("MAIN", "Manual screen refresh triggered");
     if (!activityManager.handleForcedRefresh()) {
       RenderLock lock;
