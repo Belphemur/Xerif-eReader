@@ -2083,9 +2083,9 @@ void loop() {
 #endif
 
   // Refresh screen when power button is short-pressed with FORCE_REFRESH setting.
-  if (mappedInputManager.homeButtonAction() == HomeButtonAction::ToggleFrontlight) {
-    toggleFrontlight();
-  }
+  // ToggleFrontlight is dispatched by dispatchGlobalHomeButtonAction() below —
+  // upstream #3516's inline call here was dropped in merge 1de718e14; keeping
+  // both toggled the light twice per gesture (net zero, visible flash).
   if (mappedInputManager.homeButtonAction() == HomeButtonAction::Refresh ||
       (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FORCE_REFRESH &&
        mappedInputManager.wasPowerSingleClick())) {
