@@ -1,5 +1,5 @@
 // Cloudflare Workers static-assets deployment for the Xerif website.
-// The owner fills in account_id (and confirms the domain) before deploying.
+// Deployed via Workers Builds (Git integration) or manually:
 //
 //   Build first:   bunx --bun vitepress build   (output in .vitepress/dist)
 //   Deploy:        bunx wrangler deploy         (run from website/)
@@ -10,8 +10,8 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "xerif-website",
   "compatibility_date": "2026-11-01",
-  // Owner: replace with your Cloudflare account id.
-  "account_id": "<CLOUDFLARE_ACCOUNT_ID>",
+  // account_id: not set — wrangler resolves it from the logged-in OAuth
+  // account (Workers Builds injects it automatically on Git deploys).
   "assets": {
     "directory": ".vitepress/dist",
     "not_found_handling": "404-page",
