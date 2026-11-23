@@ -337,10 +337,6 @@ h6,
   height: 30px;
 }
 
-.dark .VPNavBarTitle .logo {
-  filter: brightness(1.55) saturate(0.95);
-}
-
 .VPNavBarMenuLink {
   font-family: var(--xp-mono);
   font-size: 0.72rem;

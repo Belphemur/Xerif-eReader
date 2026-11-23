@@ -141,7 +141,7 @@ export default defineConfig({
     logo: {
       light: '/logo.svg',
       dark: '/logo-dark.svg',
-      alt: 'Xerif monogram',
+      alt: 'Xerif logo',
     },
     siteTitle: 'Xerif',
     nav: [
