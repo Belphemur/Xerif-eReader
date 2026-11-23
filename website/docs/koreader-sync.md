@@ -16,9 +16,15 @@ Under **Settings › Web Settings › KOReader Sync**:
    - **Other** — custom servers that explicitly support CrossPoint's richer
      progress payload.
 2. Enter the server address and your credentials.
-3. Enable **Send Metadata** only if you're comfortable sharing book title,
-   author, and (where recognized) ISBN/ASIN and series information. It is
-   off by default for privacy.
+3. Check **Send Metadata**: it is **on by default** and sends the book's
+   file name, title, and authors with each progress sync. On servers that
+   support extended metadata it also sends ISBN, ASIN, and series data
+   where the book's metadata provides them. Turn it off if you'd rather
+   share progress only.
+
+   Note: a saved sync configuration that predates this option (or a config
+   file without the key) loads with Send Metadata off, so an upgrade can
+   silently change the behavior until you re-check it.
 
 ## Syncing while reading
 
