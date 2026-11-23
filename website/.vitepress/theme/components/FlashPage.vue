@@ -267,6 +267,10 @@ onMounted(() => {
           <p class="xp-connect__text">{{ text }}</p>
         </li>
       </ol>
+      <p class="xp-connect__erase">
+        Leave <strong>Erase device</strong> unchecked — the installer writes
+        only the firmware, and an erase cannot be undone.
+      </p>
       <div class="xp-inkpanel">
         <template v-if="hasSerial">
           <div class="xp-inkpanel__head">
@@ -763,6 +767,11 @@ onMounted(() => {
   background: var(--xp-paper);
   border: 1px solid var(--xp-rule);
   padding: 0.85rem 1rem;
+}
+
+.xp-connect__erase {
+  margin: 0 0 0.75rem;
+  font-size: 0.9rem;
 }
 
 .xp-connect__n {
