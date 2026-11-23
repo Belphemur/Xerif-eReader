@@ -1,5 +1,5 @@
 import { defineConfig } from 'vitepress'
-import { getReleases } from './lib/releases.mjs'
+import { getReleases, latestStableRelease } from './lib/releases.mjs'
 import {
   PSRAM_BOARDS,
   boardAsset,
@@ -58,12 +58,14 @@ function flashManifestPlugin() {
         // Per-release manifests for the changelog's "Flash this version", plus
         // the same-origin firmware binaries they point at (GitHub download
         // URLs send no CORS headers, so the browser must fetch from this site).
-        // The latest release also emits the five beta-board images the /flash
-        // beta section installs; older releases keep X4 Pro only — the beta
-        // section always flashes the latest, and six images for every release
-        // would push ~1.2 GB into the site output.
-        for (const [i, release] of releases.entries()) {
-          const boards = i === 0 ? PSRAM_BOARDS : ['x4pro']
+        // The release the board manifests resolve through latestStableRelease()
+        // also emits the five beta-board images the /flash beta section
+        // installs; other releases keep X4 Pro only — the beta section always
+        // flashes that release, and six images for every release would push
+        // ~1.2 GB into the site output.
+        const stable = latestStableRelease(releases)
+        for (const release of releases) {
+          const boards = release === stable ? PSRAM_BOARDS : ['x4pro']
           const manifest = buildVersionManifest(release, boards)
           if (manifest.builds.length === 0) continue
           for (const board of boards) {
