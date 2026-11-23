@@ -58,7 +58,9 @@ defineProps<{
             v-if="release.flashable"
             :manifest="`/xerif-manifest-${release.version}.json`"
           >
-            <span class="xp-btn xp-btn--teal">Flash this version</span>
+            <button type="button" slot="activate" class="xp-btn xp-btn--teal">
+              Flash this version
+            </button>
           </esp-web-install-button>
         </div>
 

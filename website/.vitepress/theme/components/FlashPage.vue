@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { CROSSPOINT, GITHUB, SUPPORT_CROSSPOINT } from '../links'
+import { loadEspWebTools } from '../lib/espWebTools.js'
 
 const props = defineProps<{
   version: string
@@ -24,6 +25,9 @@ onMounted(() => {
   if (typeof navigator === 'undefined' || !('serial' in navigator)) {
     hasSerial.value = false
   }
+  // Register <esp-web-install-button> from the self-hosted bundle; custom
+  // elements upgrade in place, so the buttons above become live.
+  loadEspWebTools().catch((err) => console.error(err))
 })
 </script>
 
@@ -80,7 +84,13 @@ onMounted(() => {
         </p>
         <div class="xp-flash__install">
           <esp-web-install-button manifest="/xerif-manifest.json">
-            <span class="xp-btn xp-btn--teal xp-flash__install-btn">Flash it now</span>
+            <button
+              type="button"
+              slot="activate"
+              class="xp-btn xp-btn--teal xp-flash__install-btn"
+            >
+              Flash it now
+            </button>
           </esp-web-install-button>
         </div>
         <p class="xp-flash__hint xp-mono">
