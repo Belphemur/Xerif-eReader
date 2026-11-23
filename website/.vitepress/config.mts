@@ -222,6 +222,7 @@ export default defineConfig({
             { text: 'FAQ', link: '/docs/faq' },
             { text: 'Troubleshooting', link: '/docs/troubleshooting' },
             { text: 'Controls', link: '/docs/controls' },
+            { text: 'USB-locked devices', link: '/docs/locked-devices' },
           ],
         },
       ],

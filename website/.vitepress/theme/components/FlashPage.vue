@@ -57,6 +57,11 @@ onMounted(() => {
           <span class="xp-flash__step-x">{{ step.text }}</span>
         </li>
       </ol>
+      <p class="xp-flash__hint">
+        No serial port offered? Some third-party Xteink units ship with USB
+        flashing locked — see
+        <a href="/docs/locked-devices">USB-locked devices</a>.
+      </p>
     </header>
 
     <section class="xp-banner" aria-label="Device support">
@@ -300,6 +305,19 @@ onMounted(() => {
   color: var(--xp-ink-muted);
   max-width: 44rem;
   margin: 0.75rem 0 0;
+}
+
+.xp-flash__hint {
+  font-family: var(--xp-sans);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--xp-ink-muted);
+  margin: 0.75rem 0 0;
+}
+
+.xp-flash__hint a {
+  color: var(--xp-teal);
+  text-underline-offset: 3px;
 }
 
 .xp-flash__steps {
