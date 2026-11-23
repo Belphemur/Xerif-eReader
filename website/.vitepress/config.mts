@@ -45,6 +45,12 @@ function flashManifestPlugin() {
       let versionManifests = {}
       server.middlewares.use((req, res, next) => {
         const path = (req.url || '').split('?')[0]
+        if (path === '/xerif-manifest.json') {
+          res.setHeader('Content-Type', 'application/json; charset=utf-8')
+          res.setHeader('Cache-Control', 'no-cache')
+          res.end(source || JSON.stringify({ name: 'Xerif', builds: [] }))
+          return
+        }
         const match = path.match(/^\/xerif-manifest-(\d+\.\d+\.\d+)\.json$/)
         if (match) {
           res.setHeader('Content-Type', 'application/json; charset=utf-8')
@@ -61,15 +67,6 @@ function flashManifestPlugin() {
             .filter(([, m]) => m.builds.length > 0)
             .map(([v, m]) => [v, JSON.stringify(m)]),
         )
-      })
-    },
-    configureServer(server) {
-      server.middlewares.use((req, res, next) => {
-        const path = (req.url || '').split('?')[0]
-        if (path !== '/xerif-manifest.json') return next()
-        res.setHeader('Content-Type', 'application/json; charset=utf-8')
-        res.setHeader('Cache-Control', 'no-cache')
-        res.end(source || JSON.stringify({ name: 'Xerif', builds: [] }))
       })
     },
   }
