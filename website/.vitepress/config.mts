@@ -52,7 +52,7 @@ export default defineConfig({
   cleanUrls: true,
   appearance: true,
   lastUpdated: false,
-  srcExclude: ['**/node_modules/**', '**/README.md'],
+  srcExclude: ['**/node_modules/**', '**/README.md', 'DESIGN.md', 'FEATURES.md'],
   sitemap: { hostname: 'https://xerif.aaflalo.me' },
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' }],
