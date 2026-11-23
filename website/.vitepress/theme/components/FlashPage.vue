@@ -172,7 +172,12 @@ onMounted(() => {
               </button>
             </esp-web-install-button>
           </template>
-          <p class="xp-sd__hint">
+          <p v-if="board.board === 'picco'" class="xp-sd__hint">
+            Web installer only: this board's firmware layout has a single app
+            slot, so Xerif for it has no SD-card update path. Use the button
+            above from a desktop Chromium browser.
+          </p>
+          <p v-else class="xp-sd__hint">
             SD card: download
             <a :href="board.binUrl" target="_blank" rel="noopener"><code>{{ board.binName }}</code></a>
             ({{ board.sizeMb }} MB) and copy it to the top folder of the reader's
@@ -246,7 +251,9 @@ onMounted(() => {
         boot selector still pointed at the previous slot). It does
         <strong>not</strong> work if the reader cannot start at all — if the
         bootloader itself was erased, only USB flashing (for example the
-        maker's flash tool below) can bring it back.
+        maker's flash tool below) can bring it back. The Picco has no recovery
+        picker (single-slot firmware layout) — the web installer is its only
+        Xerif install route.
       </p>
     </section>
 
