@@ -179,7 +179,11 @@ onMounted(() => {
       </p>
     </section>
 
-    <section class="xp-restore" aria-label="Restore stock firmware">
+    <section
+      id="restore-stock-xteink-firmware"
+      class="xp-restore"
+      aria-label="Restore stock firmware"
+    >
       <h2 class="xp-sd__title">Restore stock Xteink firmware</h2>
       <p class="xp-sd__sub">
         Xerif is not a one-way door. If you want the original Xteink system
