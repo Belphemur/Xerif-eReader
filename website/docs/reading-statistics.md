@@ -24,8 +24,8 @@ and full credit. Xerif inherits this subsystem from
   progress, reading speed, average session, reading streak, books read.
 - **Reading speed (WPM)** — a trimmed-mean tracker: a 15-sample window with
   the two fastest and two slowest samples dropped, so one sprint or one
-  distraction doesn't skew your average. Values outside 80–900 WPM are
-  clamped.
+  distraction doesn't skew your average. Samples above 900 WPM are
+  discarded, and samples below 80 WPM are raised to 80.
 - **Average session** — the same idea over a 10-sample window of session
   lengths.
 - **Reading Rhythm** — a daily intensity grid over the last 91 days, weekly
