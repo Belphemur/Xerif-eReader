@@ -391,6 +391,17 @@ h6,
   border-top: 1px solid var(--xp-rule);
 }
 
+/* Let the docs page and site footer follow the content's own length.
+   VitePress pads .VPDoc .content 128px at the bottom from 960px up, so docs
+   pages end in a long empty stretch with the layout-bottom footer far below
+   the text. The fixed-position aside's viewport-height reservation is
+   display-only and harmless. */
+@media (min-width: 960px) {
+  .VPDoc .content {
+    padding-bottom: 4rem;
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Shared primitives                                                   */
 /* ------------------------------------------------------------------ */
