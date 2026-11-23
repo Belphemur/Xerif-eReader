@@ -21,10 +21,14 @@ testing than the X4 Pro — report problems on
 ## Also in releases
 
 GitHub releases also include an image for the Sticky (deliberately built
-without PSRAM). It is not served by this site's flasher; install it by
-copying the `.bin` to the top folder of the reader's SD card, opening
-**Settings › System › SD Card Firmware Update** on the reader, selecting
-the file, and confirming — or by flashing with `esptool`.
+without PSRAM). It is not served by this site's flasher. To install Xerif
+on a Sticky the first time, flash it with `esptool` — see the
+[repository's command-line install steps](https://github.com/Belphemur/Xerif-eReader#command-line).
+The SD-card method (copy the `.bin` to the top folder of the reader's SD
+card, open **Settings › System › SD Card Firmware Update**, select the
+file, confirm) is an update path: it needs the menu Xerif's own Settings
+provides, so it applies only to a Sticky already running Xerif (or
+another firmware that offers that menu).
 
 ## Not supported
 
