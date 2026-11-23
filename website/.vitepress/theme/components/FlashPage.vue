@@ -132,11 +132,12 @@ onMounted(() => {
           >
           ({{ sizeMB || '?' }} MB).
         </li>
-        <li>Copy it to the top folder of the reader's SD card and rename it
-          <code>XERIF.ATM</code>.</li>
+        <li>Copy it to the top folder of the reader's SD card, keeping the
+          file name as-is.</li>
         <li>
-          On the reader open <strong>Settings &rsaquo; System &rsaquo; Install
-          from SD</strong> and confirm. The reader installs Xerif and restarts.
+          On the reader open <strong>Settings &rsaquo; System &rsaquo; SD Card
+          Firmware Update</strong>, select the <code>.bin</code> file, and
+          confirm. The reader installs Xerif and restarts.
         </li>
       </ol>
       <p class="xp-sd__hint">

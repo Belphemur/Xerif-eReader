@@ -15,13 +15,20 @@ latest stable version; there is no manual download.
 
 ## Alternative: install from the SD card
 
-Works from any browser on any device, and doubles as a recovery path:
+Works from any browser on any device:
 
 1. Download `xerif-<version>-x4pro.bin` from the
    [latest release](https://github.com/Belphemur/Xerif-eReader/releases/latest).
-2. Copy it to the top folder of the reader's SD card and rename it
-   `XERIF.ATM`.
-3. On the reader open **Settings › System › Install from SD** and confirm.
+2. Copy it to the top folder of the reader's SD card, keeping the file name
+   as-is (the device's picker only shows `.bin` files).
+3. On the reader open **Settings › System › SD Card Firmware Update**, select
+   the file, and confirm.
+
+This path needs the reader to boot far enough to open its Settings — it
+updates a working reader (Xerif or stock Xteink firmware). If the reader
+still starts but is stuck, hold **Next** and press **Power** as it starts to
+land directly in the recovery picker; see the
+[Flash page](/flash#sd-card) for details.
 
 ## After installing
 
