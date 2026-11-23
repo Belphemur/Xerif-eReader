@@ -2,8 +2,11 @@
 
 Some Xteink units purchased from third-party stores (e.g. AliExpress) ship
 with USB flashing **locked from the factory**. A locked device refuses the
-web flasher until it has been unlocked once with the **Xteink Unlocker**
-tool at [crosspointreader.com/#unlock-tool](https://crosspointreader.com/#unlock-tool).
+web flasher, and the **Xteink Unlocker** tool at
+[crosspointreader.com/#unlock-tool](https://crosspointreader.com/#unlock-tool)
+does not change that: it installs its own officially supported firmware
+(CrossPoint or CrossInk) over the air instead of unlocking the USB port for
+other firmware.
 
 **You do not need this tool if you bought your device directly from
 xteink.com** — those units are not locked.
@@ -31,4 +34,15 @@ way out**.
 
 :::
 
-After unlocking, come back to the [web flasher](/flash) and install Xerif.
+## Locked devices and Xerif
+
+There is **no verified way to install Xerif on a USB-locked device**. The
+unlocker is not a step toward Xerif: using it to flash anything other than
+CrossPoint or CrossInk is exactly the unsupported-firmware case the warning
+above describes. If your device is locked, either leave it on the maker's
+firmware or unlock it only if you intend to run
+[CrossPoint](https://github.com/crosspoint-reader/crosspoint-reader), which
+also covers the X3 (see [Supported devices](/docs/supported-devices)).
+
+Content in this page derives from the
+[CrossPoint USB-locked devices guide](https://github.com/crosspoint-reader/crosspoint-reader#usb-locked-devices-xteink-unlocker).
