@@ -43,7 +43,9 @@ Crossing past the real end of a book completes it automatically. Leaving
 while on the final page (or at about 100%) asks "Mark as Finished?" once —
 a decline is remembered until you read further, so a jump that stops on the
 final page or at about 100% never silently finishes a book. A jump that
-goes past the end does complete the book.
+goes past the end does complete the book. The prompt depends on the
+book's section metadata being loaded; if it isn't yet, the prompt is
+skipped — but crossing past the end still completes the book.
 
 ## Fixing dates
 
