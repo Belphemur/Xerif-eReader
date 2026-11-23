@@ -15,4 +15,5 @@ import { data } from './flash.data.js'
   :bin-name="data.binName"
   :size-m-b="data.sizeMB"
   :release-url="data.releaseUrl"
+  :board-bins="data.boardBins"
 />

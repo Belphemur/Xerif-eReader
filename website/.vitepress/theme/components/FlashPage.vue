@@ -3,12 +3,14 @@ import { computed, onMounted, ref } from 'vue'
 import { CROSSPOINT, GITHUB, RELEASES } from '../links'
 import { loadEspWebTools } from '../lib/espWebTools.js'
 
-defineProps<{
+const props = defineProps<{
   version: string
   binUrl: string
   binName: string
   sizeMB: number
   releaseUrl: string
+  /** Per-board SD images of the newest stable release (board key -> {url, name, sizeMB}). */
+  boardBins?: Record<string, { url: string; name: string; sizeMB: number }>
 }>()
 
 /**
@@ -72,6 +74,17 @@ const selected = computed(
 function select(board) {
   selectedKey.value = board.key
 }
+
+// The SD section downloads the selected board's own image; X4 Pro rides the
+// existing binUrl/binName props. A board whose release carries no image falls
+// back to the GitHub releases link so we never point at the wrong board's
+// firmware.
+const sdBin = computed(() => {
+  if (selected.value.key === 'x4pro') {
+    return { url: props.binUrl, name: props.binName, sizeMB: props.sizeMB }
+  }
+  return props.boardBins?.[selected.value.key] || null
+})
 
 // "Beta builds" in step 2 scrolls back to the grid and briefly marks the
 // beta boards so they are easy to spot.
@@ -188,8 +201,14 @@ onMounted(() => {
           Picco: web installer only &mdash; no SD-card update.
         </p>
         <p class="xp-devices__links">
-          <a href="#sd-card">SD-card manual install instead</a>
-          <span aria-hidden="true">&middot;</span>
+          <template v-if="selected.key !== 'picco'">
+            <a href="#sd-card">{{
+              selected.beta
+                ? 'SD-card update path (for a reader already running Xerif)'
+                : 'SD-card manual install instead'
+            }}</a>
+            <span aria-hidden="true">&middot;</span>
+          </template>
           <a href="#device-note">My device isn't listed</a>
         </p>
         <p id="device-note" class="xp-devices__note">
@@ -332,13 +351,13 @@ onMounted(() => {
       </p>
       <ol class="xp-sd__steps">
         <li>
-          <a v-if="binUrl" :href="binUrl" target="_blank" rel="noopener"
-            >Download <code>{{ binName }}</code></a
+          <a v-if="sdBin?.url" :href="sdBin.url" target="_blank" rel="noopener"
+            >Download <code>{{ sdBin.name }}</code></a
           >
-          <span v-else>Download the latest X4 Pro image from
+          <span v-else>Download your board's image from
             <a :href="`${GITHUB}/releases`" target="_blank" rel="noopener">GitHub releases</a></span
           >
-          ({{ sizeMB || '?' }} MB).
+          ({{ sdBin?.sizeMB || '?' }} MB).
         </li>
         <li>Copy it to the top folder of the reader's SD card, keeping the
           file name as-is.</li>
@@ -349,9 +368,14 @@ onMounted(() => {
         </li>
       </ol>
       <p class="xp-sd__hint">
-        This path updates a reader that already boots (Xerif or stock Xteink
-        firmware). It needs the reader's own menus, so it is not the tool for
-        a reader that won't start — see the recovery notes below.
+        These steps use the reader's own Settings menu — Xerif's
+        <strong>Settings &rsaquo; System &rsaquo; SD Card Firmware
+        Update</strong>. That makes this an update path: on the X4 Pro, stock
+        Xteink firmware has the same menu, so it also works as a first
+        install there; on the other boards it updates a reader that already
+        runs Xerif. The Picco has no SD-card update menu — web installer
+        only. It is not the tool for a reader that won't start — see the
+        recovery notes below.
       </p>
       <p class="xp-sd__hint">
         Latest stable version: <span class="xp-mono">v{{ version || '—' }}</span
