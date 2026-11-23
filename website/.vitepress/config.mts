@@ -204,6 +204,9 @@ export default defineConfig({
           text: 'Features',
           items: [
             { text: 'Reading experience', link: '/docs/reading-experience' },
+            { text: 'Reading statistics', link: '/docs/reading-statistics' },
+            { text: 'Dictionary lookup', link: '/docs/dictionary' },
+            { text: 'Focus Reading', link: '/docs/focus-reading' },
             { text: 'Image & cover rendering', link: '/docs/image-cover-rendering' },
             { text: 'KOReader sync', link: '/docs/koreader-sync' },
             { text: 'Custom fonts', link: '/docs/custom-fonts' },
