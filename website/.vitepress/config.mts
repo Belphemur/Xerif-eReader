@@ -31,6 +31,14 @@ function flashManifestPlugin() {
     async buildStart() {
       const releases = await getReleases()
       const flash = buildFlashManifest(releases)
+      // A build must never ship a flasher with nothing to install: an empty
+      // release list means the API failed and no cache exists. Dev stays
+      // tolerant so /flash can be worked on offline.
+      if (isBuild && (releases.length === 0 || flash.builds.length === 0)) {
+        this.error(
+          '[xerif] no stable releases available (API failure without cache) — refusing to emit an empty flash manifest',
+        )
+      }
       source = JSON.stringify(flash, null, 2) + '\n'
       // emitFile is not available while serving (dev/preview).
       if (isBuild) {
