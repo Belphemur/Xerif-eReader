@@ -22,7 +22,9 @@ testing than the X4 Pro — report problems on
 
 GitHub releases also include an image for the Sticky (deliberately built
 without PSRAM). It is not served by this site's flasher; install it by
-copying the `.bin` to the SD card or flashing with `esptool`.
+copying the `.bin` to the top folder of the reader's SD card, opening
+**Settings › System › SD Card Firmware Update** on the reader, selecting
+the file, and confirming — or by flashing with `esptool`.
 
 ## Not supported
 
