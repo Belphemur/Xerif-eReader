@@ -78,9 +78,12 @@ onMounted(() => {
 
       <template v-if="hasSerial">
         <p class="xp-flash__warn">
-          If asked to erase, the installer only touches the system area — your
-          books and settings on the SD card stay put. The whole flash takes
-          about two minutes; keep the reader plugged in.
+          If the installer offers to erase the device, leave
+          <strong>Erase device</strong> unchecked: the web installer writes
+          only the firmware and cannot restore what an erase wipes. Your
+          books, fonts, and settings on the SD card are never touched either
+          way. The whole flash takes about two minutes; keep the reader
+          plugged in.
         </p>
         <div class="xp-flash__install">
           <esp-web-install-button manifest="/xerif-manifest.json">

@@ -3,7 +3,11 @@
 ## Will I lose my books and settings?
 
 No. Xerif keeps the books, fonts, dictionaries, and settings already on
-your SD card. Web flashing touches only the system area.
+your SD card, whichever install method you use. With the web installer,
+decline the "Erase device" offer if it appears: it wipes the reader's
+internal flash (bootloader included), and the web installer only writes the
+firmware — it cannot restore what an erase removes. There is no need to
+erase to switch from stock firmware.
 
 ## Can I go back to the stock firmware?
 

@@ -1,6 +1,11 @@
 import { defineConfig } from 'vitepress'
 import { getReleases } from './lib/releases.mjs'
-import { buildFlashManifest, buildVersionManifest } from './lib/manifest.mjs'
+import {
+  buildFlashManifest,
+  buildVersionManifest,
+  firmwarePath,
+  x4ProAsset,
+} from './lib/manifest.mjs'
 import { vendorEspWebTools } from './lib/vendor-esp-web-tools.mjs'
 
 // Self-host the WebSerial installer component (no third-party CDN at runtime).
@@ -25,14 +30,31 @@ function flashManifestPlugin() {
     },
     async buildStart() {
       const releases = await getReleases()
-      source = JSON.stringify(buildFlashManifest(releases), null, 2) + '\n'
+      const flash = buildFlashManifest(releases)
+      source = JSON.stringify(flash, null, 2) + '\n'
       // emitFile is not available while serving (dev/preview).
       if (isBuild) {
         this.emitFile({ type: 'asset', fileName: 'xerif-manifest.json', source })
-        // Per-release manifests for the changelog's "Flash this version".
+        // Per-release manifests for the changelog's "Flash this version", plus
+        // the same-origin firmware binaries they point at (GitHub download
+        // URLs send no CORS headers, so the browser must fetch from this site).
         for (const release of releases) {
           const manifest = buildVersionManifest(release)
           if (manifest.builds.length === 0) continue
+          const asset = x4ProAsset(release)
+          const res = await fetch(asset.url, {
+            headers: { 'User-Agent': 'xerif-website-build' },
+          })
+          if (!res.ok) {
+            this.error(
+              `[xerif] downloading ${asset.name} failed: ${res.status} ${res.statusText}`,
+            )
+          }
+          this.emitFile({
+            type: 'asset',
+            fileName: firmwarePath(release),
+            source: Buffer.from(await res.arrayBuffer()),
+          })
           this.emitFile({
             type: 'asset',
             fileName: `xerif-manifest-${release.version}.json`,
