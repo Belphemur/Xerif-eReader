@@ -43,13 +43,15 @@ While reading, two ways to start:
 - Or assign Dictionary to a long press under **Settings › Controls**, then
   hold the button on a reading page.
 
-**On touchscreen devices:** tap or drag the handles to highlight a word or
-phrase, then tap **Look Up**.
+The selection screen highlights one word — it starts on a word near the
+middle of the page. Lookups cover a single word at a time.
 
-**On button devices:** a cursor marks a word — navigate with **Left/Right**
-and the side **Up/Down** buttons, press **Confirm** to anchor the start of a
-selection, extend it across words, lines, or pages, then press **Confirm**
-again to look up. **Back** cancels.
+**On touchscreen devices:** tap a word to look it up right away; a tap
+elsewhere moves the highlight.
+
+**On button devices:** move the highlight with **Left/Right** and the side
+**Up/Down** buttons, then press **Confirm** to look up the highlighted
+word. **Back** cancels.
 
 The first lookup with a dictionary builds small index sidecars next to it
 ("Indexing dictionary…" for a few seconds on large dictionaries). After
@@ -65,8 +67,7 @@ that, lookups are fast.
    (`stories` → `story`, `walked` → `walk`, `running` → `run`).
 4. **Not found** — a short popup appears and you return to reading.
 
-Multi-word phrases match dictionary entries containing spaces (idioms,
-phrasal verbs). If a headword has several entries, they are all shown.
+If a headword has several entries, they are all shown.
 
 ## The definition screen
 
