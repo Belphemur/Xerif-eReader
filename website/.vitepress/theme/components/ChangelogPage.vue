@@ -16,7 +16,7 @@ defineProps<{
 </script>
 
 <template>
-  <div class="xp-changelog">
+  <div class="xp-changelog xp-shell">
     <header class="xp-changelog__head">
       <p class="xp-eyebrow">Stable releases</p>
       <h1 class="xp-changelog__title">Changelog</h1>
@@ -89,6 +89,7 @@ defineProps<{
 .xp-changelog {
   padding-top: var(--xp-margin);
   max-width: 50rem;
+  margin-inline: auto;
 }
 
 .xp-changelog__title {

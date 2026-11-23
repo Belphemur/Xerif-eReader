@@ -441,6 +441,14 @@ h6,
   line-height: 1.2;
 }
 
+/* Centered shell for custom-layout pages (home, flash, changelog). Docs
+   pages keep VitePress's own container and must not use this. */
+.xp-shell {
+  max-width: var(--xp-content-width);
+  margin-inline: auto;
+  padding-inline: var(--xp-margin);
+}
+
 .xp-chip--active {
   border-color: var(--xp-teal);
   background: var(--xp-teal);

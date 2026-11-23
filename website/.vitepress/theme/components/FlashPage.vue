@@ -32,7 +32,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="xp-flash">
+  <div class="xp-flash xp-shell">
     <header class="xp-flash__head">
       <p class="xp-eyebrow">Install &middot; stable channel</p>
       <h1 class="xp-flash__title">Flash Xerif to your reader</h1>
