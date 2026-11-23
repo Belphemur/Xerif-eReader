@@ -25,7 +25,8 @@ Set `GITHUB_TOKEN` to raise the API rate limit.
 ## Deploy (owner)
 
 1. `bunx --bun vitepress build`
-2. `bunx wrangler deploy` from this directory (or `bun run deploy`).
+2. `bun run deploy` from this directory (runs the wrangler version pinned
+   in `package.json`).
 
 Wrangler resolves the account from your logged-in OAuth session
 (`bunx wrangler whoami` to confirm); no `account_id` is needed in
@@ -59,7 +60,9 @@ To make Cloudflare deploy on every push (instead of manual `wrangler deploy`):
 2. Select the GitHub repo (`Belphemur/Xerif-eReader`), the `website` branch
    (later: develop/main), and set:
    - **Build command:** `bunx --bun vitepress build`
-   - **Deploy command:** `bunx wrangler deploy`
+   - **Deploy command:** `bun run deploy` (wrangler is a devDependency, so
+     Workers Builds uses the pinned major instead of fetching the latest at
+     deploy time)
    - **Root directory:** `website`
    - **Build variables:** `GITHUB_TOKEN` (secret, to raise the releases API
      rate limit) — optional but recommended.
