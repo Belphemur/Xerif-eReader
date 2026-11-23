@@ -59,7 +59,10 @@ commit, publish, deploy, or flash.
 The human must write PR descriptions; agents may give concise factual notes and test
 results, never ready-to-paste PR prose. Creating/amending local commits requires
 explicit human approval. Push only on an explicit human instruction to push;
-edit/commit approval does not authorize it. Never open or close a PR.
+edit/commit approval does not authorize it. Never open or close a PR on an
+upstream repository. On this fork (Belphemur/Xerif-eReader), opening a PR
+against `develop` is allowed once all verification gates pass; do not open
+PRs anywhere else and do not close or merge them.
 
 Repository-facing prose: use plain English for non-native readers and standard
 technical terms when clearest. Code comments must be short and useful after merge; follow the
