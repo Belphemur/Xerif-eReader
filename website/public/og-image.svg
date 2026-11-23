@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630" role="img" aria-label="Xerif — Give your e-reader superpowers.">
+  <rect width="1200" height="630" fill="#fbf9f5"/>
+  <rect x="40" y="40" width="1120" height="550" fill="none" stroke="#e5e0d8" stroke-width="2"/>
+
+  <g transform="translate(96 195) scale(3.75)" stroke-linejoin="round" stroke-linecap="round">
+    <g fill="#0e625d">
+      <path d="M10 10 L54 54 L48 60 Q19 45 4 16 Z"/>
+      <path d="M10 10 L54 54 L60 48 Q45 19 16 4 Z"/>
+    </g>
+    <path d="M10 10 L54 54" stroke="#fbf9f5" stroke-width="1.6"/>
+    <g fill="#0e625d" stroke="#fbf9f5" stroke-width="2.4">
+      <path d="M54 10 L10 54 L16 60 Q45 45 60 16 Z"/>
+      <path d="M54 10 L10 54 L4 48 Q19 19 48 4 Z"/>
+    </g>
+    <path d="M54 10 L10 54" stroke="#fbf9f5" stroke-width="1.6"/>
+  </g>
+
+  <text x="400" y="318" font-family="DejaVu Serif, Georgia, serif" font-size="128" font-weight="400" fill="#1a1a1a" letter-spacing="-2">Xerif</text>
+  <text x="404" y="382" font-family="DejaVu Serif, Georgia, serif" font-size="34" fill="#525252">Give your e-reader superpowers.</text>
+
+  <line x1="404" y1="430" x2="1100" y2="430" stroke="#e5e0d8" stroke-width="2"/>
+
+  <text x="404" y="482" font-family="DejaVu Sans Mono, monospace" font-size="20" fill="#0e625d" letter-spacing="4">FREE · OPEN SOURCE · XTEINK X4 PRO</text>
+
+  <text x="96" y="548" font-family="DejaVu Sans Mono, monospace" font-size="18" fill="#6f7977" letter-spacing="3">XERIF.AAFLALO.ME</text>
+</svg>
