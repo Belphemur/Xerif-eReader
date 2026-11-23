@@ -7,13 +7,15 @@ no conversion needed.
 
 Three ways:
 
-1. **From the device:** under **Settings › Display › Fonts**, download a
-   font directly to the SD card (the firmware fetches it for you).
+1. **From the device:** open **Settings › Reader › Manage Fonts** (the
+   built-in Font Browser) and download a font directly to the SD card (the
+   firmware fetches it for you).
 2. **Web browser:** while the reader is in File Transfer mode, open the web
    interface and upload the font on the fonts page.
 3. **Manual copy:** put the file in the `fonts/` folder on the SD card.
 
-Then pick the family under **Settings › Reader › Font family**.
+Then pick the family in the reader's **Text Settings** screen: open a book,
+open the reader menu, choose **Text Settings**, and use the **Font** tab.
 
 ## What you get
 
