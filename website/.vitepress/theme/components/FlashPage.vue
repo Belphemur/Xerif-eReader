@@ -1,34 +1,100 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { CROSSPOINT, GITHUB, SUPPORT_CROSSPOINT } from '../links'
+import { computed, onMounted, ref } from 'vue'
+import { CROSSPOINT, GITHUB, RELEASES } from '../links'
 import { loadEspWebTools } from '../lib/espWebTools.js'
 
-const props = withDefaults(
-  defineProps<{
-    version: string
-    binUrl: string
-    binName: string
-    sizeMb: number
-    releaseUrl: string
-    betaBoards: Array<{
-      board: string
-      name: string
-      binUrl: string
-      binName: string
-      sizeMb: number
-    }>
-  }>(),
-  { betaBoards: () => [] },
+defineProps<{
+  version: string
+  binUrl: string
+  binName: string
+  sizeMB: number
+  releaseUrl: string
+}>()
+
+/**
+ * The six boards the web installer can flash, in grid order. Resolutions are
+ * verified against freeink-sdk BoardConfig.h (BoardProfile displayWidth/
+ * displayHeight, portrait housing order); every board here is ESP32-S3, so
+ * one manifest shape fits all. X4 Pro ships the stable channel; the other
+ * five are supported best-effort (beta).
+ */
+const boards = [
+  {
+    key: 'x4pro',
+    name: 'X4 Pro',
+    res: '480 × 800',
+    beta: false,
+    manifest: '/xerif-manifest.json',
+  },
+  {
+    key: 'x4c',
+    name: 'X4 Classic',
+    res: '480 × 800',
+    beta: true,
+    manifest: '/xerif-manifest-x4c.json',
+  },
+  {
+    key: 'metalio_eink4',
+    name: 'Metalio E-Ink 4',
+    res: '480 × 800',
+    beta: true,
+    manifest: '/xerif-manifest-metalio_eink4.json',
+  },
+  {
+    key: 'papermono',
+    name: 'Paper Mono',
+    res: '480 × 800',
+    beta: true,
+    manifest: '/xerif-manifest-papermono.json',
+  },
+  {
+    key: 'eego_a4',
+    name: 'EEGO A4',
+    res: '552 × 768',
+    beta: true,
+    manifest: '/xerif-manifest-eego_a4.json',
+  },
+  {
+    key: 'picco',
+    name: 'Picco',
+    res: '480 × 800',
+    beta: true,
+    manifest: '/xerif-manifest-picco.json',
+  },
+]
+
+// X4 Pro is the default and only stable-channel board.
+const selectedKey = ref('x4pro')
+const selected = computed(
+  () => boards.find((b) => b.key === selectedKey.value) || boards[0],
 )
+
+function select(board) {
+  selectedKey.value = board.key
+}
+
+// "Beta builds" in step 2 scrolls back to the grid and briefly marks the
+// beta boards so they are easy to spot.
+const betaHinted = ref(false)
+let betaHintTimer = null
+function hintBeta() {
+  betaHinted.value = true
+  clearTimeout(betaHintTimer)
+  betaHintTimer = setTimeout(() => (betaHinted.value = false), 2000)
+  document
+    .querySelector('.xp-devices')
+    ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
 
 // WebSerial support can only be checked in the browser, so SSR assumes it
 // works and shows the installer; a non-Chromium browser swaps to the notice
 // once the page hydrates.
 const hasSerial = ref(true)
-const steps = [
-  { n: '1', title: 'Plug in', text: 'USB cable, power the reader on' },
-  { n: '2', title: 'Click Flash', text: 'Allow the serial port when asked' },
-  { n: '3', title: 'Read', text: 'The reader restarts into Xerif' },
+
+const connectSteps = [
+  'Connect your e-reader to this computer with a standard USB data cable.',
+  "Click 'Install Xerif via USB' below and choose the serial device from the browser prompt.",
+  'Keep the cable connected until your display restarts — about two minutes.',
 ]
 
 onMounted(() => {
@@ -42,21 +108,20 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="xp-flash xp-shell">
+  <div class="xp-flash">
     <header class="xp-flash__head">
-      <p class="xp-eyebrow">Install &middot; stable channel</p>
-      <h1 class="xp-flash__title">Flash Xerif to your reader</h1>
+      <p class="xp-eyebrow">Installer</p>
+      <div class="xp-flash__head-row">
+        <h1 class="xp-flash__title">Install Xerif</h1>
+        <p class="xp-flash__help">
+          New to custom firmware?
+          <a href="/docs/installation">Read the beginner's guide.</a>
+        </p>
+      </div>
       <p class="xp-flash__sub">
-        Runs in your browser: plug the reader in over USB and click one button.
-        Your books, fonts, and settings on the SD card are kept.
+        A few steps to a sharper reader. Pick your device and install Xerif
+        over USB.
       </p>
-      <ol class="xp-flash__steps" aria-label="Install steps">
-        <li v-for="step in steps" :key="step.n" class="xp-flash__step">
-          <span class="xp-mono xp-flash__step-n">{{ step.n }}</span>
-          <span class="xp-flash__step-t">{{ step.title }}</span>
-          <span class="xp-flash__step-x">{{ step.text }}</span>
-        </li>
-      </ol>
       <p class="xp-flash__hint">
         No serial port offered? Some third-party Xteink units ship with USB
         flashing locked — see
@@ -64,132 +129,195 @@ onMounted(() => {
       </p>
     </header>
 
-    <section class="xp-banner" aria-label="Device support">
-      <div class="xp-banner__cell xp-banner__cell--ok">
-        <span class="xp-banner__mark" aria-hidden="true">&#10003;</span>
-        <div>
-          <span class="xp-banner__name">Xteink X4 Pro</span>
-          <span class="xp-banner__note">Supported &mdash; stable installer built for it</span>
+    <div class="xp-wiz">
+      <!-- Step 1: device selector -->
+      <section class="xp-card xp-wiz__panel" aria-label="Choose your device">
+        <h2 class="xp-wiz__step-label xp-mono">[1] Choose your device</h2>
+        <div class="xp-devices" role="radiogroup" aria-label="Your device">
+          <button
+            v-for="b in boards"
+            :key="b.key"
+            type="button"
+            role="radio"
+            :aria-checked="b.key === selectedKey"
+            class="xp-device"
+            :class="{
+              'is-selected': b.key === selectedKey,
+              'is-hinted': b.beta && betaHinted,
+            }"
+            @click="select(b)"
+          >
+            <span class="xp-device__top">
+              <span class="xp-device__name">{{ b.name }}</span>
+              <svg
+                v-if="b.key === selectedKey"
+                class="xp-device__check"
+                viewBox="0 0 24 24"
+                width="20"
+                height="20"
+                aria-hidden="true"
+              >
+                <circle
+                  cx="12"
+                  cy="12"
+                  r="10"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                />
+                <path
+                  d="M7 12.5l3.2 3.2L17 9"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                />
+              </svg>
+            </span>
+            <span class="xp-device__foot">
+              <span
+                class="xp-chip"
+                :class="b.beta ? 'xp-chip--beta' : 'xp-chip--stable'"
+                >{{ b.beta ? 'Beta' : 'Stable' }}</span
+              >
+              <span class="xp-mono xp-device__res">{{ b.res }}</span>
+            </span>
+          </button>
         </div>
-      </div>
-      <div class="xp-banner__cell xp-banner__cell--ok">
-        <span class="xp-banner__mark" aria-hidden="true">&#10003;</span>
-        <div>
-          <span class="xp-banner__name">Other PSRAM boards</span>
-          <span class="xp-banner__note">
-            Supported &mdash; beta (X4 Classic, Metalio E-Ink 4, Paper Mono, EEGO A4, Picco)
-          </span>
-        </div>
-      </div>
-      <div class="xp-banner__cell xp-banner__cell--no">
-        <span class="xp-banner__mark" aria-hidden="true">&#10007;</span>
-        <div>
-          <span class="xp-banner__name">Xteink X3</span>
-          <span class="xp-banner__note">
-            Not supported &mdash;
-            <a :href="CROSSPOINT" target="_blank" rel="noopener">CrossPoint</a> covers the X3
-          </span>
-        </div>
-      </div>
-    </section>
-
-    <section class="xp-flash__panel xp-card xp-relief" aria-label="Web installer">
-      <div class="xp-flash__panel-head">
-        <span class="xp-chip xp-chip--active">v{{ version || '—' }}</span>
-        <span class="xp-chip">stable</span>
-        <span class="xp-chip">X4 Pro &middot; ESP32-S3</span>
-      </div>
-
-      <template v-if="hasSerial">
-        <p class="xp-flash__warn">
-          If the installer offers to erase the device, leave
-          <strong>Erase device</strong> unchecked: the web installer writes
-          only the firmware and cannot restore what an erase wipes. Your
-          books, fonts, and settings on the SD card are never touched either
-          way. The whole flash takes about two minutes; keep the reader
-          plugged in.
+        <hr class="xp-rule xp-devices__rule" />
+        <p class="xp-devices__footnote">
+          Picco: web installer only &mdash; no SD-card update.
         </p>
-        <div class="xp-flash__install">
-          <esp-web-install-button manifest="/xerif-manifest.json">
-            <button
-              type="button"
-              slot="activate"
-              class="xp-btn xp-btn--teal xp-flash__install-btn"
-            >
-              Flash it now
-            </button>
-          </esp-web-install-button>
-        </div>
-        <p class="xp-flash__hint xp-mono">
-          Desktop Chrome, Edge, or Opera only. Other browsers: use the
-          SD-card install below. The installer logs every step; a failed
-          flash can simply be retried.
+        <p class="xp-devices__links">
+          <a href="#sd-card">SD-card manual install instead</a>
+          <span aria-hidden="true">&middot;</span>
+          <a href="#device-note">My device isn't listed</a>
         </p>
-      </template>
-      <template v-else>
-        <div class="xp-flash__unsupported">
-          <p>
-            <strong>This browser can't flash over USB.</strong> Web-based
-            flashing needs a desktop Chromium browser (Chrome, Edge, or Opera).
-          </p>
-          <p>
-            Use the SD-card install below — it works from any browser on any
-            device.
-          </p>
-        </div>
-      </template>
-    </section>
+        <p id="device-note" class="xp-devices__note">
+          Unsupported here: the Xteink X3 &mdash;
+          <a :href="CROSSPOINT" target="_blank" rel="noopener">CrossPoint</a>
+          covers the X3. Also see
+          <a href="/docs/supported-devices">supported devices</a>.
+        </p>
+      </section>
 
-    <section
-      v-if="betaBoards.length"
-      class="xp-beta"
-      aria-label="Beta devices"
-    >
-      <h2 class="xp-sd__title">Beta devices</h2>
-      <p class="xp-sd__sub">
-        Xerif also runs on other PSRAM-equipped boards. These installers work
-        but get less testing &mdash; treat them as beta and
-        <a :href="`${GITHUB}/issues`" target="_blank" rel="noopener">report issues on GitHub</a>.
-      </p>
-      <div class="xp-beta__grid">
-        <div
-          v-for="board in betaBoards"
-          :key="board.board"
-          class="xp-beta__cell xp-card"
-        >
-          <div class="xp-flash__panel-head">
-            <span class="xp-chip">beta</span>
-            <span class="xp-chip">{{ board.name }}</span>
+      <!-- Step 2: release chooser -->
+      <section class="xp-card xp-wiz__panel" aria-label="Your Xerif release">
+        <h2 class="xp-wiz__step-label xp-mono">[2] Your Xerif release</h2>
+        <div class="xp-release">
+          <div class="xp-release__row">
+            <span class="xp-release__name">Xerif {{ version || '—' }}</span>
+            <span class="xp-chip xp-chip--active">
+              {{ selected.beta ? 'Beta' : 'Stable · Recommended' }}
+            </span>
           </div>
-          <template v-if="hasSerial">
-            <esp-web-install-button :manifest="`/xerif-manifest-${board.board}.json`">
+          <p class="xp-release__desc" v-if="!selected.beta">
+            Latest stable release. Ready for everyday reading.
+          </p>
+          <p class="xp-release__desc" v-else>
+            Best-effort testing —
+            <a
+              :href="`${GITHUB}/issues`"
+              target="_blank"
+              rel="noopener"
+              >report issues on GitHub</a
+            >.
+          </p>
+        </div>
+        <button
+          type="button"
+          class="xp-beta"
+          @click="hintBeta"
+        >
+          <span class="xp-beta__text">
+            <span class="xp-beta__title">Beta builds</span>
+            <span class="xp-beta__note"
+              >Try upcoming changes &mdash; best-effort testing.</span
+            >
+          </span>
+          <span class="xp-chip xp-chip--beta">Beta</span>
+        </button>
+        <details class="xp-adv">
+          <summary class="xp-mono xp-adv__summary">
+            Advanced options<span class="xp-adv__mark" aria-hidden="true">+</span>
+          </summary>
+          <div class="xp-adv__body">
+            <p class="xp-adv__warn">
+              If the installer offers to erase the device, leave
+              <strong>Erase device</strong> unchecked: the web installer writes
+              only the firmware and cannot restore what an erase wipes. Your
+              books, fonts, and settings on the SD card are never touched
+              either way.
+            </p>
+            <p class="xp-adv__note">
+              Desktop Chrome, Edge, or Opera only. Other browsers: use the
+              SD-card install below. The installer logs every step; a failed
+              flash can simply be retried.
+            </p>
+          </div>
+        </details>
+      </section>
+    </div>
+
+    <!-- Step 3: connect and install -->
+    <section class="xp-card xp-connect" aria-label="Connect and install">
+      <h2 class="xp-wiz__step-label xp-mono">[3] Connect and install</h2>
+      <ol class="xp-connect__steps">
+        <li v-for="(text, i) in connectSteps" :key="i" class="xp-connect__step">
+          <span class="xp-mono xp-connect__n">0{{ i + 1 }}</span>
+          <p class="xp-connect__text">{{ text }}</p>
+        </li>
+      </ol>
+      <div class="xp-inkpanel">
+        <template v-if="hasSerial">
+          <div class="xp-inkpanel__head">
+            <span class="xp-inkpanel__title">Xerif Firmware</span>
+            <span class="xp-mono xp-inkpanel__ver">{{ version || '—' }}</span>
+          </div>
+          <div class="xp-inkpanel__row">
+            <esp-web-install-button :manifest="selected.manifest">
               <button
                 type="button"
                 slot="activate"
-                class="xp-btn xp-btn--secondary xp-flash__install-btn"
+                class="xp-btn xp-btn--teal xp-inkpanel__btn"
               >
-                Flash it now
+                <svg
+                  viewBox="0 0 24 24"
+                  width="14"
+                  height="14"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M13 2L4.5 13.5H11L9.5 22 19 10h-6.5L13 2z"
+                    fill="currentColor"
+                  />
+                </svg>
+                Install Xerif via USB
               </button>
             </esp-web-install-button>
-          </template>
-          <p v-if="board.board === 'picco'" class="xp-sd__hint">
-            Web installer only: this board's firmware layout has a single app
-            slot, so Xerif for it has no SD-card update path. Use the button
-            above from a desktop Chromium browser.
-          </p>
-          <p v-else class="xp-sd__hint">
-            SD card: download
-            <a :href="board.binUrl" target="_blank" rel="noopener"><code>{{ board.binName }}</code></a>
-            ({{ board.sizeMb }} MB) and copy it to the top folder of the reader's
-            SD card, then use <strong>Settings &rsaquo; System &rsaquo; SD Card
-            Firmware Update</strong>.
-          </p>
-        </div>
+            <span class="xp-inkpanel__links">
+              <a :href="releaseUrl || RELEASES" target="_blank" rel="noopener"
+                >Release notes</a
+              >
+              <span aria-hidden="true">&middot;</span>
+              <span>About two minutes</span>
+            </span>
+          </div>
+        </template>
+        <template v-else>
+          <div class="xp-inkpanel__unsupported">
+            <p>
+              <strong>This browser can't flash over USB.</strong> Web-based
+              flashing needs a desktop Chromium browser (Chrome, Edge, or
+              Opera).
+            </p>
+            <p>
+              Use the
+              <a href="#sd-card">SD-card install</a> instead &mdash; it works
+              from any browser on any device.
+            </p>
+          </div>
+        </template>
       </div>
-      <p class="xp-sd__hint">
-        The same erase warning applies: leave <strong>Erase device</strong>
-        unchecked in the installer.
-      </p>
     </section>
 
     <section id="sd-card" class="xp-sd" aria-label="SD-card install">
@@ -251,9 +379,7 @@ onMounted(() => {
         boot selector still pointed at the previous slot). It does
         <strong>not</strong> work if the reader cannot start at all — if the
         bootloader itself was erased, only USB flashing (for example the
-        maker's flash tool below) can bring it back. The Picco has no recovery
-        picker (single-slot firmware layout) — the web installer is its only
-        Xerif install route.
+        maker's flash tool below) can bring it back.
       </p>
     </section>
 
@@ -295,6 +421,15 @@ onMounted(() => {
   padding-top: var(--xp-margin);
 }
 
+/* Header */
+.xp-flash__head-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--xp-gutter);
+  flex-wrap: wrap;
+}
+
 .xp-flash__title {
   font-family: var(--xp-serif);
   font-weight: 400;
@@ -303,6 +438,17 @@ onMounted(() => {
   letter-spacing: -0.015em;
   color: var(--xp-ink);
   margin: 0.5rem 0 0;
+}
+
+.xp-flash__help {
+  font-family: var(--xp-sans);
+  font-size: 0.85rem;
+  color: var(--xp-ink-subtle);
+  margin: 0 0 0.4rem;
+}
+
+.xp-flash__help a {
+  color: var(--xp-teal);
 }
 
 .xp-flash__sub {
@@ -327,157 +473,386 @@ onMounted(() => {
   text-underline-offset: 3px;
 }
 
-.xp-flash__steps {
-  list-style: none;
-  display: flex;
-  gap: var(--xp-gutter);
-  padding: 0;
-  margin: 1.75rem 0 0;
+/* Two-column band */
+.xp-wiz {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  align-items: start;
+  margin-top: var(--xp-gutter);
 }
 
-.xp-flash__step {
+.xp-wiz__panel {
+  padding: 1.25rem 1.5rem 1.5rem;
+}
+
+.xp-wiz__step-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--xp-ink-subtle);
+  margin: 0 0 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--xp-rule);
+}
+
+/* Step 1: device grid */
+.xp-devices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.xp-device {
   display: flex;
-  align-items: baseline;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding: 0.85rem 1rem;
+  background: var(--xp-surface);
+  border: 1px solid var(--xp-rule);
+  border-radius: var(--xp-radius);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.xp-device:hover {
+  border-color: var(--xp-ink);
+}
+
+.xp-device.is-selected {
+  border-color: var(--xp-teal-selected);
+  background: var(--xp-teal-soft);
+  box-shadow: 2px 2px 0 var(--xp-teal-selected);
+}
+
+.xp-device.is-hinted {
+  border-color: var(--xp-teal-selected);
+}
+
+.xp-device:focus-visible {
+  outline: 2px solid var(--xp-teal-selected);
+  outline-offset: 1px;
+}
+
+.xp-device__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 0.5rem;
 }
 
-.xp-flash__step-n {
-  color: var(--xp-teal);
-  font-size: 0.85rem;
+.xp-device__name {
+  font-family: var(--xp-sans);
   font-weight: 600;
-}
-
-.xp-flash__step-t {
-  font-family: var(--xp-serif);
-  font-size: 1.05rem;
+  font-size: 0.95rem;
   color: var(--xp-ink);
 }
 
-.xp-flash__step-x {
-  font-family: var(--xp-sans);
-  font-size: 0.85rem;
-  color: var(--xp-ink-subtle);
+.xp-device__check {
+  color: var(--xp-teal-selected);
+  flex: none;
 }
 
-/* Beta devices section */
-.xp-beta {
-  margin-bottom: var(--xp-margin);
-}
-
-.xp-beta__grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
-  gap: var(--xp-gutter);
-  margin-top: 1.5rem;
-}
-
-.xp-beta__cell {
-  padding: 1.25rem 1.5rem 1.35rem;
-}
-
-/* Device support banner */
-.xp-banner {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  border: 1px solid var(--xp-rule);
-  background: var(--xp-surface);
-  margin: 1.75rem 0;
-}
-
-.xp-banner__cell {
+.xp-device__foot {
   display: flex;
-  gap: 0.75rem;
   align-items: center;
-  padding: 0.9rem 1.25rem;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 
-.xp-banner__cell + .xp-banner__cell {
-  border-left: 1px solid var(--xp-rule);
-}
-
-@media (max-width: 900px) {
-  .xp-banner {
-    grid-template-columns: 1fr;
-  }
-
-  .xp-banner__cell + .xp-banner__cell {
-    border-left: 0;
-    border-top: 1px solid var(--xp-rule);
-  }
-}
-
-.xp-banner__mark {
-  font-family: var(--xp-mono);
-  font-weight: 700;
-}
-
-.xp-banner__cell--ok .xp-banner__mark {
+.xp-chip--stable {
+  border-color: var(--xp-teal);
+  background: var(--xp-teal-soft);
   color: var(--xp-teal);
 }
 
-.xp-banner__cell--no .xp-banner__mark {
-  color: var(--xp-error);
-}
-
-.xp-banner__name {
-  display: block;
-  font-family: var(--xp-serif);
-  font-size: 1.05rem;
-  color: var(--xp-ink);
-}
-
-.xp-banner__note,
-.xp-banner__note a {
-  font-family: var(--xp-sans);
-  font-size: 0.85rem;
+.xp-chip--beta {
+  border-color: var(--xp-rule);
+  background: var(--xp-surface-strong);
   color: var(--xp-ink-muted);
 }
 
-/* Installer panel */
-.xp-flash__panel {
-  padding: 1.5rem 1.75rem 1.75rem;
+.xp-device__res {
+  font-size: 0.7rem;
+  color: var(--xp-ink-muted);
+  white-space: nowrap;
 }
 
-.xp-flash__panel-head {
+.xp-devices__rule {
+  margin: 1.25rem 0 0;
+}
+
+.xp-devices__footnote {
+  font-family: var(--xp-sans);
+  font-size: 0.85rem;
+  color: var(--xp-ink-subtle);
+  margin: 0.85rem 0 0;
+}
+
+.xp-devices__links {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
-  margin-bottom: 1rem;
+  font-family: var(--xp-sans);
+  font-size: 0.85rem;
+  margin: 0.5rem 0 0;
 }
 
-.xp-flash__warn {
+.xp-devices__links a {
+  color: var(--xp-teal);
+}
+
+.xp-devices__note {
+  font-family: var(--xp-sans);
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--xp-ink-muted);
+  margin: 0.85rem 0 0;
+  scroll-margin-top: calc(var(--vp-nav-height) + 1rem);
+}
+
+.xp-devices__note a {
+  color: var(--xp-teal);
+}
+
+/* Step 2: release card */
+.xp-release {
+  background: var(--xp-paper);
+  border: 1px solid var(--xp-teal);
+  box-shadow: var(--xp-relief-teal);
+  padding: 1.1rem 1.25rem 1.25rem;
+}
+
+.xp-release__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.xp-release__name {
+  font-family: var(--xp-serif);
+  font-size: 1.6rem;
+  line-height: 1.25;
+  color: var(--xp-ink);
+}
+
+.xp-release__desc {
   font-family: var(--xp-sans);
   font-size: 0.9rem;
   line-height: 1.6;
   color: var(--xp-ink-muted);
-  margin: 0 0 1rem;
+  margin: 0.5rem 0 0;
 }
 
-.xp-flash__install-btn {
-  padding: 1rem 2.25rem;
-  font-size: 0.9rem;
+.xp-release__desc a {
+  color: var(--xp-teal);
 }
 
-.xp-flash__noserial {
+/* Step 2: beta builds card */
+.xp-beta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  width: 100%;
+  margin-top: 0.75rem;
+  padding: 0.85rem 1rem;
+  background: var(--xp-paper);
+  border: 1px solid var(--xp-rule);
+  border-radius: var(--xp-radius);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.xp-beta:hover {
+  border-color: var(--xp-ink);
+}
+
+.xp-beta:focus-visible {
+  outline: 2px solid var(--xp-teal-selected);
+  outline-offset: 1px;
+}
+
+.xp-beta__title {
   display: block;
   font-family: var(--xp-sans);
+  font-weight: 600;
   font-size: 0.9rem;
-  color: var(--xp-error);
+  color: var(--xp-ink);
+}
+
+.xp-beta__note {
+  display: block;
+  font-family: var(--xp-sans);
+  font-size: 0.8rem;
+  color: var(--xp-ink-muted);
+  margin-top: 0.15rem;
+}
+
+/* Step 2: advanced options */
+.xp-adv {
+  display: block;
   margin-top: 0.75rem;
+  border: 1px solid var(--xp-rule);
+  background: var(--xp-paper);
 }
 
-.xp-flash__hint {
-  font-size: 0.72rem;
+.xp-adv__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.7rem 1rem;
+  font-size: 0.75rem;
+  color: var(--xp-ink);
+  cursor: pointer;
+  list-style: none;
+}
+
+.xp-adv__summary::-webkit-details-marker {
+  display: none;
+}
+
+.xp-adv__mark {
   color: var(--xp-ink-subtle);
-  margin-top: 1rem;
 }
 
-.xp-flash__unsupported p {
+.xp-adv[open] .xp-adv__mark {
+  transform: rotate(45deg);
+}
+
+.xp-adv__body {
+  border-top: 1px solid var(--xp-rule);
+  padding: 0.85rem 1rem 1rem;
+}
+
+.xp-adv__warn,
+.xp-adv__note {
+  font-family: var(--xp-sans);
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--xp-ink-muted);
+  margin: 0 0 0.75rem;
+}
+
+.xp-adv__note {
+  margin-bottom: 0;
+}
+
+/* Step 3: connect instructions */
+.xp-connect {
+  margin-top: 24px;
+  padding: 1.25rem 1.5rem 1.5rem;
+}
+
+.xp-connect__steps {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.75rem;
+  padding: 0;
+  margin: 0;
+}
+
+.xp-connect__step {
+  background: var(--xp-paper);
+  border: 1px solid var(--xp-rule);
+  padding: 0.85rem 1rem;
+}
+
+.xp-connect__n {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--xp-teal);
+}
+
+.xp-connect__text {
+  font-family: var(--xp-sans);
+  font-size: 0.9rem;
+  line-height: 1.6;
+  color: var(--xp-ink-muted);
+  margin: 0.35rem 0 0;
+}
+
+/* Step 3: dark install panel */
+.xp-inkpanel {
+  margin-top: 0.75rem;
+  background: var(--xp-ink);
+  border: 1px solid var(--xp-ink);
+  padding: 1.25rem 1.5rem 1.5rem;
+}
+
+.xp-inkpanel__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--xp-paper) 20%, transparent);
+}
+
+.xp-inkpanel__title {
+  font-family: var(--xp-serif);
+  font-size: 1.4rem;
+  color: var(--xp-paper);
+}
+
+.xp-inkpanel__ver {
+  font-size: 0.8rem;
+  color: color-mix(in srgb, var(--xp-paper) 60%, transparent);
+}
+
+.xp-inkpanel__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1.5rem;
+  flex-wrap: wrap;
+  padding-top: 1.25rem;
+}
+
+.xp-inkpanel__btn {
+  padding: 0.9rem 1.75rem;
+  font-family: var(--xp-sans);
+  font-size: 0.9rem;
+  letter-spacing: 0;
+  text-transform: none;
+  border-color: var(--xp-teal-selected);
+}
+
+.xp-inkpanel__links {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--xp-sans);
+  font-size: 0.85rem;
+  color: color-mix(in srgb, var(--xp-paper) 70%, transparent);
+}
+
+.xp-inkpanel__links a {
+  color: var(--xp-paper);
+}
+
+.xp-inkpanel__unsupported p {
   font-family: var(--xp-sans);
   font-size: 0.95rem;
   line-height: 1.6;
-  color: var(--xp-ink-muted);
+  color: color-mix(in srgb, var(--xp-paper) 85%, transparent);
   margin: 0.25rem 0;
+}
+
+.xp-inkpanel__unsupported strong {
+  color: var(--xp-paper);
+}
+
+.xp-inkpanel__unsupported a {
+  color: var(--xp-paper);
 }
 
 /* SD + restore sections */
@@ -545,26 +920,34 @@ onMounted(() => {
     font-size: 2rem;
   }
 
-  .xp-flash__steps {
-    flex-direction: column;
-    gap: 0.5rem;
-  }
-
-  .xp-banner {
+  .xp-wiz {
     grid-template-columns: 1fr;
   }
 
-  .xp-banner__cell + .xp-banner__cell {
-    border-left: 0;
-    border-top: 1px solid var(--xp-rule);
+  .xp-connect__steps {
+    grid-template-columns: 1fr;
   }
 
-  .xp-flash__panel {
-    padding: 1.25rem 1.25rem 1.5rem;
-  }
-
-  .xp-flash__install-btn {
+  .xp-inkpanel__btn {
     width: 100%;
+  }
+}
+
+/* Very narrow screens: stack the chip over the resolution inside each
+   device card so the 2x3 grid keeps fitting at 360px. */
+@media (max-width: 480px) {
+  .xp-wiz__panel {
+    padding: 1rem;
+  }
+
+  .xp-device {
+    padding: 0.75rem;
+  }
+
+  .xp-device__foot {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.4rem;
   }
 }
 </style>

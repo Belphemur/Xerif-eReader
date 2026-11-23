@@ -1,7 +1,7 @@
 ---
 layout: page
 title: Flash Xerif
-description: Install Xerif in the browser — stable installer for the Xteink X4 Pro, beta installers for other PSRAM boards, or use an SD card.
+description: Pick your device and install Xerif in the browser over USB, or use an SD card. The web installer serves stable releases; beta boards are supported best-effort.
 ---
 
 <script setup>
@@ -15,5 +15,4 @@ import { data } from './flash.data.js'
   :bin-name="data.binName"
   :size-m-b="data.sizeMB"
   :release-url="data.releaseUrl"
-  :beta-boards="data.betaBoards"
 />
