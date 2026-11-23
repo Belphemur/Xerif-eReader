@@ -1,0 +1,556 @@
+/**
+ * Xerif theme — "Tactile E-Paper Editorial".
+ * Tokens mirror website/DESIGN.md: paper surfaces, carbon ink, one archival
+ * teal accent, zero radii, and unblurred paper-relief shadows.
+ */
+
+:root {
+  /* Xerif palette (DESIGN.md) */
+  --xp-paper: #fbf9f5;
+  --xp-paper-alt: #f6f3ec;
+  --xp-surface: #f5f2eb;
+  --xp-surface-strong: #ebe8e1;
+  --xp-ink: #1a1a1a;
+  --xp-ink-muted: #525252;
+  --xp-ink-subtle: #6f7977;
+  --xp-rule: #e5e0d8;
+  --xp-rule-strong: #c9c2b4;
+  --xp-teal: #0e625d;
+  --xp-teal-hover: #0a4d49;
+  --xp-teal-selected: #168079;
+  --xp-teal-soft: rgba(14, 98, 93, 0.12);
+  --xp-error: #ba1a1a;
+  --xp-error-soft: #ffdad6;
+  --xp-on-teal: #fbf9f5;
+
+  /* Type */
+  --xp-serif: 'Newsreader Variable', 'Newsreader', Georgia, 'Times New Roman',
+    serif;
+  --xp-sans: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, -apple-system,
+    'Segoe UI', sans-serif;
+  --xp-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas,
+    monospace;
+
+  /* Shape & relief */
+  --xp-radius: 0px;
+  --xp-relief: 2px 2px 0 var(--xp-ink);
+  --xp-relief-teal: 2px 2px 0 var(--xp-teal);
+
+  /* Rhythm */
+  --xp-gutter: 1.5rem;
+  --xp-margin: 3rem;
+  --xp-content-width: 72rem;
+
+  /* --- VitePress surface mapping --- */
+  --vp-c-bg: var(--xp-paper);
+  --vp-c-bg-alt: var(--xp-surface);
+  --vp-c-bg-elv: var(--xp-paper);
+  --vp-c-bg-soft: var(--xp-surface);
+
+  --vp-c-text-1: var(--xp-ink);
+  --vp-c-text-2: var(--xp-ink-muted);
+  --vp-c-text-3: var(--xp-ink-subtle);
+
+  --vp-c-border: var(--xp-rule-strong);
+  --vp-c-divider: var(--xp-rule);
+  --vp-c-gutter: var(--xp-rule);
+
+  --vp-c-brand-1: var(--xp-teal);
+  --vp-c-brand-2: var(--xp-teal-hover);
+  --vp-c-brand-3: var(--xp-teal-selected);
+  --vp-c-brand-soft: var(--xp-teal-soft);
+  --vp-c-brand: var(--vp-c-brand-1);
+
+  --vp-c-default-1: var(--xp-rule-strong);
+  --vp-c-default-2: var(--xp-rule);
+  --vp-c-default-3: var(--xp-surface);
+  --vp-c-default-soft: var(--xp-surface);
+
+  --vp-c-tip-1: var(--xp-teal);
+  --vp-c-tip-2: var(--xp-teal-hover);
+  --vp-c-tip-3: var(--xp-teal-selected);
+  --vp-c-tip-soft: var(--xp-teal-soft);
+  --vp-c-note-1: var(--xp-teal);
+  --vp-c-note-2: var(--xp-teal-hover);
+  --vp-c-note-3: var(--xp-teal-selected);
+  --vp-c-note-soft: var(--xp-teal-soft);
+
+  --vp-c-danger-1: var(--xp-error);
+  --vp-c-danger-soft: var(--xp-error-soft);
+
+  --vp-font-family-base: var(--xp-sans);
+  --vp-font-family-mono: var(--xp-mono);
+
+  --vp-shadow-1: var(--xp-relief);
+  --vp-shadow-2: 3px 3px 0 rgba(26, 26, 26, 0.9);
+  --vp-shadow-3: 4px 4px 0 rgba(26, 26, 26, 0.9);
+
+  --vp-nav-bg-color: var(--xp-paper);
+  --vp-nav-height: 64px;
+  --vp-sidebar-width: 268px;
+
+  /* Code blocks on paper */
+  --vp-code-block-bg: var(--xp-surface);
+  --vp-code-bg: var(--xp-surface);
+  --vp-code-color: var(--xp-ink);
+
+  --vp-button-brand-border: var(--xp-teal-hover);
+  --vp-button-brand-text: var(--xp-on-teal);
+  --vp-button-brand-bg: var(--xp-teal);
+  --vp-button-brand-hover-border: var(--xp-teal-hover);
+  --vp-button-brand-hover-text: var(--xp-on-teal);
+  --vp-button-brand-hover-bg: var(--xp-teal-hover);
+  --vp-button-brand-active-border: var(--xp-teal-hover);
+  --vp-button-brand-active-text: var(--xp-on-teal);
+  --vp-button-brand-active-bg: var(--xp-teal-hover);
+
+  --vp-button-alt-border: var(--xp-ink);
+  --vp-button-alt-text: var(--xp-ink);
+  --vp-button-alt-bg: var(--xp-paper);
+  --vp-button-alt-hover-border: var(--xp-ink);
+  --vp-button-alt-hover-text: var(--xp-ink);
+  --vp-button-alt-hover-bg: var(--xp-surface);
+
+  --vp-input-border-color: var(--xp-rule);
+  --vp-input-bg-color: var(--xp-paper);
+}
+
+.dark {
+  --xp-paper: #1c1c18;
+  --xp-paper-alt: #232320;
+  --xp-surface: #262621;
+  --xp-surface-strong: #31312c;
+  --xp-ink: #f3f0e9;
+  --xp-ink-muted: #c7b5a6;
+  --xp-ink-subtle: #a9a69c;
+  --xp-rule: #3a3a34;
+  --xp-rule-strong: #4d4d45;
+  --xp-teal: #8cd3cd;
+  --xp-teal-hover: #a8f0e9;
+  --xp-teal-selected: #7bd6cd;
+  --xp-teal-soft: rgba(140, 211, 205, 0.14);
+  --xp-error: #ffb4ab;
+  --xp-error-soft: #5c1410;
+  --xp-on-teal: #00201e;
+  --xp-relief: 2px 2px 0 #000000;
+
+  --vp-c-bg: var(--xp-paper);
+  --vp-c-bg-alt: var(--xp-surface);
+  --vp-c-bg-elv: var(--xp-paper-alt);
+  --vp-c-bg-soft: var(--xp-surface);
+
+  --vp-c-text-1: var(--xp-ink);
+  --vp-c-text-2: var(--xp-ink-muted);
+  --vp-c-text-3: var(--xp-ink-subtle);
+
+  --vp-c-border: var(--xp-rule-strong);
+  --vp-c-divider: var(--xp-rule);
+  --vp-c-gutter: var(--xp-rule);
+
+  --vp-c-brand-1: var(--xp-teal);
+  --vp-c-brand-2: var(--xp-teal-hover);
+  --vp-c-brand-3: var(--xp-teal-selected);
+  --vp-c-brand-soft: var(--xp-teal-soft);
+  --vp-c-default-soft: var(--xp-surface-strong);
+
+  --vp-c-tip-1: var(--xp-teal);
+  --vp-c-tip-2: var(--xp-teal-hover);
+  --vp-c-tip-3: var(--xp-teal-selected);
+  --vp-c-tip-soft: var(--xp-teal-soft);
+  --vp-c-note-1: var(--xp-teal);
+  --vp-c-note-2: var(--xp-teal-hover);
+  --vp-c-note-3: var(--xp-teal-selected);
+  --vp-c-note-soft: var(--xp-teal-soft);
+
+  --vp-nav-bg-color: var(--xp-paper);
+  --vp-code-block-bg: var(--xp-surface);
+  --vp-code-bg: var(--xp-surface-strong);
+  --vp-code-color: var(--xp-ink);
+
+  --vp-button-brand-border: var(--xp-teal);
+  --vp-button-brand-text: var(--xp-on-teal);
+  --vp-button-brand-bg: var(--xp-teal);
+  --vp-button-brand-hover-border: var(--xp-teal-hover);
+  --vp-button-brand-hover-text: var(--xp-on-teal);
+  --vp-button-brand-hover-bg: var(--xp-teal-hover);
+
+  --vp-button-alt-border: var(--xp-rule-strong);
+  --vp-button-alt-text: var(--xp-ink);
+  --vp-button-alt-bg: var(--xp-paper-alt);
+  --vp-button-alt-hover-border: var(--xp-teal);
+  --vp-button-alt-hover-text: var(--xp-ink);
+  --vp-button-alt-hover-bg: var(--xp-surface);
+
+  --vp-input-border-color: var(--xp-rule-strong);
+  --vp-input-bg-color: var(--xp-paper-alt);
+}
+
+/* ------------------------------------------------------------------ */
+/* Base                                                                */
+/* ------------------------------------------------------------------ */
+
+body {
+  font-family: var(--xp-sans);
+  letter-spacing: -0.005em;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+.vp-doc h1,
+.vp-doc h2,
+.vp-doc h3,
+.vp-doc h4 {
+  font-family: var(--xp-serif);
+  font-weight: 400;
+  letter-spacing: -0.015em;
+  color: var(--xp-ink);
+}
+
+.vp-doc h1 {
+  font-size: 2.5rem;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+
+.vp-doc h2 {
+  font-size: 1.75rem;
+  line-height: 1.25;
+  border-top: 1px solid var(--xp-rule);
+  padding-top: 1.75rem;
+  margin-top: 2.75rem;
+}
+
+.vp-doc h3 {
+  font-size: 1.375rem;
+  line-height: 1.35;
+}
+
+.vp-doc p,
+.vp-doc li {
+  font-size: 1rem;
+  line-height: 1.7;
+  color: var(--xp-ink-muted);
+}
+
+.vp-doc strong {
+  color: var(--xp-ink);
+}
+
+.vp-doc a {
+  color: var(--xp-teal);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.vp-doc a:hover {
+  color: var(--xp-teal-hover);
+}
+
+/* Square everything that reads as a card, field, or control. */
+.vp-doc div[class*='language-'],
+.vp-doc .custom-block,
+.vp-doc img,
+.vp-doc table,
+.vp-doc details,
+.VPButton,
+.VPNavBarSearchButton,
+.VPLocalSearchBox,
+.VPLocalSearchBox .search-input,
+.VPLocalSearchBox .result,
+.VPSwitchAppearance,
+.VPImage,
+.VPFeature {
+  border-radius: var(--xp-radius);
+}
+
+.vp-doc code,
+.vp-doc kbd {
+  font-family: var(--xp-mono);
+  font-size: 0.85em;
+}
+
+.vp-doc :not(pre) > code {
+  border: 1px solid var(--xp-rule);
+  background: var(--xp-surface);
+  padding: 0.1rem 0.35rem;
+}
+
+.vp-doc table {
+  border: 1px solid var(--xp-rule);
+  border-collapse: collapse;
+  display: table;
+  width: 100%;
+}
+
+.vp-doc tr:nth-child(2n) {
+  background: var(--xp-paper-alt);
+}
+
+.vp-doc th,
+.vp-doc td {
+  border: 1px solid var(--xp-rule);
+}
+
+.vp-doc th {
+  font-family: var(--xp-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--xp-ink);
+  background: var(--xp-surface);
+}
+
+/* ------------------------------------------------------------------ */
+/* Navbar                                                              */
+/* ------------------------------------------------------------------ */
+
+.VPNavBar,
+.VPNavBar.has-sidebar .content {
+  background-color: var(--xp-paper);
+}
+
+.VPNavBar {
+  border-bottom: 1px solid var(--xp-rule);
+}
+
+.VPNavBar .divider {
+  background-color: var(--xp-rule);
+}
+
+.VPNavBarTitle .title {
+  font-family: var(--xp-serif);
+  font-size: 1.35rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--xp-ink);
+}
+
+.VPNavBarTitle .logo {
+  width: 30px;
+  height: 30px;
+}
+
+.dark .VPNavBarTitle .logo {
+  filter: brightness(1.55) saturate(0.95);
+}
+
+.VPNavBarMenuLink {
+  font-family: var(--xp-mono);
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--xp-ink-muted);
+}
+
+.VPNavBarMenuLink.active,
+.VPNavBarMenuLink:hover {
+  color: var(--xp-teal);
+}
+
+/* ------------------------------------------------------------------ */
+/* Sidebar & doc chrome                                                */
+/* ------------------------------------------------------------------ */
+
+.VPSidebar {
+  background-color: var(--xp-paper-alt);
+  border-right: 1px solid var(--xp-rule);
+}
+
+.VPSidebarItem .text {
+  font-size: 0.92rem;
+}
+
+.VPSidebarItem.level-0 > .item > .text {
+  font-family: var(--xp-mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--xp-ink-subtle);
+}
+
+.VPSidebarItem.is-active > .item > .link > .text,
+.VPSidebarItem.is-active > .item > .text {
+  color: var(--xp-teal);
+}
+
+.VPDocAsideOutline .outline-title {
+  font-family: var(--xp-mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--xp-ink-subtle);
+}
+
+.VPFooter {
+  border-top: 1px solid var(--xp-rule);
+}
+
+/* ------------------------------------------------------------------ */
+/* Shared primitives                                                   */
+/* ------------------------------------------------------------------ */
+
+.xp-eyebrow {
+  font-family: var(--xp-mono);
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--xp-teal);
+}
+
+.xp-mono {
+  font-family: var(--xp-mono);
+  letter-spacing: 0.04em;
+}
+
+.xp-rule {
+  border: 0;
+  border-top: 1px solid var(--xp-rule);
+  margin: 0;
+}
+
+.xp-relief {
+  box-shadow: var(--xp-relief);
+}
+
+.xp-card {
+  background: var(--xp-surface);
+  border: 1px solid var(--xp-rule);
+  border-radius: var(--xp-radius);
+}
+
+.xp-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--xp-rule);
+  background: var(--xp-surface);
+  color: var(--xp-ink);
+  font-family: var(--xp-mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: 1.2;
+}
+
+.xp-chip--active {
+  border-color: var(--xp-teal);
+  background: var(--xp-teal);
+  color: var(--xp-on-teal);
+}
+
+.xp-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.8rem 1.35rem;
+  border: 1px solid var(--xp-ink);
+  border-radius: var(--xp-radius);
+  background: var(--xp-ink);
+  color: var(--xp-paper);
+  font-family: var(--xp-mono);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-decoration: none;
+  line-height: 1.2;
+  cursor: pointer;
+  /* e-ink refresh: decisive state shifts, no easing. */
+  transition: none;
+}
+
+.xp-btn:hover {
+  background: var(--xp-teal-hover);
+  border-color: var(--xp-teal-hover);
+  color: var(--xp-on-teal);
+}
+
+.xp-btn:focus-visible {
+  outline: 2px solid var(--xp-teal-selected);
+  outline-offset: 2px;
+}
+
+.xp-btn--teal {
+  background: var(--xp-teal);
+  border-color: var(--xp-teal-hover);
+  color: var(--xp-on-teal);
+}
+
+.xp-btn--teal:hover {
+  background: var(--xp-teal-hover);
+  border-color: var(--xp-teal-hover);
+}
+
+.xp-btn--secondary {
+  background: var(--xp-paper);
+  border-color: var(--xp-ink);
+  color: var(--xp-ink);
+}
+
+.xp-btn--secondary:hover {
+  background: var(--xp-surface);
+  color: var(--xp-ink);
+  box-shadow: var(--xp-relief);
+}
+
+.xp-link-arrow::after {
+  content: ' \2192';
+  font-family: var(--xp-mono);
+}
+
+/* ------------------------------------------------------------------ */
+/* Local search                                                        */
+/* ------------------------------------------------------------------ */
+
+.VPLocalSearchBox {
+  border: 1px solid var(--xp-ink);
+  box-shadow: var(--xp-relief);
+}
+
+.VPLocalSearchBox .search-input {
+  font-family: var(--xp-sans);
+}
+
+/* ------------------------------------------------------------------ */
+/* Responsive                                                          */
+/* ------------------------------------------------------------------ */
+
+@media (max-width: 768px) {
+  :root {
+    --xp-margin: 1.25rem;
+    --xp-gutter: 1rem;
+  }
+
+  .vp-doc h1 {
+    font-size: 2rem;
+  }
+
+  .vp-doc h2 {
+    font-size: 1.5rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
