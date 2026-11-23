@@ -1,7 +1,7 @@
 // Builds the esp-web-tools manifests from the newest stable release.
 // The released xerif-<version>-<board>.bin is the application image, flashed
-// at the app0 offset (ota_0 in partitions.csv) — the same single-part write
-// the documented esptool command performs.
+// at the board's app-slot offset (ota_0 in partitions.csv) — the same
+// single-part write the documented esptool command performs.
 //
 // Parts point at same-origin copies: GitHub release download URLs send no
 // CORS headers, so a browser-side installer cannot fetch them directly. The
@@ -25,6 +25,19 @@
 // can restore the erased bootloader/partition table.
 import { latestStableRelease } from './releases.mjs'
 
+/**
+ * App-slot offset per board, read from the board's partition table:
+ * partitions.csv puts app0 (ota_0) at 0x10000, while the Picco installs into
+ * its stock layout (partitions_picco.csv) whose app slot (ota_0) starts at
+ * 0xE0000, after NVS, otadata and the safeboot recovery partition. Writing a
+ * 0x10000-offset image to a Picco would land in NVS/otadata/safeboot and
+ * leave the app slot untouched.
+ */
+export const BOARD_APP_OFFSETS = {
+  picco: 0xe0000,
+}
+
+/** Default app-slot offset (partitions.csv, app0/ota_0). */
 export const APP_OFFSET = 0x10000
 export const CHIP_FAMILY = 'ESP32-S3'
 export const FIRMWARE_DIR = 'firmware'
@@ -55,6 +68,11 @@ export const PSRAM_BOARDS = [
 
 /** The boards the /flash page lists as beta (everything but the stable X4 Pro). */
 export const BETA_BOARDS = PSRAM_BOARDS.filter((board) => board !== 'x4pro')
+
+/** The app-slot offset of one board (partitions_*.csv). */
+export function boardAppOffset(board) {
+  return BOARD_APP_OFFSETS[board] ?? APP_OFFSET
+}
 
 /** The asset of a release for one board, if any. */
 export function boardAsset(release, board) {
@@ -96,7 +114,7 @@ export function buildVersionManifest(release, boards = ['x4pro']) {
         ? [
             {
               chipFamily: CHIP_FAMILY,
-              parts: [{ path: `/${path}`, offset: APP_OFFSET }],
+              parts: [{ path: `/${path}`, offset: boardAppOffset(board) }],
             },
           ]
         : []
@@ -121,7 +139,7 @@ export function buildBoardManifest(releases, board) {
       ? [
           {
             chipFamily: CHIP_FAMILY,
-            parts: [{ path: `/${path}`, offset: APP_OFFSET }],
+            parts: [{ path: `/${path}`, offset: boardAppOffset(board) }],
           },
         ]
       : [],
