@@ -1,8 +1,11 @@
 name: CI
 
-# CI for the CrossPoint Reader firmware + host unit tests.
+# CI for the CrossPoint Reader firmware + host unit tests, and for the
+# website (docs + web flasher) under website/.
 # Runs on the integration branches (develop, feat/ttf-support), master, and every PR.
-# The `ci` job at the bottom is the single required status check.
+# Content-aware: the `changes` job classifies the PR diff, firmware jobs run
+# only for firmware changes, the website build runs only for website changes.
+# The `ci` job at the bottom is the single required status check (merge gate).
 
 on:
   push:
@@ -27,8 +30,61 @@ permissions:
   contents: read
 
 jobs:
+  # Classify the PR diff. Firmware is the conservative default: anything
+  # outside website/ (including .github/ and root files) counts as firmware.
+  # On non-PR triggers (push, dispatch) everything runs.
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      website: ${{ steps.classify.outputs.website }}
+      firmware: ${{ steps.classify.outputs.firmware }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Classify touched paths
+        id: classify
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "website=true" >> "$GITHUB_OUTPUT"
+            echo "firmware=true" >> "$GITHUB_OUTPUT"
+            echo "Non-PR trigger: running everything."
+            exit 0
+          fi
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          if git cat-file -e "$BASE" 2>/dev/null; then
+            WEBSITE_TOUCHED=$(git diff --name-only "$BASE" "$HEAD" -- website/ | wc -l)
+            ALL_TOUCHED=$(git diff --name-only "$BASE" "$HEAD" | wc -l)
+          else
+            # Force-pushed base outside fetch window: everything, conservatively.
+            echo "Base $BASE not present; assuming both touched."
+            echo "website=true" >> "$GITHUB_OUTPUT"
+            echo "firmware=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$ALL_TOUCHED" -eq 0 ]]; then
+            # Empty diff (e.g. same commit as base): run everything.
+            echo "website=true" >> "$GITHUB_OUTPUT"
+            echo "firmware=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$WEBSITE_TOUCHED" -eq "$ALL_TOUCHED" ]]; then
+            echo "website-only PR ($ALL_TOUCHED files): firmware jobs will be skipped."
+            echo "website=true"  >> "$GITHUB_OUTPUT"
+            echo "firmware=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Mixed/firmware PR ($ALL_TOUCHED files, $WEBSITE_TOUCHED under website/): running both."
+            echo "website=true"  >> "$GITHUB_OUTPUT"
+            echo "firmware=true"  >> "$GITHUB_OUTPUT"
+          fi
+
   clang-format:
     name: clang-format
+    needs: changes
+    if: needs.changes.outputs.firmware == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -54,6 +110,8 @@ jobs:
 
   cppcheck:
     name: cppcheck
+    needs: changes
+    if: needs.changes.outputs.firmware == 'true'
     # The pinned platformio/tool-cppcheck@~1.22200.0 (cppcheck 2.22) has no
     # PCRE1 dependency, so the standard ubuntu-latest (26.x) image works
     # again. The install step also syncs the tool's package.json version to
@@ -138,6 +196,8 @@ jobs:
 
   build:
     name: Build ${{ matrix.env }}
+    needs: changes
+    if: needs.changes.outputs.firmware == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -264,6 +324,8 @@ jobs:
 
   unit-tests:
     name: Host unit tests
+    needs: changes
+    if: needs.changes.outputs.firmware == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -299,15 +361,67 @@ jobs:
       - name: Run tests
         run: ctest --test-dir build/test --output-on-failure -j"$(nproc)"
 
-  # This job is the single PR required status check. It allows changing the
-  # individual jobs above in the future without reconfiguring branch protection.
+  website:
+    name: Website build
+    needs: changes
+    if: needs.changes.outputs.website == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache bun dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.bun/install/cache
+            website/node_modules
+          key: website-bun-${{ runner.os }}-${{ hashFiles('website/bun.lock') }}
+          restore-keys: |
+            website-bun-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build site (production)
+        env:
+          # Raises the GitHub releases API rate limit for the build-time
+          # changelog/manifest generation (lib/releases.mjs).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bunx --bun vitepress build
+
+      - name: Sanity-check build output
+        run: |
+          set -euo pipefail
+          dist=".vitepress/dist"
+          for page in index.html flash.html changelog.html 404.html; do
+            test -s "$dist/$page" || { echo "MISSING: $dist/$page"; exit 1; }
+          done
+          pages=$(find "$dist" -name '*.html' | wc -l)
+          manifests=$(find "$dist" -maxdepth 1 -name 'xerif-manifest-*.json' | wc -l)
+          echo "pages=$pages manifests=$manifests"
+          test "$pages" -ge 20
+          echo "Website build gate passed."
+
+  # This job is the single PR required status check (the merge gate). It allows
+  # changing the individual jobs above in the future without reconfiguring
+  # branch protection. Content-aware: website-only PRs skip the firmware jobs,
+  # firmware-only PRs skip the website build; skipped jobs do not block.
   ci:
     name: CI Status
     needs:
+      - changes
       - build
       - clang-format
       - cppcheck
       - unit-tests
+      - website
     if: always()
     runs-on: ubuntu-latest
     steps:
