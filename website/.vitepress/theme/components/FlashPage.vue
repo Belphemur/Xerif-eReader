@@ -3,13 +3,23 @@ import { onMounted, ref } from 'vue'
 import { CROSSPOINT, GITHUB, SUPPORT_CROSSPOINT } from '../links'
 import { loadEspWebTools } from '../lib/espWebTools.js'
 
-const props = defineProps<{
-  version: string
-  binUrl: string
-  binName: string
-  sizeMb: number
-  releaseUrl: string
-}>()
+const props = withDefaults(
+  defineProps<{
+    version: string
+    binUrl: string
+    binName: string
+    sizeMb: number
+    releaseUrl: string
+    betaBoards: Array<{
+      board: string
+      name: string
+      binUrl: string
+      binName: string
+      sizeMb: number
+    }>
+  }>(),
+  { betaBoards: () => [] },
+)
 
 // WebSerial support can only be checked in the browser, so SSR assumes it
 // works and shows the installer; a non-Chromium browser swaps to the notice
@@ -54,7 +64,16 @@ onMounted(() => {
         <span class="xp-banner__mark" aria-hidden="true">&#10003;</span>
         <div>
           <span class="xp-banner__name">Xteink X4 Pro</span>
-          <span class="xp-banner__note">Supported &mdash; this installer is built for it</span>
+          <span class="xp-banner__note">Supported &mdash; stable installer built for it</span>
+        </div>
+      </div>
+      <div class="xp-banner__cell xp-banner__cell--ok">
+        <span class="xp-banner__mark" aria-hidden="true">&#10003;</span>
+        <div>
+          <span class="xp-banner__name">Other PSRAM boards</span>
+          <span class="xp-banner__note">
+            Supported &mdash; beta (X4 Classic, Metalio E-Ink 4, Paper Mono, EEGO A4, Picco)
+          </span>
         </div>
       </div>
       <div class="xp-banner__cell xp-banner__cell--no">
@@ -114,6 +133,53 @@ onMounted(() => {
           </p>
         </div>
       </template>
+    </section>
+
+    <section
+      v-if="betaBoards.length"
+      class="xp-beta"
+      aria-label="Beta devices"
+    >
+      <h2 class="xp-sd__title">Beta devices</h2>
+      <p class="xp-sd__sub">
+        Xerif also runs on other PSRAM-equipped boards. These installers work
+        but get less testing &mdash; treat them as beta and
+        <a :href="`${GITHUB}/issues`" target="_blank" rel="noopener">report issues on GitHub</a>.
+      </p>
+      <div class="xp-beta__grid">
+        <div
+          v-for="board in betaBoards"
+          :key="board.board"
+          class="xp-beta__cell xp-card"
+        >
+          <div class="xp-flash__panel-head">
+            <span class="xp-chip">beta</span>
+            <span class="xp-chip">{{ board.name }}</span>
+          </div>
+          <template v-if="hasSerial">
+            <esp-web-install-button :manifest="`/xerif-manifest-${board.board}.json`">
+              <button
+                type="button"
+                slot="activate"
+                class="xp-btn xp-btn--secondary xp-flash__install-btn"
+              >
+                Flash it now
+              </button>
+            </esp-web-install-button>
+          </template>
+          <p class="xp-sd__hint">
+            SD card: download
+            <a :href="board.binUrl" target="_blank" rel="noopener"><code>{{ board.binName }}</code></a>
+            ({{ board.sizeMb }} MB) and copy it to the top folder of the reader's
+            SD card, then use <strong>Settings &rsaquo; System &rsaquo; SD Card
+            Firmware Update</strong>.
+          </p>
+        </div>
+      </div>
+      <p class="xp-sd__hint">
+        The same erase warning applies: leave <strong>Erase device</strong>
+        unchecked in the installer.
+      </p>
     </section>
 
     <section id="sd-card" class="xp-sd" aria-label="SD-card install">
@@ -268,10 +334,26 @@ onMounted(() => {
   color: var(--xp-ink-subtle);
 }
 
+/* Beta devices section */
+.xp-beta {
+  margin-bottom: var(--xp-margin);
+}
+
+.xp-beta__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+  gap: var(--xp-gutter);
+  margin-top: 1.5rem;
+}
+
+.xp-beta__cell {
+  padding: 1.25rem 1.5rem 1.35rem;
+}
+
 /* Device support banner */
 .xp-banner {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   border: 1px solid var(--xp-rule);
   background: var(--xp-surface);
   margin: 1.75rem 0;
@@ -286,6 +368,17 @@ onMounted(() => {
 
 .xp-banner__cell + .xp-banner__cell {
   border-left: 1px solid var(--xp-rule);
+}
+
+@media (max-width: 900px) {
+  .xp-banner {
+    grid-template-columns: 1fr;
+  }
+
+  .xp-banner__cell + .xp-banner__cell {
+    border-left: 0;
+    border-top: 1px solid var(--xp-rule);
+  }
 }
 
 .xp-banner__mark {
