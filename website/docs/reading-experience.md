@@ -19,10 +19,10 @@ Under **Settings › Reader** you control the reading experience:
 
 - Tap or press to turn pages; long-press for chapter navigation.
 - Press **Confirm** to open the reader menu: chapter list, bookmarks,
-  clippings and highlights, screenshots.
+  screenshots.
 - **Dictionary lookup:** select a StarDict dictionary under
-  **Settings › Reader › Dictionary**, then look up a word or phrase while
-  reading — see [Dictionary lookup](/docs/dictionary).
+  **Settings › Reader › Dictionary**, then look up a word while reading —
+  see [Dictionary lookup](/docs/dictionary).
 - **Focus Reading** (optional) bolds the first part of each word to guide
   your eye — see [Focus Reading](/docs/focus-reading).
 - **Reading statistics** — per-book stats, reading speed, streaks, and

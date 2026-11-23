@@ -84,10 +84,3 @@ definitions are paginated.
 IPA pronunciation symbols (ˈ ː ɹ…) are not covered by the built-in fonts —
 install a [custom font](/docs/custom-fonts) that includes them to see
 those glyphs.
-
-## Vocabulary history
-
-Successful lookups are appended to `/Vocabulary.txt` on the SD card — one
-JSON record per line with the word, the matched headword, the definition,
-and where in the book you looked it up. Failed lookups are not recorded,
-and lookups never create highlights.
