@@ -48,6 +48,7 @@
 #include "WebDAVHandler.h"
 #include "WifiCredentialStore.h"
 #include "WifiPowerSaveGuard.h"
+#include "activities/RenderLock.h"
 #include "html/FilesPageHtml.generated.h"
 #include "html/FontsPageHtml.generated.h"
 #include "html/HomePageHtml.generated.h"
@@ -379,7 +380,7 @@ class CrossPointWebServer::RouteHandler final : public RequestHandler {
   CrossPointWebServer& owner_;
 };
 
-bool CrossPointWebServer::begin() {
+bool CrossPointWebServer::begin(GfxRenderer& renderer) {
   if (running) {
     LOG_DBG("WEB", "Web server already running");
     return true;
@@ -393,6 +394,12 @@ bool CrossPointWebServer::begin() {
   if (!isStaConnected && !isInApMode) {
     LOG_DBG("WEB", "Cannot start webserver - no valid network (mode=%d, status=%d)", wifiMode, WiFi.status());
     return false;
+  }
+
+  {
+    RenderLock lock;
+    // Any transfer route can replace or delete a file that a loaded font reads.
+    sdFontSystem.releaseForStorage(renderer);
   }
 
   // Store AP mode flag for later use (e.g., in handleStatus)

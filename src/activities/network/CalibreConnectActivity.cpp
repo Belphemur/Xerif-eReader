@@ -53,6 +53,7 @@ void CalibreConnectActivity::onEnter() {
 void CalibreConnectActivity::onExit() {
   Activity::onExit();
 
+  webServer.reset();
   MDNS.end();
 
   if (WiFi.getMode() != WIFI_MODE_NULL) {
@@ -92,7 +93,7 @@ void CalibreConnectActivity::startWebServer() {
   }
 
   webServer.reset(new CrossPointWebServer());
-  webServer->begin();
+  webServer->begin(renderer);
 
   if (webServer->isRunning()) {
     state = CalibreConnectState::SERVER_RUNNING;

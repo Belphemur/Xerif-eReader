@@ -35,6 +35,7 @@ enum class SettingAction {
   TextSettings,
   Plugins,
   KeyboardLayouts,
+  UiFont,
   HomeButton,
   ControlsPower,
   ControlsFront,
@@ -203,6 +204,9 @@ class SettingsActivity final : public UiListActivity {
   bool quickResumeTimeoutAutoEnabled = false;
 
   OptionPopup<> optionPopup;  // Fork: OptionPopup is a fixed-size template here (no ownedStrings heap).
+  // One-shot repaint flag: the UI-font error message popup needs a cleared
+  // background because the list underneath was already painted (upstream #4563).
+  bool redrawFontPopupBackground = false;
 
   // Row structure (label/actionValue), rebuilt only when the setting list
   // changes; rowValues_ holds the live value text, refreshed every

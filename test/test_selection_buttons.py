@@ -114,6 +114,12 @@ scroll_state = scroll_state[:scroll_state.index(";") + 1] + "\n"
 scroll_method = "  void scrollToSelected() {" + popup_source.split(
     "  void scrollToSelected() {", 1
 )[1].split("  static constexpr size_t INTERACTION_CAPACITY", 1)[0]
+# confirmSelection() (upstream #4563) moves the callback out so a selection can
+# open another popup; the fork declares beginShow() right after it instead of
+# activate().
+popup_confirm = "  void confirmSelection()" + popup_source.split("  void confirmSelection()", 1)[1].split(
+    "  bool beginShow(", 1
+)[0]
 popup_harness = r"""
 #include <algorithm>
 #include <atomic>
@@ -135,7 +141,7 @@ struct Popup {
   std::vector<int> ownedStrings{0};
   std::function<void(int)> onSelectCallback;
   bool isActive() const { return active; }
-""" + popup_buttons + r"""
+""" + popup_buttons + popup_confirm + r"""
   // Model an outside release after the shared touch router finds no dialog hit.
   bool handleInput(const Input& input, const std::function<void()>& update) {
     if (active && input.outsideTap) { active = false; update(); return true; }
@@ -175,6 +181,18 @@ int main() {
   confirmed.mappedInput.confirm = true;
   confirmed.loop();
   assert(confirmed.cancellations == 1);
+  Popup longPopup;
+  longPopup.ownedStrings.resize(129);
+  int chosen = -1;
+  longPopup.onSelectCallback = [&](int index) { chosen = index; };
+  longPopup.handleButtons(true, false, false, false, [] {});
+  assert(longPopup.selectedIndex == 128);
+  longPopup.handleButtons(false, true, false, false, [] {});
+  assert(longPopup.selectedIndex == 0);
+  for (int i = 0; i < 20; ++i) longPopup.handleButtons(false, true, false, false, [] {});
+  longPopup.handleButtons(false, false, true, false, [] {});
+  assert(chosen == 20);
+
   ClipSelectionActivity usable;
   usable.wordCount = 1;
   usable.mappedInput.back = true;

@@ -78,6 +78,7 @@ void CrossPointWebServerActivity::onEnter() {
   // demand — release them up front instead of aborting in startWebServer()
   // when the heap comes up short (observed on X3 with a Korean SD font).
   if (auto* fcm = renderer.getFontCacheManager()) {
+    RenderLock lock;
     fcm->releaseSdFontCaches();
     LOG_DBG("WEBACT", "Free heap after SD font cache release: %d bytes", ESP.getFreeHeap());
   }
@@ -118,6 +119,7 @@ void CrossPointWebServerActivity::onExit() {
   LOG_DBG("WEBACT", "Free heap at onExit start: %d bytes", ESP.getFreeHeap());
 
   state = WebServerActivityState::SHUTTING_DOWN;
+  webServer.reset();
   stopDnsServer();
   MDNS.end();
 
@@ -412,7 +414,7 @@ void CrossPointWebServerActivity::startWebServer() {
   // (the v2.12.1 abort site, issue #258). The gate just above passed, so the
   // heap shrank underneath it — spend the one defrag reboot before going Home
   // (AP resumes automatically; Join Network re-opens WiFi selection).
-  if (!webServer->begin() || !webServer->isRunning()) {
+  if (!webServer->begin(renderer) || !webServer->isRunning()) {
     webServer.reset();
 #if FREEINK_CAP_TOUCH
     if (!heapDefragRetried && !BoardConfig::hasTouch()) {

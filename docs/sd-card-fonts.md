@@ -23,7 +23,7 @@ There are three ways to install fonts:
 1. Start **File Transfer** and connect through **Join Network** or **Create Hotspot**
 2. Open the web interface URL shown on the reader
 3. Navigate to the **Fonts** tab
-4. Upload `.cpfont` files using the upload form
+4. Upload `.cpfont` files, or upload `.ttf` and `.otf` files on a device with external RAM
 
 ### Option 3: Manual SD card copy
 
@@ -60,18 +60,28 @@ There are three ways to install fonts:
 
 3. Insert the SD card and power on your CrossPoint reader
 
+## Menu Fonts
+
+Choose a font under **Settings > Display > UI Font**, below **UI Theme**.
+A `.cpfont` family appears in the picker if it includes 8, 10, and 12 pt files.
+These sizes match the three menu font sizes. If an older install is missing
+a size, update the family in **Manage Fonts** or add the missing files manually.
+
+The selected font is used for menus, library titles, and other interface text.
+The reader uses the built-in font for any characters missing from the selected
+font. If neither font covers a character, the reader skips it. Choose
+**Default** to restore the built-in menu fonts. USB Drive uses built-in fonts.
+File Transfer switches to built-in fonts when the web server starts.
+
 ## Non-Latin Scripts Fallback in the User Interface
 
-The built-in UI fonts are Latin-only, so by default the interface (book titles
-in the library, file names in the browser, list rows, headers) shows
-replacement boxes for non-Latin text — CJK, Greek, Cyrillic, Armenian, and any
-other script the SD-font converter ships an interval for — even when book
-*content* renders correctly with a selected SD-card font.
+The built-in UI fonts lack characters from scripts such as Chinese, Japanese,
+and Korean. The reader can show replacement boxes in titles and file names
+even when the book text itself renders correctly.
 
-To avoid shipping every script's glyph set in flash, CrossPoint instead reuses
-the SD-card font you already selected: when a UI string contains a character
-the built-in font cannot draw, that whole string is rendered with your selected
-SD-card font instead.
+When **UI Font** is set to **Default**, CrossPoint can reuse the font you
+selected for reading. If a title contains a character the built-in font
+cannot draw, CrossPoint can use your SD card font for the whole title.
 
 The fallback is **size-matched**. The built-in UI fonts render at 8 pt
 (small/author lines), 10 pt (list rows) and 12 pt (book-cover titles, headers),
@@ -106,7 +116,7 @@ When converting your own font, include the UI sizes:
       --name MyCJKFont \
       --output-dir ./MyCJKFont/
 
-What this means in practice:
+With **UI Font** set to **Default**:
 
 - Select a non-Latin-capable SD font under **Settings > Reader > Font Family**
   (see [Installing Fonts](#installing-fonts) and the interval presets for
@@ -174,9 +184,9 @@ device:
 - **Fonts without shaping data** still get their vowel signs in the right
   order, but conjuncts show a visible virama (प्‌र, প্‌র).
 
-Book titles and other interface text in these scripts use the selected family
-as a size-matched fallback, as described above, which is why the
-families include 8 and 10 pt.
+With **UI Font** set to **Default**, book titles and other interface text in
+these scripts can use the selected reader family as a size-matched fallback.
+That is why these families include 8 and 10 pt files.
 
 On the X3 and X4, the first time an Indic font is used its shaping tables
 (5-80 KB per style, depending on the script) are copied once into a reserved

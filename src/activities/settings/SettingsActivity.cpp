@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <utility>
 
 #include "AboutActivity.h"
 #include "BleSettingsActivity.h"
@@ -187,7 +188,13 @@ void SettingsActivity::rebuildSettings() {
     if (section == SettingsSection::Controls && setting.valuePtr == &CrossPointSettings::longPressButtonBehavior) {
       setting.nameId = StrId::STR_PAGE_TURN_LONG_PRESS;
     }
+    const bool isUiTheme = setting.nameId == StrId::STR_UI_THEME;
     settings.push_back(std::move(setting));
+    // UI Font binds SD .cpfont families, whose load path is compiled out on
+    // native-TTF boards — don't offer a picker that can never bind there.
+#if !defined(CROSSPOINT_TTF_READER)
+    if (isUiTheme) addAction(SettingsSection::Display, StrId::STR_UI_FONT, SettingAction::UiFont);
+#endif
   }
 
   if (section == SettingsSection::Controls && controlsGroup == ControlsGroup::Front) {
@@ -590,6 +597,45 @@ void SettingsActivity::toggleSelectedSetting() {
                                  rebuildSettings();
                                });
         break;
+      case SettingAction::UiFont: {
+        const auto& families = sdFontSystem.registry().getFamilies();
+        std::vector<std::string> options;
+        options.reserve(families.size() + 1);
+        options.emplace_back(tr(STR_DEFAULT_VALUE));
+        int current = 0;
+        for (const auto& fam : families) {
+          if (!SdCardFontSystem::supportsUiFont(fam)) continue;
+          if (fam.name == sdFontSystem.activeUiFontName()) current = static_cast<int>(options.size());
+          options.push_back(fam.name);
+        }
+        optionPopup.show(StrId::STR_UI_FONT, std::move(options), current, [this](const int idx) {
+          const char* name = idx == 0 ? "" : optionPopup.optionLabel(idx);
+          bool applied;
+          {
+            RenderLock lock;
+            if (strcmp(name, sdFontSystem.activeUiFontName()) == 0 && strcmp(name, SETTINGS.uiFontFamilyName) == 0)
+              return;
+            char previous[sizeof(SETTINGS.uiFontFamilyName)];
+            snprintf(previous, sizeof(previous), "%s", sdFontSystem.activeUiFontName());
+            applied = sdFontSystem.applyUiFont(renderer, name);
+            if (!applied && previous[0] != '\0') sdFontSystem.applyUiFont(renderer, previous);
+            resetUi();
+            if (!applied) {
+              const char* const errorOptions[] = {tr(STR_OK_BUTTON)};
+              optionPopup.showMessage("", tr(STR_UI_FONT_LOAD_FAILED), errorOptions, 1, 0, nullptr);
+              redrawFontPopupBackground = true;
+            }
+          }
+          if (!applied) return;
+          if (strcmp(name, SETTINGS.uiFontFamilyName) != 0) {
+            snprintf(SETTINGS.uiFontFamilyName, sizeof(SETTINGS.uiFontFamilyName), "%s", name);
+            SETTINGS.saveToFile();
+          }
+          rebuildSettings();
+        });
+        requestUpdate();
+        return;
+      }
       case SettingAction::Plugins: {
         static constexpr StrId OPTIONS[] = {StrId::STR_ENABLED, StrId::STR_DISABLED, StrId::STR_CANCEL};
         optionPopup.show(StrId::STR_PLUGINS, OPTIONS, 3, SETTINGS.pluginsEnabled ? 0 : 1, [this](const int idx) {
@@ -693,6 +739,10 @@ void SettingsActivity::openAutoPowerOffPicker() {
 }
 
 std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
+  if (setting.action == SettingAction::UiFont) {
+    const char* name = sdFontSystem.activeUiFontName();
+    return name[0] == '\0' ? tr(STR_DEFAULT_VALUE) : name;
+  }
   if (setting.action == SettingAction::Plugins) return SETTINGS.pluginsEnabled ? tr(STR_ENABLED) : tr(STR_DISABLED);
   if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
     // Guard like the valueGetter branch below: a corrupt/migrated settings
@@ -788,6 +838,11 @@ void SettingsActivity::drawFooter() {
 }
 
 void SettingsActivity::render(RenderLock&& lock) {
+  if (std::exchange(redrawFontPopupBackground, false) && optionPopup.isActive()) {
+    renderer.clearScreen();
+    drawChrome();
+    renderUi();
+  }
   if (optionPopup.processRender(renderer, mappedInput)) return;
   UiListActivity::render(std::move(lock));
 }

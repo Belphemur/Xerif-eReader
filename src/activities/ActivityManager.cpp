@@ -19,6 +19,7 @@
 #include "HapticFeedback.h"
 #include "MemSentinel.h"
 #include "OpdsServerStore.h"
+#include "SdCardFontSystem.h"
 #include "activities/reader/ReadingStatsMenuActivity.h"
 #include "boot_sleep/BootActivity.h"
 #include "boot_sleep/SleepActivity.h"

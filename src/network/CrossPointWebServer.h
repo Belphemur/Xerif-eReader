@@ -19,6 +19,8 @@ struct FileInfo {
   bool isDirectory;
 };
 
+class GfxRenderer;
+
 class CrossPointWebServer {
  public:
   struct WsUploadStatus {
@@ -56,8 +58,9 @@ class CrossPointWebServer {
 
   // Start the web server (call after WiFi is connected). Returns false (and
   // emits a WEBACT breadcrumb) on a no-throw allocation failure instead of
-  // aborting under -fno-exceptions.
-  bool begin();
+  // aborting under -fno-exceptions. Takes the renderer so font handles can be
+  // released before any transfer route can touch their files (upstream #4563).
+  bool begin(GfxRenderer& renderer);
 
   // Stop the web server
   void stop();

@@ -106,8 +106,7 @@ class OptionPopup {
             if (event && event.action == ACTION_OPTION) {
               // Tap released on an option: select it, fire, dismiss.
               selectedIndex = event.value;
-              active = false;
-              if (onSelectCallback) onSelectCallback(selectedIndex);
+              confirmSelection();
               haptic_feedback::touchAction();
               requestUpdate();
               return true;
@@ -177,8 +176,7 @@ class OptionPopup {
       requestUpdate();
       return true;
     } else if (confirm) {
-      active = false;
-      if (onSelectCallback) onSelectCallback(selectedIndex);
+      confirmSelection();
       requestUpdate();
       return true;
     } else if (back) {
@@ -322,6 +320,7 @@ class OptionPopup {
   }
 
   bool isActive() const { return active; }
+  const char* optionLabel(int index) const { return ownedStrings[index].c_str(); }
 
   // Close without firing the callback (the surface under the popup is going
   // away, e.g. its host screen closes from outside the popup's own input).
@@ -331,6 +330,15 @@ class OptionPopup {
   }
 
  private:
+  // A selection can open another popup (for example the UI-font load-failure
+  // message): move the callback out so a re-entrant show()/showMessage() never
+  // runs against a std::function that mutates itself mid-call.
+  void confirmSelection() {
+    active = false;
+    auto callback = std::move(onSelectCallback);
+    if (callback) callback(selectedIndex);
+  }
+
   bool beginShow(const int optionCount) {
     // Fail closed rather than silently truncating an enum: callers list real
     // settings and a truncated list could make the desired value unreachable.

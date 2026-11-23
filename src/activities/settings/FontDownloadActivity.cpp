@@ -14,11 +14,13 @@
 #include <Memory.h>
 #include <WiFi.h>
 #include <esp_rom_crc.h>
+#include <strings.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
 
+#include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "SdCardFontSystem.h"
 #include "SilentRestart.h"
@@ -630,6 +632,15 @@ bool FontDownloadActivity::computeFileCrc32(const char* path, uint32_t& outCrc) 
   return true;
 }
 
+void FontDownloadActivity::suspendFontsForMutation(const char* familyName) {
+  if (fontsSuspended_ || (strcasecmp(familyName, SETTINGS.uiFontFamilyName) != 0 &&
+                          strcasecmp(familyName, SETTINGS.sdFontFamilyName) != 0))
+    return;
+  RenderLock lock(*this);
+  sdFontSystem.releaseForStorage(renderer);
+  fontsSuspended_ = true;
+}
+
 void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
   {
     RenderLock lock(*this);
@@ -651,6 +662,7 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
   memclaim::releaseFontCaches(renderer);
   claim_.noteFontCachesPulled();
   LOG_DBG("FONT", "Free heap after SD font cache release: %d bytes", ESP.getFreeHeap());
+  suspendFontsForMutation(str(family.name));
 
   // Check before touching the family directory so a failed update leaves the
   // installed family unchanged.
@@ -811,6 +823,7 @@ void FontDownloadActivity::onDeleteConfirmationResult(const ActivityResult& resu
   }
   auto& family = families_[familyIndex];
 
+  suspendFontsForMutation(str(family.name));
   if (fontInstaller_.deleteFamily(str(family.name)) != FontInstaller::Error::OK) {
     RenderLock lock(*this);
     state_ = ERROR;

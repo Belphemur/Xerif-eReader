@@ -11,6 +11,7 @@
 #include "fontIds.h"
 
 class GfxRenderer;
+class EpdFontFamily;
 
 /// One built-in UI font paired with the point size of the SD/TTF fallback
 /// that covers scripts the built-in lacks (CJK, Greek, Cyrillic, ...).
@@ -37,12 +38,28 @@ class SdCardFontSystem {
   SdCardFontSystem(const SdCardFontSystem&) = delete;
   SdCardFontSystem& operator=(const SdCardFontSystem&) = delete;
   /// Discover SD card fonts and load user's saved selection. Call once during setup.
-  void begin(GfxRenderer& renderer);
+  void begin(GfxRenderer& renderer, const EpdFontFamily& small, const EpdFontFamily& ui10, const EpdFontFamily& ui12);
 
   /// Ensure the correct SD font family is loaded for the current settings.
   /// Call before entering the reader or after settings change.
   /// Also re-discovers if the registry has been marked dirty (e.g. by web upload).
   void ensureLoaded(GfxRenderer& renderer);
+
+  static bool supportsUiFont(const SdCardFontFamilyInfo& family);
+
+  /// Bind the UI font to an installed family or the built-ins (empty name).
+  /// Returns false on failure, with the built-ins restored. The caller holds
+  /// RenderLock after startup.
+  bool applyUiFont(GfxRenderer& renderer, const char* name);
+  const char* activeUiFontName() const;
+#if CROSSPOINT_VECTOR_FONTS
+  bool uiTtfFailed() const { return uiTtfFailed_.load(std::memory_order_relaxed); }
+  void recoverUiFont(GfxRenderer& renderer);
+#endif
+
+  /// Release SD font handles and restore built-ins before storage leaves firmware control.
+  /// The caller holds RenderLock.
+  void releaseForStorage(GfxRenderer& renderer);
 
   /// Resolve an SD card font ID from family name + reader point size.
   /// Returns 0 if not found. Used by CrossPointSettings::getReaderFontId().
@@ -65,6 +82,10 @@ class SdCardFontSystem {
   }
 
  private:
+  bool loadUiCpfonts(const SdCardFontFamilyInfo& family, GfxRenderer& renderer);
+  void restoreBuiltinUiFonts(GfxRenderer& renderer);
+  void clearCpfontUiFallbacks(GfxRenderer& renderer);
+
   // Load the active SD family at the built-in UI point sizes and register each
   // as a size-matched script fallback for the corresponding UI font, so book
   // titles/list rows in scripts the built-ins lack (CJK, Greek, Cyrillic, ...)
@@ -94,6 +115,10 @@ class SdCardFontSystem {
 
   SdCardFontRegistry registry_;
   SdCardFontManager manager_;
+  SdCardFontManager uiCpfonts_;
+  int cpfontUiIds_[3] = {};
+  const EpdFontFamily* builtinUiFonts_[3] = {};
+  char activeUiFontName_[SdCardFontRegistry::FAMILY_NAME_CAPACITY] = "";
   std::atomic<bool> registryDirty_{false};
 };
 

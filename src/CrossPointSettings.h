@@ -5,6 +5,7 @@
 #include <Epub/ReaderRenderSpec.h>
 #include <Logging.h>
 #include <PersistableStore.h>
+#include <SdCardFontRegistry.h>
 
 #include <cstdint>
 #include <ctime>
@@ -461,6 +462,10 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   static constexpr uint8_t TTF_FONT_POINT_SIZE_MAX = 72;
   static constexpr uint8_t DEFAULT_TTF_FONT_POINT_SIZE = 14;
   uint8_t ttfFontPointSize = DEFAULT_TTF_FONT_POINT_SIZE;
+  // SD card font family to use for the whole UI (menus, home);
+  // empty = the built-in UI font. Bound to the UI font slots at boot and on
+  // change. Independent of the reader font above.
+  char uiFontFamilyName[SdCardFontRegistry::FAMILY_NAME_CAPACITY] = "";
   // Dictionary folder name under /dictionaries (empty = no dictionary)
   char dictionaryName[32] = "";
   // Save successful dictionary lookups to vocabulary history (default off).

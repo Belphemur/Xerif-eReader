@@ -1031,8 +1031,7 @@ void setupDisplayAndFonts(bool seamless = false) {
   renderer.insertFont(UI_12_FONT_ID, ui12FontFamily);
   renderer.insertFont(SMALL_FONT_ID, smallFontFamily);
 
-  // Discover and load SD card fonts
-  sdFontSystem.begin(renderer);
+  sdFontSystem.begin(renderer, smallFontFamily, ui10FontFamily, ui12FontFamily);
 
   // Native-TTF reader font discovery (design §14.1): gated so PSRAM-less
   // builds never scan or allocate for the native-TTF path. MUST run before
