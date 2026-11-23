@@ -1,0 +1,27 @@
+// Cloudflare Workers static-assets deployment for the Xerif website.
+// The owner fills in account_id (and confirms the domain) before deploying.
+//
+//   Build first:   bunx --bun vitepress build   (output in .vitepress/dist)
+//   Deploy:        bunx wrangler deploy         (run from website/)
+//
+// The zone for aaflalo.me must be on the same Cloudflare account; the first
+// deploy creates the workers.dev route and the custom domain binding below.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "xerif-website",
+  "compatibility_date": "2026-11-01",
+  // Owner: replace with your Cloudflare account id.
+  "account_id": "<CLOUDFLARE_ACCOUNT_ID>",
+  "assets": {
+    "directory": ".vitepress/dist",
+    "not_found_handling": "404-page",
+    "html_handling": "auto-trailing-slash"
+  },
+  "routes": [
+    {
+      // Serves the site at https://xerif.aaflalo.me (zone aaflalo.me).
+      "pattern": "xerif.aaflalo.me",
+      "custom_domain": true
+    }
+  ]
+}
