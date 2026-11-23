@@ -39,10 +39,11 @@ and full credit. Xerif inherits this subsystem from
 
 ## Finishing a book
 
-Crossing the real end of a book completes it automatically. Leaving while
-on the final page (or at about 100%) asks "Mark as Finished?" once — a
-decline is remembered until you read further, so a jump to the end or some
-trailing material never silently finishes a book.
+Crossing past the real end of a book completes it automatically. Leaving
+while on the final page (or at about 100%) asks "Mark as Finished?" once —
+a decline is remembered until you read further, so a jump that stops on the
+final page or at about 100% never silently finishes a book. A jump that
+goes past the end does complete the book.
 
 ## Fixing dates
 
