@@ -1,6 +1,6 @@
 import { defineConfig } from 'vitepress'
 import { getReleases } from './lib/releases.mjs'
-import { buildFlashManifest } from './lib/manifest.mjs'
+import { buildFlashManifest, buildVersionManifest } from './lib/manifest.mjs'
 import { vendorEspWebTools } from './lib/vendor-esp-web-tools.mjs'
 
 // Self-host the WebSerial installer component (no third-party CDN at runtime).
@@ -29,7 +29,39 @@ function flashManifestPlugin() {
       // emitFile is not available while serving (dev/preview).
       if (isBuild) {
         this.emitFile({ type: 'asset', fileName: 'xerif-manifest.json', source })
+        // Per-release manifests for the changelog's "Flash this version".
+        for (const release of releases) {
+          const manifest = buildVersionManifest(release)
+          if (manifest.builds.length === 0) continue
+          this.emitFile({
+            type: 'asset',
+            fileName: `xerif-manifest-${release.version}.json`,
+            source: JSON.stringify(manifest, null, 2) + '\n',
+          })
+        }
       }
+    },
+    configureServer(server) {
+      let versionManifests = {}
+      server.middlewares.use((req, res, next) => {
+        const path = (req.url || '').split('?')[0]
+        const match = path.match(/^\/xerif-manifest-(\d+\.\d+\.\d+)\.json$/)
+        if (match) {
+          res.setHeader('Content-Type', 'application/json; charset=utf-8')
+          res.setHeader('Cache-Control', 'no-cache')
+          res.end(versionManifests[match[1]] || '{}')
+          return
+        }
+        next()
+      })
+      getReleases({ force: true }).then((releases) => {
+        versionManifests = Object.fromEntries(
+          releases
+            .map((r) => [r.version, buildVersionManifest(r)])
+            .filter(([, m]) => m.builds.length > 0)
+            .map(([v, m]) => [v, JSON.stringify(m)]),
+        )
+      })
     },
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
