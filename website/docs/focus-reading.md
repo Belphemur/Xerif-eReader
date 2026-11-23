@@ -25,7 +25,9 @@ under **Settings › Reader › Text Settings** — and toggle **Focus Reading**
 ## Notes
 
 - Focus Reading only applies to regular body text; already-bold text
-  (headings, emphasis) is left unchanged.
+  (headings, bold emphasis) keeps its look. Italic text (`<em>`) does get
+  the bold prefixes, so an emphasised word's first portion renders
+  bold-italic.
 - The setting is per-device, not per-book — it applies to all books while
   enabled.
 - Toggling it rebuilds affected sections of the current book on demand, like
