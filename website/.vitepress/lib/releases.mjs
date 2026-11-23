@@ -34,6 +34,9 @@ export function normalizeReleases(raw) {
     }))
 }
 
+const PER_PAGE = 100
+const MAX_PAGES = 10
+
 async function fetchFromGitHub() {
   const headers = {
     Accept: 'application/vnd.github+json',
@@ -42,14 +45,23 @@ async function fetchFromGitHub() {
   if (process.env.GITHUB_TOKEN) {
     headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`
   }
-  const res = await fetch(
-    `https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=40`,
-    { headers },
-  )
-  if (!res.ok) {
-    throw new Error(`GitHub releases API responded ${res.status} ${res.statusText}`)
+  // Follow pagination: with per_page=40 the changelog silently dropped every
+  // release past the first page. Stop when a page comes back short (last
+  // page) or at a sane cap; the combined list is cached as a whole.
+  const releases = []
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const res = await fetch(
+      `https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=${PER_PAGE}&page=${page}`,
+      { headers },
+    )
+    if (!res.ok) {
+      throw new Error(`GitHub releases API responded ${res.status} ${res.statusText}`)
+    }
+    const raw = await res.json()
+    releases.push(...normalizeReleases(raw))
+    if (!Array.isArray(raw) || raw.length < PER_PAGE) break
   }
-  return normalizeReleases(await res.json())
+  return releases
 }
 
 function readCache() {
