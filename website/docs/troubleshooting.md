@@ -3,9 +3,15 @@
 ## The reader won't turn on or is stuck
 
 Press and release **Reset**, then quickly press and hold **Power** for a
-few seconds to reboot. If the device never boots after a flash, redo the
-install: the [web flasher](/flash) or the
-[SD-card method](/flash#sd-card) can always rewrite the firmware.
+few seconds to reboot. If the reader still starts but misbehaves after an
+update, hold **Next** and press **Power** as it starts: the firmware's
+recovery hatch boots straight into an SD-card firmware picker and repoints
+the boot selector at the freshly written slot. If the device does not start
+at all, the SD-card method cannot reach it either (its picker lives in the
+reader's own menus) — redo the install over USB with the
+[web flasher](/flash), or use the
+[maker's flash tool](/flash#restore-stock-xteink-firmware) to restore stock
+firmware.
 
 ## Can't see the device in the browser
 

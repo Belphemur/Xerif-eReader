@@ -120,7 +120,7 @@ onMounted(() => {
       <h2 class="xp-sd__title">Install with an SD card</h2>
       <p class="xp-sd__sub">
         No desktop Chromium needed — any browser, any computer. The SD card
-        also doubles as your recovery path.
+        also doubles as a recovery path (see below).
       </p>
       <ol class="xp-sd__steps">
         <li>
@@ -141,8 +141,41 @@ onMounted(() => {
         </li>
       </ol>
       <p class="xp-sd__hint">
+        This path updates a reader that already boots (Xerif or stock Xteink
+        firmware). It needs the reader's own menus, so it is not the tool for
+        a reader that won't start — see the recovery notes below.
+      </p>
+      <p class="xp-sd__hint">
         Latest stable version: <span class="xp-mono">v{{ version || '—' }}</span
         >&nbsp;&middot; <a :href="releaseUrl" target="_blank" rel="noopener">release notes</a>
+      </p>
+    </section>
+
+    <section class="xp-restore" aria-label="If the reader misbehaves">
+      <h2 class="xp-sd__title">If the reader misbehaves after a flash</h2>
+      <p class="xp-sd__sub">
+        As long as the reader still starts, the firmware ships a built-in
+        recovery path:
+      </p>
+      <ol class="xp-sd__steps">
+        <li>
+          Hold <strong>Next</strong> and press/hold <strong>Power</strong> as
+          the reader starts. It boots straight into a "Recovery Mode" file
+          picker for SD-card firmware updates.
+        </li>
+        <li>
+          Pick a Xerif <code>.bin</code> from the SD card (the file name stays
+          as downloaded) and confirm. The picker repoints the boot selector at
+          the freshly written slot first.
+        </li>
+      </ol>
+      <p class="xp-sd__hint">
+        This covers an update gone wrong or a reader stuck booting the old
+        firmware (for example after the web installer wrote the app while the
+        boot selector still pointed at the previous slot). It does
+        <strong>not</strong> work if the reader cannot start at all — if the
+        bootloader itself was erased, only USB flashing (for example the
+        maker's flash tool below) can bring it back.
       </p>
     </section>
 
