@@ -7,8 +7,13 @@ card and are written in JavaScript.
 
 - Put a plugin's files in the `plugins/` folder on the SD card (each
   plugin in its own subfolder with a small `plugin.js` plus a manifest).
-- Enable the plugin system and install plugins through **Plugin Hub** in
-  the web interface or on-device screens.
+- Or install plugins on the device itself: enable the plugin system under
+  **Settings › Connectivity › Plugins**, then open **Plugins** on the
+  home screen and use **Plugin Hub** to browse and install official and
+  community plugins (Wi-Fi required).
+- The reader's web interface has a Plugins page, but it only lists
+  plugins that are already installed on the SD card — installation
+  happens on the device or by copying files, not from the browser.
 - Plugins can add web pages served by the reader, hook into the plugin
   job queue (for automation, e.g. from scripts), and register on-device
   catalog screens.
