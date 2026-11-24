@@ -15,10 +15,10 @@ const { hasSidebar } = useSidebar()
   <footer class="xp-footer" :class="{ 'xp-footer--offset': hasSidebar }">
     <div class="xp-footer__inner">
       <div class="xp-footer__brand">
-        <RouterLink to="/" class="xp-footer__mark">
+        <a :href="withBase('/')" class="xp-footer__mark">
           <Logo :size="34" />
           <span class="xp-footer__word">Xerif</span>
-        </RouterLink>
+        </a>
         <p class="xp-footer__tagline">
           Free, open-source software that makes your e-reader faster and sharper.
         </p>
