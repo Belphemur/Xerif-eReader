@@ -16,14 +16,16 @@ const props = defineProps<{
 /**
  * The six boards the web installer can flash, in grid order. Resolutions are
  * verified against freeink-sdk BoardConfig.h (BoardProfile displayWidth/
- * displayHeight, portrait housing order); every board here is ESP32-S3, so
- * one manifest shape fits all. X4 Pro ships the stable channel; the other
- * five are supported best-effort (beta).
+ * displayHeight, portrait housing order) and the chip against platformio.ini
+ * (every board env sets board_build.mcu = esp32s3, matching the ESP32-S3
+ * chipFamily in .vitepress/lib/manifest.mjs). X4 Pro ships the stable
+ * channel; the other five are supported best-effort (beta).
  */
 const boards = [
   {
     key: 'x4pro',
     name: 'X4 Pro',
+    chip: 'ESP32-S3',
     res: '480 × 800',
     beta: false,
     manifest: '/xerif-manifest.json',
@@ -31,6 +33,7 @@ const boards = [
   {
     key: 'x4c',
     name: 'X4 Classic',
+    chip: 'ESP32-S3',
     res: '480 × 800',
     beta: true,
     manifest: '/xerif-manifest-x4c.json',
@@ -38,6 +41,7 @@ const boards = [
   {
     key: 'metalio_eink4',
     name: 'Metalio E-Ink 4',
+    chip: 'ESP32-S3',
     res: '480 × 800',
     beta: true,
     manifest: '/xerif-manifest-metalio_eink4.json',
@@ -45,6 +49,7 @@ const boards = [
   {
     key: 'papermono',
     name: 'Paper Mono',
+    chip: 'ESP32-S3',
     res: '480 × 800',
     beta: true,
     manifest: '/xerif-manifest-papermono.json',
@@ -52,6 +57,7 @@ const boards = [
   {
     key: 'eego_a4',
     name: 'EEGO A4',
+    chip: 'ESP32-S3',
     res: '552 × 768',
     beta: true,
     manifest: '/xerif-manifest-eego_a4.json',
@@ -59,6 +65,7 @@ const boards = [
   {
     key: 'picco',
     name: 'Picco',
+    chip: 'ESP32-S3',
     res: '480 × 800',
     beta: true,
     manifest: '/xerif-manifest-picco.json',
@@ -259,6 +266,11 @@ onMounted(() => {
           <p class="xp-connect__text">{{ text }}</p>
         </li>
       </ol>
+      <p class="xp-connect__chip">
+        Your {{ selected.name }} uses an {{ selected.chip }} — the installer
+        checks the connected device's chip before writing anything, so the
+        wrong board never gets flashed by mistake.
+      </p>
       <p class="xp-connect__erase">
         Leave <strong>Erase device</strong> unchecked — the installer writes
         only the firmware, and an erase cannot be undone.
@@ -718,6 +730,11 @@ onMounted(() => {
   background: var(--xp-paper);
   border: 1px solid var(--xp-rule);
   padding: 0.85rem 1rem;
+}
+
+.xp-connect__chip {
+  margin: 0 0 0.35rem;
+  font-size: 0.9rem;
 }
 
 .xp-connect__erase {
