@@ -1,10 +1,17 @@
 <script setup lang="ts">
+import { useSidebar } from 'vitepress/theme'
 import Logo from './Logo.vue'
 import { CROSSPOINT, GITHUB, LICENSE, SUPPORT_CROSSPOINT } from '../links'
+
+// VitePress's docs sidebar is position:fixed and spans the viewport's left
+// edge at every width; the layout-bottom footer is its sibling with no
+// offset, so on docs pages it slides under the sidebar. Mirror the left
+// offsets VPContent.has-sidebar applies to the page content.
+const { hasSidebar } = useSidebar()
 </script>
 
 <template>
-  <footer class="xp-footer">
+  <footer class="xp-footer" :class="{ 'xp-footer--offset': hasSidebar }">
     <div class="xp-footer__inner">
       <div class="xp-footer__brand">
         <RouterLink to="/" class="xp-footer__mark">
@@ -186,6 +193,22 @@ import { CROSSPOINT, GITHUB, LICENSE, SUPPORT_CROSSPOINT } from '../links'
   .xp-footer__baseline {
     flex-direction: column;
     gap: 0.35rem;
+  }
+}
+
+/* Docs pages: clear the fixed sidebar exactly as VPContent.has-sidebar does
+   so the footer's columns align with the content column instead of sliding
+   behind the sidebar. Below 960px the sidebar is a closed drawer. */
+@media (min-width: 960px) {
+  .xp-footer--offset {
+    padding-left: var(--vp-sidebar-width);
+  }
+}
+
+@media (min-width: 1440px) {
+  .xp-footer--offset {
+    padding-left: calc((100vw - var(--vp-layout-max-width)) / 2 + var(--vp-sidebar-width));
+    padding-right: calc((100vw - var(--vp-layout-max-width)) / 2);
   }
 }
 </style>
