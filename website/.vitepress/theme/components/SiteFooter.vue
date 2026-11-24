@@ -1,16 +1,24 @@
 <script setup lang="ts">
+import { withBase } from 'vitepress'
+import { useSidebar } from 'vitepress/theme'
 import Logo from './Logo.vue'
 import { CROSSPOINT, GITHUB, LICENSE, SUPPORT_CROSSPOINT } from '../links'
+
+// VitePress's docs sidebar is position:fixed and spans the viewport's left
+// edge at every width; the layout-bottom footer is its sibling with no
+// offset, so on docs pages it slides under the sidebar. Mirror the left
+// offsets VPContent.has-sidebar applies to the page content.
+const { hasSidebar } = useSidebar()
 </script>
 
 <template>
-  <footer class="xp-footer">
+  <footer class="xp-footer" :class="{ 'xp-footer--offset': hasSidebar }">
     <div class="xp-footer__inner">
       <div class="xp-footer__brand">
-        <RouterLink to="/" class="xp-footer__mark">
+        <a :href="withBase('/')" class="xp-footer__mark">
           <Logo :size="34" />
           <span class="xp-footer__word">Xerif</span>
-        </RouterLink>
+        </a>
         <p class="xp-footer__tagline">
           Free, open-source software that makes your e-reader faster and sharper.
         </p>
@@ -19,9 +27,12 @@ import { CROSSPOINT, GITHUB, LICENSE, SUPPORT_CROSSPOINT } from '../links'
       <nav class="xp-footer__nav" aria-label="Footer">
         <div class="xp-footer__col">
           <span class="xp-footer__label">Product</span>
-          <RouterLink to="/flash">Flash</RouterLink>
-          <RouterLink to="/docs/">Docs</RouterLink>
-          <RouterLink to="/changelog">Changelog</RouterLink>
+          <!-- Plain anchors: VitePress ships no vue-router, so RouterLink
+               would hydrate into a literal <routerlink> element and render
+               the links as plain text. -->
+          <a :href="withBase('/flash')">Flash</a>
+          <a :href="withBase('/docs/')">Docs</a>
+          <a :href="withBase('/changelog')">Changelog</a>
         </div>
         <div class="xp-footer__col">
           <span class="xp-footer__label">Project</span>
@@ -186,6 +197,22 @@ import { CROSSPOINT, GITHUB, LICENSE, SUPPORT_CROSSPOINT } from '../links'
   .xp-footer__baseline {
     flex-direction: column;
     gap: 0.35rem;
+  }
+}
+
+/* Docs pages: clear the fixed sidebar exactly as VPContent.has-sidebar does
+   so the footer's columns align with the content column instead of sliding
+   behind the sidebar. Below 960px the sidebar is a closed drawer. */
+@media (min-width: 960px) {
+  .xp-footer--offset {
+    padding-left: var(--vp-sidebar-width);
+  }
+}
+
+@media (min-width: 1440px) {
+  .xp-footer--offset {
+    padding-left: calc((100vw - var(--vp-layout-max-width)) / 2 + var(--vp-sidebar-width));
+    padding-right: calc((100vw - var(--vp-layout-max-width)) / 2);
   }
 }
 </style>

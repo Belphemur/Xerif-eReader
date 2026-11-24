@@ -16,14 +16,16 @@ const props = defineProps<{
 /**
  * The six boards the web installer can flash, in grid order. Resolutions are
  * verified against freeink-sdk BoardConfig.h (BoardProfile displayWidth/
- * displayHeight, portrait housing order); every board here is ESP32-S3, so
- * one manifest shape fits all. X4 Pro ships the stable channel; the other
- * five are supported best-effort (beta).
+ * displayHeight, portrait housing order) and the chip against platformio.ini
+ * (every board env sets board_build.mcu = esp32s3, matching the ESP32-S3
+ * chipFamily in .vitepress/lib/manifest.mjs). X4 Pro ships the stable
+ * channel; the other five are supported best-effort (beta).
  */
 const boards = [
   {
     key: 'x4pro',
     name: 'X4 Pro',
+    chip: 'ESP32-S3',
     res: '480 × 800',
     beta: false,
     manifest: '/xerif-manifest.json',
@@ -31,6 +33,7 @@ const boards = [
   {
     key: 'x4c',
     name: 'X4 Classic',
+    chip: 'ESP32-S3',
     res: '480 × 800',
     beta: true,
     manifest: '/xerif-manifest-x4c.json',
@@ -38,6 +41,7 @@ const boards = [
   {
     key: 'metalio_eink4',
     name: 'Metalio E-Ink 4',
+    chip: 'ESP32-S3',
     res: '480 × 800',
     beta: true,
     manifest: '/xerif-manifest-metalio_eink4.json',
@@ -45,6 +49,7 @@ const boards = [
   {
     key: 'papermono',
     name: 'Paper Mono',
+    chip: 'ESP32-S3',
     res: '480 × 800',
     beta: true,
     manifest: '/xerif-manifest-papermono.json',
@@ -52,6 +57,7 @@ const boards = [
   {
     key: 'eego_a4',
     name: 'EEGO A4',
+    chip: 'ESP32-S3',
     res: '552 × 768',
     beta: true,
     manifest: '/xerif-manifest-eego_a4.json',
@@ -59,6 +65,7 @@ const boards = [
   {
     key: 'picco',
     name: 'Picco',
+    chip: 'ESP32-S3',
     res: '480 × 800',
     beta: true,
     manifest: '/xerif-manifest-picco.json',
@@ -86,19 +93,6 @@ const sdBin = computed(() => {
   return props.boardBins?.[selected.value.key] || null
 })
 
-// "Beta builds" in step 2 scrolls back to the grid and briefly marks the
-// beta boards so they are easy to spot.
-const betaHinted = ref(false)
-let betaHintTimer = null
-function hintBeta() {
-  betaHinted.value = true
-  clearTimeout(betaHintTimer)
-  betaHintTimer = setTimeout(() => (betaHinted.value = false), 2000)
-  document
-    .querySelector('.xp-devices')
-    ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-}
-
 // WebSerial support can only be checked in the browser, so SSR assumes it
 // works and shows the installer; a non-Chromium browser swaps to the notice
 // once the page hydrates.
@@ -121,7 +115,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="xp-flash">
+  <div class="xp-flash xp-shell">
     <header class="xp-flash__head">
       <p class="xp-eyebrow">Installer</p>
       <div class="xp-flash__head-row">
@@ -156,7 +150,6 @@ onMounted(() => {
             class="xp-device"
             :class="{
               'is-selected': b.key === selectedKey,
-              'is-hinted': b.beta && betaHinted,
             }"
             @click="select(b)"
           >
@@ -242,19 +235,6 @@ onMounted(() => {
             >.
           </p>
         </div>
-        <button
-          type="button"
-          class="xp-beta"
-          @click="hintBeta"
-        >
-          <span class="xp-beta__text">
-            <span class="xp-beta__title">Beta builds</span>
-            <span class="xp-beta__note"
-              >Try upcoming changes &mdash; best-effort testing.</span
-            >
-          </span>
-          <span class="xp-chip xp-chip--beta">Beta</span>
-        </button>
         <details class="xp-adv">
           <summary class="xp-mono xp-adv__summary">
             Advanced options<span class="xp-adv__mark" aria-hidden="true">+</span>
@@ -286,6 +266,11 @@ onMounted(() => {
           <p class="xp-connect__text">{{ text }}</p>
         </li>
       </ol>
+      <p class="xp-connect__chip">
+        Your {{ selected.name }} uses an {{ selected.chip }} — the installer
+        checks the connected device's chip before writing anything, so the
+        wrong board never gets flashed by mistake.
+      </p>
       <p class="xp-connect__erase">
         Leave <strong>Erase device</strong> unchecked — the installer writes
         only the firmware, and an erase cannot be undone.
@@ -555,10 +540,6 @@ onMounted(() => {
   box-shadow: 2px 2px 0 var(--xp-teal-selected);
 }
 
-.xp-device.is-hinted {
-  border-color: var(--xp-teal-selected);
-}
-
 .xp-device:focus-visible {
   outline: 2px solid var(--xp-teal-selected);
   outline-offset: 1px;
@@ -680,48 +661,6 @@ onMounted(() => {
   color: var(--xp-teal);
 }
 
-/* Step 2: beta builds card */
-.xp-beta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  width: 100%;
-  margin-top: 0.75rem;
-  padding: 0.85rem 1rem;
-  background: var(--xp-paper);
-  border: 1px solid var(--xp-rule);
-  border-radius: var(--xp-radius);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.xp-beta:hover {
-  border-color: var(--xp-ink);
-}
-
-.xp-beta:focus-visible {
-  outline: 2px solid var(--xp-teal-selected);
-  outline-offset: 1px;
-}
-
-.xp-beta__title {
-  display: block;
-  font-family: var(--xp-sans);
-  font-weight: 600;
-  font-size: 0.9rem;
-  color: var(--xp-ink);
-}
-
-.xp-beta__note {
-  display: block;
-  font-family: var(--xp-sans);
-  font-size: 0.8rem;
-  color: var(--xp-ink-muted);
-  margin-top: 0.15rem;
-}
-
 /* Step 2: advanced options */
 .xp-adv {
   display: block;
@@ -791,6 +730,11 @@ onMounted(() => {
   background: var(--xp-paper);
   border: 1px solid var(--xp-rule);
   padding: 0.85rem 1rem;
+}
+
+.xp-connect__chip {
+  margin: 0 0 0.35rem;
+  font-size: 0.9rem;
 }
 
 .xp-connect__erase {

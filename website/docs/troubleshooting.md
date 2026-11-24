@@ -27,7 +27,8 @@ firmware.
 
 - Check the address shown on the reader's File Transfer screen.
 - Both devices must be on the same network; try the numeric IP rather
-  than `crosspoint.local`.
+  than the hostname (`xerif.local`, or `crosspoint.local` in Calibre
+  Wireless mode).
 - Corporate/guest Wi-Fi often isolates clients — use the hotspot mode.
 
 ## Upload fails or times out

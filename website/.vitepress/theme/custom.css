@@ -392,12 +392,27 @@ h6,
 }
 
 /* Let the docs page and site footer follow the content's own length.
-   VitePress pads .VPDoc .content 128px at the bottom from 960px up, so docs
-   pages end in a long empty stretch with the layout-bottom footer far below
-   the text. The fixed-position aside's viewport-height reservation is
-   display-only and harmless. */
+   Two VitePress reservations inflate short docs pages from 960px up:
+   .VPDoc .content pads 128px at the bottom, and .VPDoc .aside-content
+   reserves a full viewport height (min-height: calc(100vh - ...)) — the
+   aside is a flex item of the doc row, so its min-height alone stretches
+   the row to ~100vh and pushes the layout-bottom footer far below the
+   text. Drop both reservations; the fixed-position aside scrolls inside
+   its own height:100vh container and needs no in-flow reservation. */
 @media (min-width: 960px) {
   .VPDoc .content {
+    padding-bottom: 4rem;
+  }
+
+  .VPDoc .aside-content {
+    min-height: 0;
+  }
+}
+
+/* Below 960px VitePress pads .VPDoc 96-128px at the bottom; cap it the
+   same way. */
+@media (max-width: 959px) {
+  .VPDoc {
     padding-bottom: 4rem;
   }
 }
