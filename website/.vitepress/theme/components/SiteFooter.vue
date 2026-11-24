@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { withBase } from 'vitepress'
 import { useSidebar } from 'vitepress/theme'
 import Logo from './Logo.vue'
 import { CROSSPOINT, GITHUB, LICENSE, SUPPORT_CROSSPOINT } from '../links'
@@ -26,9 +27,12 @@ const { hasSidebar } = useSidebar()
       <nav class="xp-footer__nav" aria-label="Footer">
         <div class="xp-footer__col">
           <span class="xp-footer__label">Product</span>
-          <RouterLink to="/flash">Flash</RouterLink>
-          <RouterLink to="/docs/">Docs</RouterLink>
-          <RouterLink to="/changelog">Changelog</RouterLink>
+          <!-- Plain anchors: VitePress ships no vue-router, so RouterLink
+               would hydrate into a literal <routerlink> element and render
+               the links as plain text. -->
+          <a :href="withBase('/flash')">Flash</a>
+          <a :href="withBase('/docs/')">Docs</a>
+          <a :href="withBase('/changelog')">Changelog</a>
         </div>
         <div class="xp-footer__col">
           <span class="xp-footer__label">Project</span>
