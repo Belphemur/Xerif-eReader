@@ -86,19 +86,6 @@ const sdBin = computed(() => {
   return props.boardBins?.[selected.value.key] || null
 })
 
-// "Beta builds" in step 2 scrolls back to the grid and briefly marks the
-// beta boards so they are easy to spot.
-const betaHinted = ref(false)
-let betaHintTimer = null
-function hintBeta() {
-  betaHinted.value = true
-  clearTimeout(betaHintTimer)
-  betaHintTimer = setTimeout(() => (betaHinted.value = false), 2000)
-  document
-    .querySelector('.xp-devices')
-    ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-}
-
 // WebSerial support can only be checked in the browser, so SSR assumes it
 // works and shows the installer; a non-Chromium browser swaps to the notice
 // once the page hydrates.
@@ -156,7 +143,6 @@ onMounted(() => {
             class="xp-device"
             :class="{
               'is-selected': b.key === selectedKey,
-              'is-hinted': b.beta && betaHinted,
             }"
             @click="select(b)"
           >
@@ -242,19 +228,6 @@ onMounted(() => {
             >.
           </p>
         </div>
-        <button
-          type="button"
-          class="xp-beta"
-          @click="hintBeta"
-        >
-          <span class="xp-beta__text">
-            <span class="xp-beta__title">Beta builds</span>
-            <span class="xp-beta__note"
-              >Try upcoming changes &mdash; best-effort testing.</span
-            >
-          </span>
-          <span class="xp-chip xp-chip--beta">Beta</span>
-        </button>
         <details class="xp-adv">
           <summary class="xp-mono xp-adv__summary">
             Advanced options<span class="xp-adv__mark" aria-hidden="true">+</span>
@@ -555,10 +528,6 @@ onMounted(() => {
   box-shadow: 2px 2px 0 var(--xp-teal-selected);
 }
 
-.xp-device.is-hinted {
-  border-color: var(--xp-teal-selected);
-}
-
 .xp-device:focus-visible {
   outline: 2px solid var(--xp-teal-selected);
   outline-offset: 1px;
@@ -678,48 +647,6 @@ onMounted(() => {
 
 .xp-release__desc a {
   color: var(--xp-teal);
-}
-
-/* Step 2: beta builds card */
-.xp-beta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  width: 100%;
-  margin-top: 0.75rem;
-  padding: 0.85rem 1rem;
-  background: var(--xp-paper);
-  border: 1px solid var(--xp-rule);
-  border-radius: var(--xp-radius);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.xp-beta:hover {
-  border-color: var(--xp-ink);
-}
-
-.xp-beta:focus-visible {
-  outline: 2px solid var(--xp-teal-selected);
-  outline-offset: 1px;
-}
-
-.xp-beta__title {
-  display: block;
-  font-family: var(--xp-sans);
-  font-weight: 600;
-  font-size: 0.9rem;
-  color: var(--xp-ink);
-}
-
-.xp-beta__note {
-  display: block;
-  font-family: var(--xp-sans);
-  font-size: 0.8rem;
-  color: var(--xp-ink-muted);
-  margin-top: 0.15rem;
 }
 
 /* Step 2: advanced options */
