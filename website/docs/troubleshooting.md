@@ -27,7 +27,7 @@ firmware.
 
 - Check the address shown on the reader's File Transfer screen.
 - Both devices must be on the same network; try the numeric IP rather
-  than `crosspoint.local`.
+  than `xerif.local`.
 - Corporate/guest Wi-Fi often isolates clients — use the hotspot mode.
 
 ## Upload fails or times out

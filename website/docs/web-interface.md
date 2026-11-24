@@ -9,7 +9,7 @@ same network — for moving books around and changing settings.
 2. Pick **Join a Network** (your Wi-Fi), **Calibre Wireless**, or
    **Create Hotspot** (the reader becomes its own network).
 3. Open the address shown on the reader screen — typically
-   `http://<device-ip>` or `http://crosspoint.local`.
+   `http://<device-ip>` or `http://xerif.local`.
 
 ## What it can do
 
