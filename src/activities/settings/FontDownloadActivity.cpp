@@ -261,7 +261,7 @@ bool FontDownloadActivity::fetchAndParseManifest() {
   // frees and reallocates every registry entry, which fragments the heap if it
   // runs while the manifest DOM and the catalog arena are live.
   clearManifest();
-  fontInstaller_.refreshRegistry();
+  sdFontSystem.refreshRegistry();
 
   // No downgradeRedirectsToHttp here, unlike the font transfers below: this
   // response carries the crc32 values that are the only integrity anchor for
@@ -787,7 +787,7 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
     currentFileIndex_++;
   }
 
-  fontInstaller_.refreshRegistry();
+  sdFontSystem.refreshRegistry();
   family.installed = true;
   family.hasUpdate = false;
 
@@ -829,7 +829,7 @@ void FontDownloadActivity::onDeleteConfirmationResult(const ActivityResult& resu
     state_ = ERROR;
     errorMessage_ = "Failed to delete font";
   } else {
-    fontInstaller_.refreshRegistry();
+    sdFontSystem.refreshRegistry();
     family.installed = false;
     family.hasUpdate = false;
     // Unlike the other family_ mutations, this one stays in FAMILY_LIST (no

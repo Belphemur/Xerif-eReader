@@ -22,6 +22,7 @@
 #include "SdCardFontSystem.h"
 #include "TtfUiFallback.h"
 #include "XtcReaderActivity.h"
+#include "activities/RenderLock.h"
 #include "sync/ReadingSessionLog.h"
 #include "util/PluginEvents.h"
 
@@ -89,10 +90,13 @@ void ReaderActivity::onEnter() {
     APP_STATE.saveToFile();
   }
 
-  sdFontSystem.ensureLoaded(renderer);
+  {
+    RenderLock lock;
+    sdFontSystem.ensureLoaded(renderer);
 #if CROSSPOINT_TTF_UI_FALLBACK
-  freeink::book::ttfUiFallback.update(renderer);
+    freeink::book::ttfUiFallback.update(renderer);
 #endif
+  }
   applyInitialOrientation();
 
   if (!loadBook()) {

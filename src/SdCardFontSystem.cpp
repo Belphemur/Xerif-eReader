@@ -94,7 +94,13 @@ void SdCardFontSystem::begin(GfxRenderer& renderer, const EpdFontFamily& small, 
   LOG_DBG("SDFS", "SD font system ready (%d families discovered)", registry_.getFamilyCount());
 }
 
-void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
+void SdCardFontSystem::refreshIfDirty() {
+  if (registryDirty_.exchange(false, std::memory_order_acquire)) refreshRegistry();
+}
+
+void SdCardFontSystem::refreshRegistry() { registry_.discover(); }
+
+void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer, [[maybe_unused]] const bool retryUnavailable) {
   // If the web server (or another task) installed/deleted fonts, re-discover.
   // Track whether we just re-discovered so we can force a reload below even
   // when the wanted family/size still maps to the same point size — the file

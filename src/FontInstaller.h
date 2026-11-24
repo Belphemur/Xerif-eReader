@@ -17,7 +17,7 @@ class FontInstaller {
     MAX_FAMILIES_REACHED,
   };
 
-  explicit FontInstaller(SdCardFontRegistry& registry);
+  explicit FontInstaller(const SdCardFontRegistry& registry);
 
   /// Validate a family name: alphanumeric + hyphen + underscore only, no path traversal.
   static bool isValidFamilyName(const char* name);
@@ -67,14 +67,11 @@ class FontInstaller {
   /// may contain spaces.
   Error deleteTtfFamily(const char* familyName);
 
-  /// Re-run registry discovery to pick up new/removed fonts.
-  void refreshRegistry();
-
   /// Check whether a family name already exists in the registry.
   bool isFamilyInstalled(const char* familyName) const;
 
  private:
-  SdCardFontRegistry& registry_;
+  const SdCardFontRegistry& registry_;
 
   Error deleteFamilyInternal(const char* familyName, bool allowSpaceInName);
 

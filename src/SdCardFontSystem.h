@@ -42,8 +42,10 @@ class SdCardFontSystem {
 
   /// Ensure the correct SD font family is loaded for the current settings.
   /// Call before entering the reader or after settings change.
+  /// The caller holds RenderLock after startup.
   /// Also re-discovers if the registry has been marked dirty (e.g. by web upload).
-  void ensureLoaded(GfxRenderer& renderer);
+  /// Settings previews pass retryUnavailable=false to keep the displayed family list stable.
+  void ensureLoaded(GfxRenderer& renderer, bool retryUnavailable = true);
 
   static bool supportsUiFont(const SdCardFontFamilyInfo& family);
 
@@ -65,8 +67,8 @@ class SdCardFontSystem {
   /// Returns 0 if not found. Used by CrossPointSettings::getReaderFontId().
   int resolveFontId(const char* familyName, uint8_t pointSize) const;
 
-  /// Non-const access to the registry (for FontInstaller).
-  SdCardFontRegistry& registry() { return registry_; }
+  /// Registry access; FontInstaller only reads it (const).
+  const SdCardFontRegistry& registry() const { return registry_; }
 
   /// Mark the registry as needing re-discovery.
   /// Thread-safe: can be called from the web server task.
@@ -75,11 +77,10 @@ class SdCardFontSystem {
   /// If the registry is dirty, re-scan the SD card now and clear the flag.
   /// Used by the web UI so uploaded/deleted fonts appear in the list
   /// without waiting for the reader activity to run ensureLoaded().
-  void refreshIfDirty() {
-    if (registryDirty_.exchange(false, std::memory_order_acquire)) {
-      registry_.discover();
-    }
-  }
+  void refreshIfDirty();
+
+  /// Re-scan the SD card now (installer uploads/deletes and settings refresh).
+  void refreshRegistry();
 
  private:
   bool loadUiCpfonts(const SdCardFontFamilyInfo& family, GfxRenderer& renderer);

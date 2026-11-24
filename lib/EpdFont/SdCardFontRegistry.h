@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 struct SdCardFontFileInfo {
@@ -66,7 +67,7 @@ class SdCardFontRegistry {
   bool discover();
 
   const std::vector<SdCardFontFamilyInfo>& getFamilies() const { return families_; }
-  const SdCardFontFamilyInfo* findFamily(const std::string& name) const;
+  const SdCardFontFamilyInfo* findFamily(std::string_view name) const;
   int getFamilyCount() const { return static_cast<int>(families_.size()); }
 
  private:
