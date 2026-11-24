@@ -121,7 +121,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="xp-flash">
+  <div class="xp-flash xp-shell">
     <header class="xp-flash__head">
       <p class="xp-eyebrow">Installer</p>
       <div class="xp-flash__head-row">
