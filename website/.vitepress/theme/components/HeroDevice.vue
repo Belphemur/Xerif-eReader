@@ -50,11 +50,9 @@
     <rect x="196" y="310" width="120" height="2" class="xp-hero-device__rule" />
     <text x="256" y="344" class="xp-hero-device__boot" text-anchor="middle">Ready to read</text>
 
-    <!-- Buttons -->
-    <rect x="150" y="404" width="88" height="34" rx="4" class="xp-hero-device__btn" />
-    <rect x="274" y="404" width="88" height="34" rx="4" class="xp-hero-device__btn" />
-    <rect x="166" y="418" width="56" height="6" class="xp-hero-device__btn-ink" />
-    <rect x="290" y="418" width="56" height="6" class="xp-hero-device__btn-ink" />
+    <!-- Single capacitive home button, bottom-center bezel (X4 Pro; no
+         physical page-turn keys) -->
+    <circle cx="256" cy="414" r="15" class="xp-hero-device__btn" />
   </svg>
 </template>
 
@@ -123,9 +121,5 @@
 
 .xp-hero-device__btn {
   fill: var(--xp-surface-strong);
-}
-
-.xp-hero-device__btn-ink {
-  fill: var(--xp-ink-subtle);
 }
 </style>
