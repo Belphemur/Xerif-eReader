@@ -19,6 +19,9 @@ firmware.
   common cause).
 - Use desktop Chrome, Edge, or Opera; the web flasher needs WebSerial.
 - Power the reader on before clicking **Flash it now**.
+- Still no device after all of this? Some third-party Xteink units ship
+  with USB flashing locked from the factory — see
+  [USB-locked devices](/docs/locked-devices) for how to check and unlock.
 
 ## Web interface not reachable
 

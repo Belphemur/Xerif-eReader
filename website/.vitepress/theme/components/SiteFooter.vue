@@ -111,16 +111,19 @@ import { CROSSPOINT, GITHUB, LICENSE, SUPPORT_CROSSPOINT } from '../links'
   margin-bottom: 0.2rem;
 }
 
+/* Links must read as links at rest: subtle underline, teal on hover. */
 .xp-footer__col a {
   color: var(--xp-ink);
-  text-decoration: none;
+  text-decoration: underline;
+  text-decoration-color: var(--xp-rule-strong);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
   font-size: 0.9rem;
 }
 
 .xp-footer__col a:hover {
   color: var(--xp-teal);
-  text-decoration: underline;
-  text-underline-offset: 3px;
+  text-decoration-color: var(--xp-teal);
 }
 
 .xp-footer__credit p {

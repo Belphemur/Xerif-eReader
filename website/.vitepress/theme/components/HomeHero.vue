@@ -16,6 +16,7 @@ const cards = [
 </script>
 
 <template>
+  <div class="xp-shell">
   <section class="xp-hero">
     <div class="xp-hero__copy">
       <p class="xp-eyebrow">Xerif &middot; open-source reader firmware</p>
@@ -65,6 +66,7 @@ const cards = [
     Curious what else changed? <a href="/docs/">Read the docs</a> or browse the
     <a href="/changelog">changelog</a>.
   </p>
+  </div>
 </template>
 
 <style scoped>

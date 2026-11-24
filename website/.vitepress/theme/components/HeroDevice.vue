@@ -6,7 +6,7 @@
     viewBox="0 0 512 512"
     class="xp-hero-device"
     role="img"
-    aria-label="A slim e-reader showing the Xerif monogram on its e-ink screen"
+    aria-label="A slim e-reader showing the Xerif logo on its e-ink screen"
   >
     <!-- Floating paper particles -->
     <g class="xp-hero-device__motes">
@@ -30,13 +30,9 @@
     <!-- Screen -->
     <rect x="140" y="72" width="232" height="308" class="xp-hero-device__screen" />
 
-    <!-- Boot splash: monogram over a rules line, e-ink paper tone -->
-    <g class="xp-hero-device__mark" transform="translate(196 156)">
-      <path d="M10 10 L54 54 L48 60 Q19 45 4 16 Z" />
-      <path d="M10 10 L54 54 L60 48 Q45 19 16 4 Z" />
-      <path d="M54 10 L10 54 L16 60 Q45 45 60 16 Z" />
-      <path d="M54 10 L10 54 L4 48 Q19 19 48 4 Z" />
-      <path d="M10 10 L54 54 M54 10 L10 54" stroke-width="1.6" class="xp-hero-device__mark-spine" />
+    <!-- Boot splash: logo over a rules line, e-ink paper tone -->
+    <g class="xp-hero-device__mark" transform="translate(240.5 150) scale(0.19)">
+      <path d="M141.133 1.93774C150.102 -3.44192 161.517 3.01665 161.521 13.4749V166.526C161.517 176.984 150.102 183.442 141.133 178.063L80.7588 141.837L20.3867 178.063C11.4176 183.442 0.00328866 176.984 0 166.526V13.4749C0.00337257 3.01685 11.4176 -3.44137 20.3867 1.93774L80.7598 38.1614L141.133 1.93774ZM121.275 117.524L92.3848 134.864L147.281 167.811C148.277 168.408 149.542 167.685 149.545 166.526V100.567L121.275 117.524ZM14.2393 12.1897C13.2438 11.5924 11.979 12.3152 11.9756 13.4749V86.6125L74.7725 124.29V48.51L14.2393 12.1897Z" />
     </g>
     <text x="256" y="292" class="xp-hero-device__word" text-anchor="middle">Xerif</text>
     <rect x="196" y="310" width="120" height="2" class="xp-hero-device__rule" />
@@ -76,10 +72,6 @@
 
 .xp-hero-device__mark path {
   fill: var(--xp-teal);
-}
-
-.xp-hero-device__mark-spine {
-  stroke: var(--xp-paper-alt);
 }
 
 .xp-hero-device__word {

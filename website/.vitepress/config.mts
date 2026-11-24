@@ -1,10 +1,12 @@
 import { defineConfig } from 'vitepress'
-import { getReleases } from './lib/releases.mjs'
+import { getReleases, latestStableRelease } from './lib/releases.mjs'
 import {
+  PSRAM_BOARDS,
+  boardAsset,
+  buildBoardManifest,
   buildFlashManifest,
   buildVersionManifest,
   firmwarePath,
-  x4ProAsset,
 } from './lib/manifest.mjs'
 import { vendorEspWebTools } from './lib/vendor-esp-web-tools.mjs'
 
@@ -43,42 +45,74 @@ function flashManifestPlugin() {
       // emitFile is not available while serving (dev/preview).
       if (isBuild) {
         this.emitFile({ type: 'asset', fileName: 'xerif-manifest.json', source })
+        // One manifest per PSRAM board for the latest release: esp-web-tools
+        // refuses a manifest with several builds for the same chip family, and
+        // all six boards are ESP32-S3.
+        for (const board of PSRAM_BOARDS) {
+          this.emitFile({
+            type: 'asset',
+            fileName: `xerif-manifest-${board}.json`,
+            source: JSON.stringify(buildBoardManifest(releases, board), null, 2) + '\n',
+          })
+        }
         // Per-release manifests for the changelog's "Flash this version", plus
         // the same-origin firmware binaries they point at (GitHub download
         // URLs send no CORS headers, so the browser must fetch from this site).
+        // The release the board manifests resolve through latestStableRelease()
+        // also emits the five beta-board images the /flash beta section
+        // installs; other releases keep X4 Pro only — the beta section always
+        // flashes that release, and six images for every release would push
+        // ~1.2 GB into the site output.
+        const stable = latestStableRelease(releases)
         for (const release of releases) {
-          const manifest = buildVersionManifest(release)
+          const boards = release === stable ? PSRAM_BOARDS : ['x4pro']
+          const manifest = buildVersionManifest(release, boards)
           if (manifest.builds.length === 0) continue
-          const asset = x4ProAsset(release)
-          const res = await fetch(asset.url, {
-            headers: { 'User-Agent': 'xerif-website-build' },
-          })
-          if (!res.ok) {
-            this.error(
-              `[xerif] downloading ${asset.name} failed: ${res.status} ${res.statusText}`,
-            )
+          for (const board of boards) {
+            const asset = boardAsset(release, board)
+            if (!asset) continue
+            const res = await fetch(asset.url, {
+              headers: { 'User-Agent': 'xerif-website-build' },
+            })
+            if (!res.ok) {
+              this.error(
+                `[xerif] downloading ${asset.name} failed: ${res.status} ${res.statusText}`,
+              )
+            }
+            this.emitFile({
+              type: 'asset',
+              fileName: firmwarePath(release, board),
+              source: Buffer.from(await res.arrayBuffer()),
+            })
           }
           this.emitFile({
             type: 'asset',
-            fileName: firmwarePath(release),
-            source: Buffer.from(await res.arrayBuffer()),
-          })
-          this.emitFile({
-            type: 'asset',
             fileName: `xerif-manifest-${release.version}.json`,
-            source: JSON.stringify(manifest, null, 2) + '\n',
+            source: JSON.stringify(
+              buildVersionManifest(release, ['x4pro']),
+              null,
+              2,
+            ) + '\n',
           })
         }
       }
     },
     configureServer(server) {
       let versionManifests = {}
+      let boardManifests = {}
       server.middlewares.use((req, res, next) => {
         const path = (req.url || '').split('?')[0]
         if (path === '/xerif-manifest.json') {
           res.setHeader('Content-Type', 'application/json; charset=utf-8')
           res.setHeader('Cache-Control', 'no-cache')
           res.end(source || JSON.stringify({ name: 'Xerif', builds: [] }))
+          return
+        }
+        const boardMatch = path.match(/^\/xerif-manifest-([a-z0-9_]+)\.json$/)
+        if (boardMatch && boardManifests[boardMatch[1]]) {
+          res.setHeader('Content-Type', 'application/json; charset=utf-8')
+          res.setHeader('Cache-Control', 'no-cache')
+          res.end(boardManifests[boardMatch[1]])
           return
         }
         const match = path.match(/^\/xerif-manifest-(\d+\.\d+\.\d+)\.json$/)
@@ -97,10 +131,17 @@ function flashManifestPlugin() {
             .filter(([, m]) => m.builds.length > 0)
             .map(([v, m]) => [v, JSON.stringify(m)]),
         )
+        boardManifests = Object.fromEntries(
+          PSRAM_BOARDS.map((board) => [
+            board,
+            JSON.stringify(buildBoardManifest(releases, board)),
+          ]),
+        )
       })
     },
   }
 }
+
 
 export default defineConfig({
   lang: 'en-US',
@@ -141,7 +182,7 @@ export default defineConfig({
     logo: {
       light: '/logo.svg',
       dark: '/logo-dark.svg',
-      alt: 'Xerif monogram',
+      alt: 'Xerif logo',
     },
     siteTitle: 'Xerif',
     nav: [
@@ -165,6 +206,9 @@ export default defineConfig({
           text: 'Features',
           items: [
             { text: 'Reading experience', link: '/docs/reading-experience' },
+            { text: 'Reading statistics', link: '/docs/reading-statistics' },
+            { text: 'Dictionary lookup', link: '/docs/dictionary' },
+            { text: 'Focus Reading', link: '/docs/focus-reading' },
             { text: 'Image & cover rendering', link: '/docs/image-cover-rendering' },
             { text: 'KOReader sync', link: '/docs/koreader-sync' },
             { text: 'Custom fonts', link: '/docs/custom-fonts' },
@@ -180,6 +224,7 @@ export default defineConfig({
             { text: 'FAQ', link: '/docs/faq' },
             { text: 'Troubleshooting', link: '/docs/troubleshooting' },
             { text: 'Controls', link: '/docs/controls' },
+            { text: 'USB-locked devices', link: '/docs/locked-devices' },
           ],
         },
       ],

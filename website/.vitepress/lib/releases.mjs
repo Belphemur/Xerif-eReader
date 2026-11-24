@@ -125,7 +125,12 @@ export async function getReleases({ force = false } = {}) {
   }
 }
 
-/** Latest stable release that carries an X4 Pro image. */
-export function latestX4ProRelease(releases) {
+/**
+ * Latest stable release that carries a PSRAM-board image. The X4 Pro asset
+ * stays the marker for "this release is installable": CI publishes the six
+ * PSRAM-board images together, so picking the newest x4pro carrier keeps the
+ * default manifest and the beta manifests pointing at the same release.
+ */
+export function latestStableRelease(releases) {
   return releases.find((r) => r.assets.some((a) => /-x4pro\.bin$/.test(a.name))) || null
 }

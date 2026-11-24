@@ -1,7 +1,7 @@
 ---
 layout: page
 title: Flash Xerif
-description: Install Xerif on your Xteink X4 Pro — flash it in the browser or use an SD card. Stable channel only.
+description: Pick your device and install Xerif in the browser over USB, or use an SD card. The web installer serves stable releases; beta boards are supported best-effort.
 ---
 
 <script setup>
@@ -15,4 +15,5 @@ import { data } from './flash.data.js'
   :bin-name="data.binName"
   :size-m-b="data.sizeMB"
   :release-url="data.releaseUrl"
+  :board-bins="data.boardBins"
 />

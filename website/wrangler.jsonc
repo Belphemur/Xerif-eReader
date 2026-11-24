@@ -12,6 +12,9 @@
   "compatibility_date": "2026-11-01",
   // account_id: not set — wrangler resolves it from the logged-in OAuth
   // account (Workers Builds injects it automatically on Git deploys).
+  // Empty previews block: lets Workers Builds run preview deploys on
+  // non-production branches. Assets/compat settings stay top-level.
+  "previews": {},
   "assets": {
     "directory": ".vitepress/dist",
     "not_found_handling": "404-page",

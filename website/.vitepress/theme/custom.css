@@ -337,10 +337,6 @@ h6,
   height: 30px;
 }
 
-.dark .VPNavBarTitle .logo {
-  filter: brightness(1.55) saturate(0.95);
-}
-
 .VPNavBarMenuLink {
   font-family: var(--xp-mono);
   font-size: 0.72rem;
@@ -395,6 +391,17 @@ h6,
   border-top: 1px solid var(--xp-rule);
 }
 
+/* Let the docs page and site footer follow the content's own length.
+   VitePress pads .VPDoc .content 128px at the bottom from 960px up, so docs
+   pages end in a long empty stretch with the layout-bottom footer far below
+   the text. The fixed-position aside's viewport-height reservation is
+   display-only and harmless. */
+@media (min-width: 960px) {
+  .VPDoc .content {
+    padding-bottom: 4rem;
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Shared primitives                                                   */
 /* ------------------------------------------------------------------ */
@@ -443,6 +450,14 @@ h6,
   letter-spacing: 0.06em;
   text-transform: uppercase;
   line-height: 1.2;
+}
+
+/* Centered shell for custom-layout pages (home, flash, changelog). Docs
+   pages keep VitePress's own container and must not use this. */
+.xp-shell {
+  max-width: var(--xp-content-width);
+  margin-inline: auto;
+  padding-inline: var(--xp-margin);
 }
 
 .xp-chip--active {
