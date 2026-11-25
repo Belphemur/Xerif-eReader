@@ -89,7 +89,8 @@ void OpdsBookBrowserActivity::onEnter() {
   // Configure the OPDS client for this server, restore any persisted token, and
   // reset the per-session auth latches. Accept-Language localizes the catalog
   // (both request header and language-map title resolution).
-  opdsClient.setServer(server.url, server.username, server.password, server.activeCustomHeaders());
+  const std::string normalizedServerUrl = server.url.empty() ? std::string() : UrlUtils::ensureProtocol(server.url);
+  opdsClient.setServer(normalizedServerUrl, server.username, server.password, server.activeCustomHeaders());
   {
     const OpdsTokens t = OPDS_TOKENS.get(tokenKey());
     opdsClient.setTokens(t.accessToken, t.refreshToken, t.refreshUrl);
@@ -572,7 +573,9 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book) {
     }
     if (attempt != 0 || result != HttpDownloader::UNAUTHORIZED || HttpDownloader::lastStatus() != 401 ||
         HttpDownloader::lastAnswerRedirected() ||
-        freeink::fetchOrigin(downloadUrl) != freeink::fetchOrigin(server.url) || cancelDownload)
+        freeink::fetchOrigin(downloadUrl) !=
+            freeink::fetchOrigin(server.url.empty() ? std::string() : UrlUtils::ensureProtocol(server.url)) ||
+        cancelDownload)
       break;
     std::string title;
     {

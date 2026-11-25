@@ -55,6 +55,8 @@ jobs:
           - pio_env: picco-gh_release
             device: picco
           # picco release-CANDIDATE builds live in release_candidate.yml (which carries a proper pio_env); the legacy release_env/rc_env-only entry here lacked pio_env and broke the release build with UnknownEnvNamesError.
+          - pio_env: onepage-gh_release
+            device: onepage
     steps:
       - uses: actions/checkout@v7
         with:
@@ -220,10 +222,10 @@ jobs:
           # in the matrix must have produced its xerif asset before a release is
           # cut — a silently missing device would otherwise ship half a release.
           version="${GITHUB_REF_NAME#v}"
-          for device in x3-x4 sticky x4pro x4c papermono metalio_eink4 eego_a4 picco; do
+          for device in x3-x4 sticky x4pro x4c papermono metalio_eink4 eego_a4 picco onepage; do
             test -f "dist/xerif-${version}-${device}.bin"
           done
-          test "$(find dist -maxdepth 1 -type f -name 'xerif-*.bin' | wc -l)" -eq 8
+          test "$(find dist -maxdepth 1 -type f -name 'xerif-*.bin' | wc -l)" -eq 9
           test -s dist/LICENSE
           ls -la dist
           echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
@@ -253,6 +255,7 @@ jobs:
               "metalio_eink4": "metalio_eink4",
               "eego_a4": "eego_a4",
               "picco": "picco",
+              "onepage": "onepage",
           }
           version = os.environ["GITHUB_REF_NAME"].lstrip("v")
           # Sign one asset family (xerif). Only latest-generation firmware

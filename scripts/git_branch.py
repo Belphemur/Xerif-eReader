@@ -218,7 +218,9 @@ def env_pins_version(env):
 def inject_version(env):
     # Development environments get the git branch + short SHA so crash
     # reports identify the exact build. Release envs set the version via
-    # build_flags in platformio.ini and are unaffected.
+    # build_flags in platformio.ini and are unaffected; env_pins_version()
+    # keys off the -DCROSSPOINT_VERSION define, so new dev envs (e.g. onepage)
+    # are covered without editing an allowlist here.
     if env_pins_version(env):
         return
 

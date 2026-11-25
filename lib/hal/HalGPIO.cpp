@@ -108,6 +108,9 @@ void HalGPIO::begin() {
 #else
   _deviceType = DeviceType::X4;
 #endif
+  if (BoardConfig::ACTIVE.usbDetect >= 0 && !BoardConfig::ACTIVE.usbDetectActiveHigh) {
+    pinMode(BoardConfig::ACTIVE.usbDetect, INPUT_PULLUP);
+  }
   inputMgr.begin();
   // Sample the raw power level BEFORE the async poll task exists (the call
   // above only configures the pin): this read strictly precedes the first
@@ -210,22 +213,7 @@ bool HalGPIO::rawInputActive() {
       if (pin >= 0 && digitalRead(pin) == LOW) return true;
     }
   }
-  InputManager::ButtonAdcSample g1{}, g2{};
-  inputMgr.readButtonAdc(g1, g2);
-  // The Xteink ladder idles at the ADC full-scale rail (~4095); every button band sits below 3900.
-  constexpr int kIdleRailMin = 4000;
-  if ((g1.raw >= 0 && g1.raw < kIdleRailMin) || (g2.raw >= 0 && g2.raw < kIdleRailMin)) return true;
-  // OnePageAdcLadder: the 4 front keys ride the GPIO4 ladder, but readButtonAdc()
-  // is Xteink-only (InputManager.cpp early-return), so sample it here or front-key
-  // taps stay invisible to the idle slice (kody PR #171). getState() bands top out
-  // at 2800 mV; the unpressed rail sits at full scale.
-  if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::OnePageAdcLadder &&
-      BoardConfig::ACTIVE.input.adcLadderPin >= 0) {
-    const int mv = analogReadMilliVolts(BoardConfig::ACTIVE.input.adcLadderPin);
-    constexpr int kOnePageIdleMinMv = 2900;
-    if (mv >= 0 && mv < kOnePageIdleMinMv) return true;
-  }
-  return false;
+  return inputMgr.isAdcLadderPhysicallyPressed();
 }
 
 bool HalGPIO::anyPhysicalButtonHeld() {
@@ -359,7 +347,7 @@ bool HalGPIO::wokeFromDeepSleep() const {
 
 bool HalGPIO::isUsbConnected() const {
   if (!deviceIsX3() && BoardConfig::ACTIVE.usbDetect >= 0) {
-    return digitalRead(BoardConfig::ACTIVE.usbDetect) == HIGH;
+    return digitalRead(BoardConfig::ACTIVE.usbDetect) == (BoardConfig::ACTIVE.usbDetectActiveHigh ? HIGH : LOW);
   }
   // X3 uses GPIO20 for I2C, not USB detection. Boards without a digital
   // USB-detect line (e.g. Sticky, whose PWR_IN_VOLT is an analog
