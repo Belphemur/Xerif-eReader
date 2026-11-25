@@ -3,7 +3,9 @@
 Date: 2026-11-08
 Status: Draft for owner review (design-only; no code in this doc)
 Scope: **TTF reader path only** (`TtfImageEngine`, `TtfImageCache`, the SDK render paths it
-drives, `ChapterLayout` image placement). The legacy bitmap reader is out of scope and must
+drives, `ChapterLayout` image placement).
+
+> **Superseded (in part) by the as-built ADR: [2026-11-25-image-pipeline-adr.md](2026-11-25-image-pipeline-adr.md) — the current image pipeline (blue-noise bake, DPID, JPEGDEC, shared bake core).** The legacy bitmap reader is out of scope and must
 not change.
 
 ## 0. Context

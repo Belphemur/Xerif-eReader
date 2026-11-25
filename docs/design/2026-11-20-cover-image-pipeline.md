@@ -3,6 +3,8 @@
 **Status:** implemented, merged as develop `d05825bc` (PR #337, 18 commits).
 **Supersedes:** the Amendment A engine-facade draft (parked during the design
 discussion); this document records the owner-settled design as built.
+
+> **Superseded (in part) by the as-built ADR: [2026-11-25-image-pipeline-adr.md](2026-11-25-image-pipeline-adr.md) — the current image pipeline (blue-noise bake, DPID, JPEGDEC, shared bake core).**
 **Date:** 2026-11-20/21. **Author:** Antoine Aflalo (Belphemur).
 
 ## 1. Problem

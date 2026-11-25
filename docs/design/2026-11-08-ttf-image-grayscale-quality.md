@@ -5,6 +5,8 @@ Author: Hermes (orchestrator), design authority: Antoine Aflalo
 Status: Draft for implementation (owner-directed: "fix that in a new worktree with pi", "the quality must be the best possible")
 Supersedes: nothing — amends the quality decisions of `2026-11-07-ttf-image-engine.md` (§5.6, §11).
 
+> **Superseded (in part) by the as-built ADR: [2026-11-25-image-pipeline-adr.md](2026-11-25-image-pipeline-adr.md) — the current image pipeline (blue-noise bake, DPID, JPEGDEC, shared bake core).**
+
 ## 1. Symptom (owner, 2026-11-08)
 
 The same DanMachi vol-01 page rendered by the new TTF image engine on the X4 Pro

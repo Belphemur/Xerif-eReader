@@ -2,6 +2,8 @@
 
 Date: 2026-11-09 · Scope: TTF reader image path only · Parent: 2026-11-08-ttf-image-contrast-and-fit.md
 
+> **Superseded (in part) by the as-built ADR: [2026-11-25-image-pipeline-adr.md](2026-11-25-image-pipeline-adr.md) — the current image pipeline (blue-noise bake, DPID, JPEGDEC, shared bake core).**
+
 ## 0. Evidence (device soak 2026-11-08 11:41, post-fix build `a20f3e0`)
 
 Defects A (wash) and B (crop) from the parent design are **verified fixed on hardware**:

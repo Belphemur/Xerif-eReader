@@ -5,6 +5,8 @@ Date: 2026-11-09 · Scope: TTF reader image path only (`CROSSPOINT_TTF_READER`)
 -ttf-image-contrast-and-fit.md (§2 remap constants), 2026-11-09-ttf-image
 -dpid-clahe.md (upscale sampling).
 
+> **Superseded (in part) by the as-built ADR: [2026-11-25-image-pipeline-adr.md](2026-11-25-image-pipeline-adr.md) — the current image pipeline (blue-noise bake, DPID, JPEGDEC, shared bake core).**
+
 ## 1. Evidence from the 2026-11-09 owner soak (post-`9d9494ed4`, Sharp mode)
 
 Full-page illustrations render blocky with flat stepped tone bands — worse
