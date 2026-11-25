@@ -44,6 +44,8 @@ class GfxRenderer {
     return width;
   }
   int getKerning(int, uint32_t, uint32_t, EpdFontFamily::Style, int8_t tracking = 0) const { return 0; }
+  // No embedded @font-face families in this fixture: resolve always falls back.
+  int resolveFontFamily(uint32_t, float) const { return 0; }
   int getSpaceAdvance(int, uint32_t, uint32_t, EpdFontFamily::Style) const { return 4; }
   bool isSdCardFont(int) const { return false; }
   void ensureSdCardFontReady(int, const char*, uint8_t) const {}

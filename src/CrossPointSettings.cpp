@@ -455,6 +455,11 @@ ReaderRenderSpec CrossPointSettings::readerRenderSpec(const uint16_t viewportWid
   // Same layout as Display, so switching between them keeps the section cache.
   spec.imageRendering = imageRendering == IMAGES_DISPLAY_BW ? static_cast<uint8_t>(IMAGES_DISPLAY) : imageRendering;
   spec.focusReadingEnabled = focusReadingEnabled != 0;
+#if CROSSPOINT_VECTOR_FONTS
+  if (spec.embeddedStyle && publisherFonts <= static_cast<uint8_t>(PublisherFonts::All)) {
+    spec.publisherFonts = static_cast<PublisherFonts>(publisherFonts);
+  }
+#endif
   return spec;
 }
 

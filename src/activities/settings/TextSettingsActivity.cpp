@@ -694,7 +694,6 @@ void TextSettingsActivity::confirmStyleRow(int row) {
       freeink::book::fontLoader.applyRenderMode(SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_CRISP);
 #endif
       break;
-
     default:
       return;
   }
