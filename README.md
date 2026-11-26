@@ -9,6 +9,10 @@ rhythm as Serif but with that leading X sound — "Xerif," not "zee-er-if."
 
 So the product reads: Xerif eReader — "ZER-if ee-reader."
 
+- **ESP32C3-based** Xteink X4 and X3.
+- **ESP32S3-based** Xteink X4Pro and X4Classic, Seeed reTerminal Sticky, M5PaperMono, Metalio E-Ink 4, EEGOREAD A4 and Boox Picco.
+- **ESP32C61-based** OnePage Reader
+
 ## 📣 XPoint is now Xerif eReader
 
 The project formerly known as **XPoint** is now **Xerif eReader**. The rename avoids any
