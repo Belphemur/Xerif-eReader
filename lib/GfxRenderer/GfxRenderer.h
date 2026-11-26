@@ -91,6 +91,12 @@ class GfxRenderer {
   // target is active: _stripBuf carries the LSB plane band, _dualBuf the MSB
   // band, so one render walk flags both planes. See beginStripTarget().
   mutable uint8_t* _dualBuf = nullptr;
+#ifdef BOARD_HAS_PSRAM
+  // PSRAM gray-pair (upstream #4601): while set, drawPixel()/drawGlyphBitmap()
+  // flag a second full-plane band in the same render walk. See
+  // beginGrayPairTarget().
+  mutable uint8_t* _grayPairMsb = nullptr;
+#endif
   mutable int _stripY0 = 0;
   mutable int _stripRows = 0;
   mutable bool _stripActive = false;
@@ -285,6 +291,11 @@ class GfxRenderer {
   // Pass `msbScratch` (same dimensions) to render GRAYSCALE_DUAL: one walk
   // flags the LSB bits into `scratch` and the MSB bits into `msbScratch`.
   void beginStripTarget(uint8_t* scratch, int stripY0, int stripRows, uint8_t* msbScratch = nullptr) const;
+#ifdef BOARD_HAS_PSRAM
+  // PSRAM gray-pair (upstream #4601): one walk flags both equally sized plane
+  // targets until endStripTarget(). Text-only passes.
+  void beginGrayPairTarget(uint8_t* lsb, uint8_t* msb, int rows) const;
+#endif
   void endStripTarget() const;
 
   // Band culling for tiled grayscale. Takes a glyph bounding box in logical

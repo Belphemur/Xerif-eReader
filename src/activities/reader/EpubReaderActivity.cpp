@@ -5990,7 +5990,8 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     renderer.clearScreen();
   }
 
-  drawClippingHighlights(*page, fontId, orientedMarginTop, orientedMarginLeft);
+  [[maybe_unused]] const bool drewClippingHighlights =
+      drawClippingHighlights(*page, fontId, orientedMarginTop, orientedMarginLeft);
   page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
   renderStatusBar();
   const auto tBwRender = millis();
@@ -6094,10 +6095,24 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     const int gh = dualHeight;
     const int gwBytes = renderer.getDisplayWidthBytes();
 
+#ifdef BOARD_HAS_PSRAM
+    if (!grayPlanes || grayPlaneCapacity < planeBytes) {
+      grayPlanes.reset();
+      grayPlaneCapacity = 0;
+      grayPlanes = HalMemory::allocatePsram(2 * planeBytes);
+      if (grayPlanes) grayPlaneCapacity = planeBytes;
+    }
+#endif
+    const int stripRows =
+#ifdef BOARD_HAS_PSRAM
+        grayPlanes ? gh :
+#endif
+                   STRIP_ROWS;
+
     auto renderPlaneToBuffer = [&](const bool lsbPlane, uint8_t* buf) {
       renderer.setRenderMode(lsbPlane ? GfxRenderer::GRAYSCALE_LSB : GfxRenderer::GRAYSCALE_MSB);
-      for (int y = 0; y < gh; y += STRIP_ROWS) {
-        const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
+      for (int y = 0; y < gh; y += stripRows) {
+        const int rows = (gh - y < stripRows) ? (gh - y) : stripRows;
         renderer.beginStripTarget(buf + static_cast<size_t>(y) * gwBytes, y, rows);
         renderer.clearScreen(absoluteImageGrayscale ? 0xFF : 0x00);
         renderGrayscalePass();
@@ -6105,37 +6120,66 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       }
     };
 
-    auto lsbPlaneBuf = (overlapRefresh && planeBufFits()) ? makeUniqueNoThrow<uint8_t[]>(planeBytes) : nullptr;
-    auto msbPlaneBuf = (lsbPlaneBuf && planeBufFits()) ? makeUniqueNoThrow<uint8_t[]>(planeBytes) : nullptr;
+    uint8_t* lsbPlaneBuf = nullptr;
+    uint8_t* msbPlaneBuf = nullptr;
+#ifdef BOARD_HAS_PSRAM
+    if (grayPlanes) {
+      lsbPlaneBuf = grayPlanes.get();
+      msbPlaneBuf = grayPlanes.get() + planeBytes;
+    }
+#endif
+    auto internalLsb =
+        (!lsbPlaneBuf && overlapRefresh && planeBufFits()) ? makeUniqueNoThrow<uint8_t[]>(planeBytes) : nullptr;
+    auto internalMsb = (internalLsb && planeBufFits()) ? makeUniqueNoThrow<uint8_t[]>(planeBytes) : nullptr;
+    if (internalLsb) {
+      lsbPlaneBuf = internalLsb.get();
+      msbPlaneBuf = internalMsb.get();
+    }
 
     if (lsbPlaneBuf) {
-      if (msbPlaneBuf && dualPlane) {
+#ifdef BOARD_HAS_PSRAM
+      // Single gray-pair walk on PSRAM: one pass flags both planes straight
+      // into the reused buffers. Images and EEGO A4 clipping highlights keep
+      // the separate plane passes (their fill writes only one plane).
+      if (grayPlanes && !page->hasImages() && (!drewClippingHighlights || !BoardConfig::isEegoA4())) {
+        renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
+        renderer.beginGrayPairTarget(lsbPlaneBuf, msbPlaneBuf, gh);
+        renderer.clearScreen(absoluteImageGrayscale ? 0xFF : 0x00);
+        renderGrayscalePass();
+        renderer.endStripTarget();
+      } else
+#endif
+          if (msbPlaneBuf && dualPlane
+#ifdef BOARD_HAS_PSRAM
+              && !grayPlanes
+#endif
+          ) {
         // Async overlap, both buffers live: one DUAL walk fills both planes
         // while the BW refresh is in flight.
         renderer.setRenderMode(GfxRenderer::GRAYSCALE_DUAL);
         for (int y = 0; y < gh; y += STRIP_ROWS) {
           const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
-          renderer.beginStripTarget(lsbPlaneBuf.get() + static_cast<size_t>(y) * gwBytes, y, rows,
-                                    msbPlaneBuf.get() + static_cast<size_t>(y) * gwBytes);
+          renderer.beginStripTarget(lsbPlaneBuf + static_cast<size_t>(y) * gwBytes, y, rows,
+                                    msbPlaneBuf + static_cast<size_t>(y) * gwBytes);
           renderer.clearScreen(0x00);
           renderGrayscalePass();
           renderer.endStripTarget();
         }
       } else {
-        renderPlaneToBuffer(true, lsbPlaneBuf.get());
-        if (msbPlaneBuf) renderPlaneToBuffer(false, msbPlaneBuf.get());
+        renderPlaneToBuffer(true, lsbPlaneBuf);
+        if (msbPlaneBuf) renderPlaneToBuffer(false, msbPlaneBuf);
       }
       const auto tGrayRender = millis();
 
       renderer.waitRefreshComplete();
       const auto tWait = millis();
 
-      renderer.writeGrayscalePlaneStrip(true, lsbPlaneBuf.get(), 0, gh);
+      renderer.writeGrayscalePlaneStrip(true, lsbPlaneBuf, 0, gh);
       if (msbPlaneBuf) {
-        renderer.writeGrayscalePlaneStrip(false, msbPlaneBuf.get(), 0, gh);
+        renderer.writeGrayscalePlaneStrip(false, msbPlaneBuf, 0, gh);
       } else {
-        renderPlaneToBuffer(false, lsbPlaneBuf.get());
-        renderer.writeGrayscalePlaneStrip(false, lsbPlaneBuf.get(), 0, gh);
+        renderPlaneToBuffer(false, lsbPlaneBuf);
+        renderer.writeGrayscalePlaneStrip(false, lsbPlaneBuf, 0, gh);
       }
       const auto tGrayWrite = millis();
 
@@ -6371,17 +6415,17 @@ int EpubReaderActivity::clippingAtPoint(const Page& page, const int x, const int
   return -1;
 }
 
-void EpubReaderActivity::drawClippingHighlights(const Page& page, const int fontId, const int orientedMarginTop,
+bool EpubReaderActivity::drawClippingHighlights(const Page& page, const int fontId, const int orientedMarginTop,
                                                 const int orientedMarginLeft) const {
   if (!section || !CLIPPINGS.hasClippings() || section->currentPage < 0 || section->currentPage >= section->pageCount) {
-    return;
+    return false;
   }
 
   size_t chapterClippings = 0;
   for (size_t i = 0; i < CLIPPINGS.clippingCount(); ++i) {
     if (CLIPPINGS.clippingAt(i)->spineIndex == currentSpineIndex) ++chapterClippings;
   }
-  if (!chapterClippings) return;
+  if (!chapterClippings) return false;
 
   const auto started = millis();
   size_t highlightedWords = 0;
@@ -6458,6 +6502,7 @@ void EpubReaderActivity::drawClippingHighlights(const Page& page, const int font
   }
   LOG_DBG("CLIP", "Highlight pass: chapter_clips=%u highlighted_words=%u time=%lums",
           static_cast<unsigned>(chapterClippings), static_cast<unsigned>(highlightedWords), millis() - started);
+  return highlightedWords != 0;
 }
 
 void EpubReaderActivity::renderStatusBar() const {
