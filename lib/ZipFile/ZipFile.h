@@ -86,6 +86,11 @@ class ZipFile {
   bool open();
   bool close();
   bool loadAllFileStatSlims();
+  // Start the next lookup at the first archive member, as a fresh open does.
+  void restartMemberSearch() {
+    lastCentralDirPosValid = false;
+    lastLookupValid = false;
+  }
   bool getInflatedFileSize(const char* filename, size_t* size);
   // Access the full fileStatSlimCache populated by loadAllFileStatSlims().
   const FileStatSlimCache& getFileStatSlimCache() const { return fileStatSlimCache; }
