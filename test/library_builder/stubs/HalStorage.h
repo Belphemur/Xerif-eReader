@@ -26,7 +26,6 @@ inline int shortWrite = -1;
 inline int failTruncate = -1;
 inline int failRename = -1;
 inline int failAlloc = -1;
-inline bool failDirectorySeek = false;
 inline std::string failClosePath;
 inline std::string failWritePath;
 inline unsigned parses = 0;
@@ -35,6 +34,8 @@ inline unsigned seeks = 0;
 inline unsigned delays = 0;
 inline std::map<std::string, unsigned> writesByPath;
 inline std::map<std::string, unsigned> directoryEntriesByPath;
+inline std::map<std::string, unsigned> directoryOpensByPath;
+inline std::map<std::string, std::string> openPathAliases;
 inline bool failureTriggered = false;
 inline std::map<std::string, std::vector<std::string>> extraDirectoryEntries;
 
@@ -57,7 +58,6 @@ inline void reset() {
   failTruncate = -1;
   failRename = -1;
   failAlloc = -1;
-  failDirectorySeek = false;
   failClosePath.clear();
   failWritePath.clear();
   parses = 0;
@@ -66,6 +66,8 @@ inline void reset() {
   delays = 0;
   writesByPath.clear();
   directoryEntriesByPath.clear();
+  directoryOpensByPath.clear();
+  openPathAliases.clear();
   failureTriggered = false;
   extraDirectoryEntries.clear();
 }
@@ -148,7 +150,7 @@ class HalFile {
   size_t position() const { return pos; }
   bool seekSet(const size_t offset) {
     fake::seeks++;
-    if (!node || (node->directory && fake::failDirectorySeek) || (!node->directory && offset > node->bytes.size())) {
+    if (!node || (!node->directory && offset > node->bytes.size())) {
       return false;
     }
     pos = offset;
@@ -218,10 +220,12 @@ class HalStorage {
   }
   HalFile open(const char* path) {
     HalFile file;
-    const auto found = fake::files.find(path);
+    const auto alias = fake::openPathAliases.find(path);
+    const auto found = fake::files.find(alias == fake::openPathAliases.end() ? path : alias->second);
     if (found != fake::files.end()) {
       file.node = found->second;
-      file.path = path;
+      file.path = found->first;
+      if (file.isDirectory()) fake::directoryOpensByPath[path]++;
     }
     return file;
   }
