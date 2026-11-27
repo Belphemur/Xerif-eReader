@@ -21,6 +21,8 @@ panel's greyscale at render time instead of being dumped on it raw.
 
 ## Technical details
 
-The tone-bake pipeline (blue-noise dithering, edge-aware diffusion,
-per-image caches) is documented in the repository's design notes on
+The tone-bake pipeline (blue-noise dithering, detail-preserving resize,
+per-image caches) is explained in layman's terms in
+[How images are prepared](/docs/image-pipeline); the full engineering record
+is the repository's design notes on
 [GitHub](https://github.com/Belphemur/Xerif-eReader/tree/develop/docs/design).

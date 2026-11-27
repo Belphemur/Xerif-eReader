@@ -210,6 +210,7 @@ export default defineConfig({
             { text: 'Dictionary lookup', link: '/docs/dictionary' },
             { text: 'Focus Reading', link: '/docs/focus-reading' },
             { text: 'Image & cover rendering', link: '/docs/image-cover-rendering' },
+            { text: 'How images are prepared', link: '/docs/image-pipeline' },
             { text: 'KOReader sync', link: '/docs/koreader-sync' },
             { text: 'Custom fonts', link: '/docs/custom-fonts' },
             { text: 'Sleep screens', link: '/docs/sleep-screens' },
