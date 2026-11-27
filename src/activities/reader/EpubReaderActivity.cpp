@@ -874,7 +874,7 @@ bool EpubReaderActivity::loadBook() {
   // one-shot 32 KB DRAM stack HERE, before the EPUB open loads the ZIP index
   // cache — that DRAM unordered_map is entry-count dependent (~115 B/entry,
   // ~56 KB at 465 entries) and can leave no contiguous block for the worker's
-  // first spawn, which only fires later at the 10%-remaining trigger
+  // first spawn, which only fires later at the 15%-remaining trigger
   // (EpubReaderActivity.cpp:4976 updateFibpWorker). The reader-entry heap
   // still holds the big fresh-boot block, so the reserve always lands here.
   // The worker keeps its buffers until stopFibpWorker() at reader teardown.
@@ -5705,7 +5705,7 @@ void EpubReaderActivity::updateFibpWorker(const uint32_t generation, const freei
     fibpNotifiedGen_ = generation;
   }
   if (fibpBegun_) {
-    // Raw progress only — the worker applies the 10%-remaining policy. This
+    // Raw progress only — the worker applies the 15%-remaining policy. This
     // runs on every reader render (page turns included), so a mid-chapter
     // threshold crossing fires on the turn that crosses it, and a chapter
     // entered already past the threshold triggers immediately. The legacy
@@ -5715,7 +5715,7 @@ void EpubReaderActivity::updateFibpWorker(const uint32_t generation, const freei
     // read as 65535 and fire the trigger at ~0% progress.
     // Skip while the mirrors still belong to the previous spine (the
     // chapter-transition block has not refreshed them yet): reporting the old
-    // (page, pageCount) against the new spine would fire the 10%-remaining
+    // (page, pageCount) against the new spine would fire the 15%-remaining
     // trigger at ~0% progress. The next render after the transition reports
     // the refreshed mirrors.
     if (ttfSpine != currentSpineIndex) return;

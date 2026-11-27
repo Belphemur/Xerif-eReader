@@ -25,9 +25,11 @@ constexpr uint16_t kPrefetchLookaheadSpines = 1;
 
 // Prefilter thresholds for the next-chapter prefetch trigger.
 //
-// Long chapters: fire only once inside the last kPrefetchRemainingPercent of the
-// chapter — building chapters the user may never reach wastes SD writes and
-// battery (whole-book prefetch was the device-soak pathology PR #153 reverted).
+// Long chapters: fire only inside the last 15% of the chapter — building
+// chapters the user may never reach wastes SD writes and battery (whole-book
+// prefetch was the device-soak pathology PR #153 reverted). Image preparation
+// is slow: the soak showed the boundary arriving while the build was still
+// running, so 15% gives it lead time inside the same one-chapter window.
 //
 // Short chapters: a chapter with fewer than kShortChapterImmediatePrefetchPages
 // pages has no reading-time budget to hide the next chapter's index behind — the
@@ -38,7 +40,7 @@ constexpr uint16_t kPrefetchLookaheadSpines = 1;
 // (Owner repro: 2-page chapter → Indexing popup on the turn into the next
 // chapter; closing/reopening let the idle worker drain. 2026-10-04.)
 constexpr uint16_t kShortChapterImmediatePrefetchPages = 10;
-constexpr uint8_t kPrefetchRemainingPercent = 10;
+constexpr uint8_t kPrefetchRemainingPercent = 15;
 // page == the 0-based current page inside the chapter; pageCount == 0 (unknown)
 // never triggers. The remaining-threshold uses ceil so the 1-page-remaining edge
 // fires even for tiny page counts.
@@ -54,7 +56,7 @@ inline bool shouldPrefetchNext(const uint16_t page, const uint16_t pageCount, co
   if (lengthFinal && pageCount < kShortChapterImmediatePrefetchPages) return true;  // short: fire at entry
   const uint32_t thresholdPages = (static_cast<uint32_t>(pageCount) * kPrefetchRemainingPercent + 99) / 100;
   const uint32_t remaining = pageCount > page ? static_cast<uint32_t>(pageCount - page) : 0;
-  return remaining <= thresholdPages;  // long: 10%-remaining rule
+  return remaining <= thresholdPages;  // long: 15%-remaining rule
 }
 
 // R4 queue order: the chapter AFTER the entered one first, then onward

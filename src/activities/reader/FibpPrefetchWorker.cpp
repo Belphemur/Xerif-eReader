@@ -478,7 +478,7 @@ void FibpPrefetchWorker::notifyGeneration(const uint32_t generation, const Layou
   // Respawn after a "fully indexed" self-exit so later settings changes can
   // re-index under the new generation (see ensureTask()) — but only when a
   // threshold event had actually fired: a generation change alone must not
-  // start indexing before the 10%-remaining trigger (CodeRabbit finding).
+  // start indexing before the 15%-remaining trigger (CodeRabbit finding).
   // Re-arm the spawn dedup so the same spine can fire again under the new
   // generation.
   const bool fired = lastPrefetchFiredSpine_.load(std::memory_order_acquire) != fibp::kNoChapter;

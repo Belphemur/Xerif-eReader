@@ -84,7 +84,7 @@ class FibpPrefetchWorker {
   bool begin(const BeginContext& ctx);
   // Main thread. Reports the reader's current position (0-based page inside
   // the spine, pageCount total pages of that chapter). The WORKER applies
-  // the 10%-remaining policy (fibp::shouldPrefetchNext): the next chapter is
+  // the 15%-remaining policy (fibp::shouldPrefetchNext): the next chapter is
   // enqueued only when the position crosses the threshold — page turns
   // inside the same spine store the position but never rebuild the queue.
   // `lengthFinal` is false while a build still owns the chapter, so a
