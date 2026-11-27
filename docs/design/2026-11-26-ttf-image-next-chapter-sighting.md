@@ -155,3 +155,77 @@ interval).
 No re-decode, no queue change, no budget change; the watermark/resume and
 commit-pickup semantics are unchanged. §5's "one probe per pass" reads as
 "one probe per backoff interval while pending" from this addendum on.
+
+## Addendum 2 (2026-11-28): the next-spine cache is PUSHED to the sighting, not polled
+
+Soak after the first addendum's fix (`2.18.0-dev-feat/ttf-image-next-chapter-sighting-f2dddbb`,
+20:11–20:12 UTC): the backoff works as designed — the `s0011-47dba8e1.fibp`
+failed-open line now fires once per ~2 s interval (lines 129, 157, 246, 249,
+263, 290, 305, 319, 321, 328, 336) instead of ~400 per 8 s. But the probes
+continue for the entire chapter, and the owner's ruling is architectural:
+**the reader polls for a file the worker deliberately will not produce yet.**
+The FIBP worker's next-chapter trigger is the 10%-remaining policy
+(`fibp::shouldPrefetchNext`, `FibpPrefetchPolicy.h:52`; documented at
+`FibpPrefetchWorker.h:87`), while the sighting's probe asks "does the cache
+exist?" on its own 2 s clock. Two clocks, no channel: for ~85% of a chapter
+the probe is guaranteed to fail, and no backoff can fix a probe whose
+expected answer is "not yet, by design".
+
+**Ruling (supersedes the 2026-11-27 addendum's time-gate ruling in part;
+amends §2 decision 3):**
+
+1. **The per-pass/per-backoff `openPrefetch` probe is DELETED, not tuned.**
+   `kNextSpineProbeBackoffMs`, the `ttfNextSightProbe{Spine,Gen,Ms}_` state,
+   the `nextProbeDue` gate, and both gated probe sites in `ttfSightingPass()`
+   are removed. The pending next-spine phase no longer opens SD by itself;
+   it stays pending until an arming event arrives.
+2. **Arming is event-driven from the worker's own lifecycle (DRY).** The
+   single source of truth for "the next spine's cache now exists" is the
+   worker that builds and commits it. The reader observes that through the
+   EXISTING one-shot commit pickup — `pickUpFibpNextSighting()` watches the
+   worker's in-PSRAM `buildingSpine()` atomic leave the next spine
+   (no new IPC channel; the idle tick already runs) and opens the committed
+   cache reader exactly once to sight it. No SD speculation by the reader,
+   ever: an `openPrefetch` call happens only after the worker has committed
+   the cache (or after the book-open inventory below found it).
+3. **Book-open inventory covers already-built chapters (SOLID: no missing
+   producer).** The pickup can only fire for commits the reader is alive to
+   see; a restore into a chapter the worker built in a previous session has
+   no event. One-shot at reader start: list `ficache/` with the existing
+   `openNextFile()` directory iteration (`lib/hal/HalStorage.h`) and mark
+   which spines hold a current-generation cache, so the next-spine phase can
+   open those caches without waiting for a worker transition. One `readdir`
+   per book open — never per tick.
+4. **The 10% trigger becomes 15% (owner decision: image preparation is slow).**
+   `kPrefetchRemainingPercent` 10 → 15 in `FibpPrefetchPolicy.h`, with the
+   rationale updated at `FibpPrefetchWorker.h:87` and the policy header.
+   Rationale: the soak shows the boundary arriving while the build is still
+   running; the image-bearing chapters need the extra lead time more than
+   the battery budget feared the SD-write tail. The one-chapter lookahead
+   frame (PR #153's pathology guard) is unchanged — this widens the firing
+   window inside the same single next chapter, not the cache set.
+
+**Decision log (coding-philosophy order):**
+
+- **DRY wins:** the deleted probe was a second copy of the knowledge "the
+  next cache has appeared" — the worker already owns that fact and already
+  hands it over through `buildingSpine()`. Keeping a polling backoff beside
+  the event channel would mean two clocks on one truth, which is what
+  produced this defect. The book-open `readdir` is not a second truth
+  source: it reads the on-disk projection of the same worker lifecycle.
+- **SOLID over KISS:** single-writer holds — the worker remains the only
+  producer of ficache state; the reader never speculates SD state mid-chapter
+  and can only open after a commit or a completed directory inventory.
+- **KISS:** the replacement deletes a 3-member state machine, a gate lambda,
+  and two probe sites, and keeps machinery that already existed
+  (`pickUpFibpNextSighting`). The addendum-1 backoff, CI-green as it is,
+  had no remaining job once arming is event-driven — it is removed in the
+  same change, not tolerated alongside its replacement.
+
+**Acceptance (amends §4):** build gates unchanged. Soak bar addition: during
+steady reading before a boundary, the sighting path must produce **zero**
+`[TTFB] Failed to open file for reading ... ficache` lines — the reader only
+opens next-spine caches after a worker commit or the book-open inventory, so
+the file always exists at open time. The §4 boundary-warm bar is unchanged;
+the 15% trigger must not widen the cache set (still current + next) and the
+short-chapter entry-fire branch is untouched.
