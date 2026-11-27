@@ -2,7 +2,7 @@
 
 Date: 2026-11-26 · Scope: TTF reader image predecode only (`CROSSPOINT_TTF_READER` && `BOARD_HAS_PSRAM`) · Parent/record of record: [2026-11-25-image-pipeline-adr.md](2026-11-25-image-pipeline-adr.md) (§2.6 predecode, §5.2 sighting)
 
-Status: Accepted — to be implemented by supervised pi in a dedicated worktree; flips to implemented-in-PR-#N on merge.
+Status: Accepted — implemented in PR #350
 
 ## 1. Problem: the worker idles exactly at chapter boundaries
 
