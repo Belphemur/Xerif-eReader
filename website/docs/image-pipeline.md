@@ -34,6 +34,30 @@ Two things make it a good fit for an e-reader:
   in a blind vote against every alternative (including the previous
   algorithms); the blue-noise bake won every matchup.
 
+### Why not Floyd–Steinberg?
+
+The classic answer to the four-shade problem is a trick called **error
+diffusion** (Floyd–Steinberg is the famous variant): after picking a dot's
+shade, you measure how far off it was and *carry the leftover error* into the
+neighbouring dots, spreading it around so the picture averages out right.
+Xerif's earlier image pipeline worked this way, and it was replaced.
+
+The problem is that the error has to be remembered and passed along — dot by
+dot, row by row. On a small e-reader that means:
+
+- the result depends on *where* the image sits on the screen and in which
+  order it was processed, so two code paths preparing the same picture could
+  never be guaranteed to produce the same file;
+- flat areas (skies, page backgrounds) developed visible checkerboard or
+  wash-out artifacts, and each patch fixed one defect while introducing
+  another — dozens of tuning rounds chased the symptoms without end.
+
+The blue-noise table needs **no memory at all**: the same input always gives
+the same output, everywhere, which is why it won both the vote and the
+engineering argument. The old error-diffusion code is kept in the firmware
+only as a built-in escape hatch (a settings file can switch back to the
+previous paint path), but it is not the pipeline your X4 Pro uses.
+
 The math detail that makes the shades land right: brightness is measured in
 *linear light* (how much light a pixel actually represents) before comparing
 to the panel's real four shades, so an image's average brightness comes out
