@@ -129,3 +129,29 @@ spine's cache.** Concretely:
   path only through the same 12-page budget as today; a worker commit cannot
   deadlock the pass (the pickup is one-shot from the idle tick, and the pass
   itself already tolerates a reader dropping mid-walk).
+
+## Addendum (2026-11-27): the pending probe is event-paced, not per-pass
+
+Owner soak of the as-built PR #350 (`2.18.0-dev-feat/...-eaee0e6`, 09:53:13–31,
+log lines 184→579) disproved the §5 cost line as built: while the next spine's
+cache does not exist yet (`[TTFB] Failed to open file for reading:
+.../ficache/s0011-47dba8e1.fibp`), the pending phase probed once per PASS —
+and the pass runs from the idle drain tick on every background build tick, so
+"per pass" degenerated to per-tick: **~400 failed `openPrefetch` probes in 8
+seconds**, each an SD stat/open attempt plus an `[ERR]` line. That is the
+soak-finding-#5 shape exactly (an uncached negative probe taxed every redraw
+and flooded serial), and it violates the ADR's own bounded-cost contract.
+
+**Ruling (amends §2.1): the negative next-spine probe is TIME-GATED, not
+pass-gated.** A failed probe records the wall clock; the next attempt is
+refused until a backoff elapses (constant in the design-constants style,
+soak-tuned, ~2 s). Success (or the `armNextSighting` commit pickup, which
+clears the gate) resets it. Both probe sites are gated (the phase cross-over
+and the mid-walk re-open). The `[ERR]` flood line is NOT edited away at the
+file layer — with the backoff it fires at most once per interval, which is
+the correct diagnostic signal (cache missing for a long time = one line per
+interval).
+
+No re-decode, no queue change, no budget change; the watermark/resume and
+commit-pickup semantics are unchanged. §5's "one probe per pass" reads as
+"one probe per backoff interval while pending" from this addendum on.
