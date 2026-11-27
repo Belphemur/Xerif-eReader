@@ -307,6 +307,18 @@ class EpubReaderActivity final : public ReaderActivity {
   uint32_t ttfSightCursorGen_ = 0;
   uint16_t ttfSightCursorPage_ = 0;
   bool ttfSightCursorNext_ = false;
+  // Next-spine watermark (ADR 2026-11-26): spine + generation name the cache,
+  // page is the last fully-sighted page. `done` stops the openPrefetch probe
+  // once that chapter is sighted (including an image-free one).
+  uint16_t ttfNextSightSpine_ = 0xFFFF;
+  uint32_t ttfNextSightGen_ = 0;
+  uint16_t ttfNextSightPage_ = 0;
+  bool ttfNextSightDone_ = false;
+  // FIBP commit pickup: armed while the worker builds the next spine, consumed
+  // on the first idle tick after it leaves that spine.
+  bool fibpNextSightArmed_ = false;
+  uint16_t fibpNextSightSpine_ = 0xFFFF;
+  uint32_t fibpNextSightGen_ = 0;
   // Wedged image-worker join (stopImagePredecode): the worker object was
   // released alive and still dereferences the book surfaces raw — the
   // destructor must keep ttf_/epub alive with it (leak beats UAF).
@@ -431,6 +443,12 @@ class EpubReaderActivity final : public ReaderActivity {
   // sighted for the current generation. Runs from the paint path and the
   // idle build tick so fast-turn runs keep predecode moving.
   bool ttfSightingPass();
+  // Re-arm the next-spine watermark when a build grows or commits it.
+  void armNextSighting(uint16_t spineIndex, uint32_t generation);
+  // Open/sight/drop one bounded pass over a committed next-spine cache.
+  uint16_t sightCommittedNextSpine(uint16_t spineIndex, uint32_t generation);
+  // One-shot pickup after the FIBP worker leaves the next spine.
+  void pickUpFibpNextSighting();
   void ttfInvalidateCaches();
   void ttfShowIndexingPopup();
   void ttfSaveProgress();
