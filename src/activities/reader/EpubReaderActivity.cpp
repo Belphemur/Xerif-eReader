@@ -5238,6 +5238,7 @@ void EpubReaderActivity::stopImagePredecode() {
   ttfNextSightGen_ = 0;
   ttfNextSightPage_ = 0;
   ttfNextSightDone_ = false;
+  clearNextSightProbeGate();
   fibpNextSightArmed_ = false;
   fibpNextSightSpine_ = 0xFFFF;
   fibpNextSightGen_ = 0;
@@ -5260,6 +5261,10 @@ bool EpubReaderActivity::ttfSightingPass() {
   const bool extended = sighted && ttfSightedPageCount_ != 0xFFFF && curCount > ttfSightedPageCount_;
   const bool nextDone = ttfNextSightDone_ && ttfNextSightSpine_ == nextSpine && ttfNextSightGen_ == ttfGeneration;
   if (sighted && !extended && nextDone) return true;
+  const auto nextProbeDue = [this](const uint16_t spine) {
+    return ttfNextSightProbeSpine_ != static_cast<int16_t>(spine) || ttfNextSightProbeGen_ != ttfGeneration ||
+           static_cast<uint32_t>(millis() - ttfNextSightProbeMs_) >= kNextSpineProbeBackoffMs;
+  };
   if (ttfSightCursorSpine_ != curSpine || ttfSightCursorGen_ != ttfGeneration || extended) {
     ttfSightCursorSpine_ = curSpine;
     ttfSightCursorGen_ = ttfGeneration;
@@ -5277,9 +5282,16 @@ bool EpubReaderActivity::ttfSightingPass() {
         ttfImagesSightedGen_ = ttfGeneration;
         ttfSightedPageCount_ = pageCount;
         if (nextDone) return true;
-        // A missing next-spine cache stays PENDING: one openPrefetch probe per
-        // pass notices a later session/worker commit (ADR §2.1).
-        if (!ttf_->openPrefetch(nextSpine, ttfGeneration)) return false;
+        // A missing next-spine cache stays PENDING: the idle drain can run
+        // every build tick, so retry the open only after the backoff.
+        if (!nextProbeDue(nextSpine)) return true;
+        if (!ttf_->openPrefetch(nextSpine, ttfGeneration)) {
+          ttfNextSightProbeSpine_ = static_cast<int16_t>(nextSpine);
+          ttfNextSightProbeGen_ = ttfGeneration;
+          ttfNextSightProbeMs_ = millis();
+          return true;  // pending, not a failed pass
+        }
+        clearNextSightProbeGate();
         ttfSightCursorNext_ = true;
         ttfSightCursorPage_ =
             ttfNextSightSpine_ == nextSpine && ttfNextSightGen_ == ttfGeneration ? ttfNextSightPage_ : 0;
@@ -5294,9 +5306,18 @@ bool EpubReaderActivity::ttfSightingPass() {
       if (got < take) break;  // failed read: retry that page on a later pass
       continue;
     }
-    // Next-spine phase. A reader dropped mid-walk gets the same one bounded
+    // Next-spine phase. A reader dropped mid-walk gets the same backoff-gated
     // probe; its watermark keeps the already-sighted prefix.
-    if (!ttf_->prefetchFor(nextSpine) && !ttf_->openPrefetch(nextSpine, ttfGeneration)) return false;
+    if (!ttf_->prefetchFor(nextSpine)) {
+      if (!nextProbeDue(nextSpine)) return true;
+      if (!ttf_->openPrefetch(nextSpine, ttfGeneration)) {
+        ttfNextSightProbeSpine_ = static_cast<int16_t>(nextSpine);
+        ttfNextSightProbeGen_ = ttfGeneration;
+        ttfNextSightProbeMs_ = millis();
+        return true;
+      }
+    }
+    clearNextSightProbeGate();
     const uint16_t nextCount = static_cast<uint16_t>(ttf_->prefetchPageCount());
     if (ttfSightCursorPage_ >= nextCount) {
       ttfNextSightSpine_ = nextSpine;
@@ -5323,15 +5344,26 @@ bool EpubReaderActivity::ttfSightingPass() {
 #endif  // CROSSPOINT_TTF_READER && BOARD_HAS_PSRAM
 }
 
-void EpubReaderActivity::armNextSighting(const uint16_t spineIndex, const uint32_t generation) {
+void EpubReaderActivity::armNextSighting(const uint16_t spineIndex, const uint32_t generation,
+                                         const bool clearProbeGate) {
 #if defined(CROSSPOINT_TTF_READER) && defined(BOARD_HAS_PSRAM)
   if (ttfNextSightSpine_ != spineIndex || ttfNextSightGen_ != generation) ttfNextSightPage_ = 0;
   ttfNextSightSpine_ = spineIndex;
   ttfNextSightGen_ = generation;
   ttfNextSightDone_ = false;
+  if (clearProbeGate) clearNextSightProbeGate();
 #else
   (void)spineIndex;
   (void)generation;
+  (void)clearProbeGate;
+#endif
+}
+
+void EpubReaderActivity::clearNextSightProbeGate() {
+#if defined(CROSSPOINT_TTF_READER) && defined(BOARD_HAS_PSRAM)
+  ttfNextSightProbeSpine_ = -1;
+  ttfNextSightProbeGen_ = 0;
+  ttfNextSightProbeMs_ = 0;
 #endif
 }
 
@@ -5496,7 +5528,7 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
       if (take > kSightPagesPerPaint) take = kSightPagesPerPaint;
       const uint16_t got = sightTtfSpineImages(spine, first, static_cast<uint16_t>(first + take));
       if (nextSpine) {
-        armNextSighting(spine, ttfGeneration);
+        armNextSighting(spine, ttfGeneration, false);
         ttfNextSightPage_ = static_cast<uint16_t>(first + got);
       }
       ttfBgFailRepaintArmed_ = true;  // progress: the next failure earns a repaint

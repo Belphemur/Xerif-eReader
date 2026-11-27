@@ -297,6 +297,9 @@ class EpubReaderActivity final : public ReaderActivity {
   // walk over paints (kSightPagesPerPaint page records per pass) so the
   // loop task never pays hundreds of SD blob reads in one paint.
   static constexpr uint16_t kSightPagesPerPaint = 12;
+  // The idle drain can run on every build tick, so a missing next-spine cache
+  // is probed once per interval, not once per pass (ADR addendum 2026-11-27).
+  static constexpr uint32_t kNextSpineProbeBackoffMs = 2000;
   uint16_t ttfImagesSightedSpine_ = 0xFFFF;
   uint32_t ttfImagesSightedGen_ = 0;
   // Current-spine pages sighted when the walk last completed: a later
@@ -314,6 +317,12 @@ class EpubReaderActivity final : public ReaderActivity {
   uint32_t ttfNextSightGen_ = 0;
   uint16_t ttfNextSightPage_ = 0;
   bool ttfNextSightDone_ = false;
+  // Negative-probe backoff: identity of the failed cache and when it failed
+  // (-1 = no gate). A different spine/generation is always due immediately;
+  // elapsed time uses wrap-safe unsigned subtraction like ttfPrefetchFailMs_.
+  int16_t ttfNextSightProbeSpine_ = -1;
+  uint32_t ttfNextSightProbeGen_ = 0;
+  uint32_t ttfNextSightProbeMs_ = 0;
   // FIBP commit pickup: armed while the worker builds the next spine, consumed
   // on the first idle tick after it leaves that spine.
   bool fibpNextSightArmed_ = false;
@@ -444,7 +453,9 @@ class EpubReaderActivity final : public ReaderActivity {
   // idle build tick so fast-turn runs keep predecode moving.
   bool ttfSightingPass();
   // Re-arm the next-spine watermark when a build grows or commits it.
-  void armNextSighting(uint16_t spineIndex, uint32_t generation);
+  // Progress-only re-arms keep the probe backoff: the cache is still unwritten.
+  void armNextSighting(uint16_t spineIndex, uint32_t generation, bool clearProbeGate = true);
+  void clearNextSightProbeGate();
   // Open/sight/drop one bounded pass over a committed next-spine cache.
   uint16_t sightCommittedNextSpine(uint16_t spineIndex, uint32_t generation);
   // One-shot pickup after the FIBP worker leaves the next spine.
