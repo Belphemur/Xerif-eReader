@@ -5449,6 +5449,9 @@ uint16_t EpubReaderActivity::sightTtfSpineImages(const uint16_t spineIndex, cons
 void EpubReaderActivity::ttfBackgroundBuildTick() {
   if (!ttf_) return;
 #if defined(CROSSPOINT_TTF_READER) && defined(BOARD_HAS_PSRAM)
+  // The worker's commit is observed here, not only on a display refresh's
+  // prefetch tick: this idle path samples buildingSpine() on every build tick.
+  pickUpFibpNextSighting();
   // Idle sighting drain (§5.2): fast turns serve image-free pages from the
   // prerender and skip the paint-time walk; advance the same bounded cursor
   // here so predecode keeps up while the user speed-reads text.
@@ -5662,15 +5665,17 @@ void EpubReaderActivity::stopFibpWorker() {
 }
 
 void EpubReaderActivity::ttfPrefetchTick() {
-  if (!ttf_ || !epub || buildHeapPaused) return;
+  if (!ttf_ || !epub) return;
   // Single-writer: while the FIBP worker feature is active (begun) the worker
-  // owns next-chapter prefetching — including its 10%-remaining trigger — so
+  // owns next-chapter prefetching — including its 15%-remaining trigger — so
   // the legacy in-activity build must not index ahead of it; it stays for
-  // inert builds only (stub / begin failure).
+  // inert builds only (stub / begin failure). The commit pickup is a cache
+  // read, so it is not gated by the heap pause that stops chapter builds.
   if (fibpWorker_ != nullptr && fibpBegun_) {
-    pickUpFibpNextSighting();  // worker-owned builds: pick up its next-spine commit here
+    pickUpFibpNextSighting();
     return;
   }
+  if (buildHeapPaused) return;
   if (ttf_->sessionActive()) return;  // the current chapter's build wins
 
   const int nextSpine = currentSpineIndex + 1;
