@@ -1,6 +1,6 @@
 # Cover Image Pipeline — Blue-Noise Bake for Covers, Thumbs, and Sleep Art
 
-**Status:** implemented, merged as develop `d05825bc` (PR #337, 18 commits).
+**Status:** superseded in part by 2026-11-25-image-pipeline-adr.md (implemented, merged as develop `d05825bc`, PR #337, 18 commits).
 **Supersedes:** the Amendment A engine-facade draft (parked during the design
 discussion); this document records the owner-settled design as built.
 

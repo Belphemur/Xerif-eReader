@@ -1,7 +1,7 @@
 # TTF Image Path — Contrast Redesign & Full-Fit Guarantee (v2)
 
 Date: 2026-11-08
-Status: Draft for owner review (design-only; no code in this doc)
+Status: superseded in part by 2026-11-25-image-pipeline-adr.md
 Scope: **TTF reader path only** (`TtfImageEngine`, `TtfImageCache`, the SDK render paths it
 drives, `ChapterLayout` image placement).
 

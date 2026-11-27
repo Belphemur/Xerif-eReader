@@ -44,6 +44,7 @@ Use the table to find guidance for the decisions being changed. Read relevant se
 | Cache formats, layout persistence, or invalidation | [versioning](.agents/rules/generated-files-cache.md#cache-file-format-versioning) and [invalidation](.agents/rules/generated-files-cache.md#cache-invalidation-rules) |
 | New features, activities, settings, libraries, or dependencies | `SCOPE.md` and the `scope-discipline` skill |
 | Restructuring, extraction, or separating unrelated cleanup | the `refactor-for-review` skill |
+| Adding or revising a design record, or checking which decisions still govern | the generated [`docs/design/index.md`](docs/design/index.md) (`python3 scripts/build_design_index.py --check` fails on a stale one); how to add a record is in the index's last section |
 
 Repository-local skills live under `.agents/skills/`. Their descriptions identify specific procedures to use when needed; a keyword match alone does not require loading a skill.
 

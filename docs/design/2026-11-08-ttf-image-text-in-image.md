@@ -1,6 +1,7 @@
 # TTF image text-in-image legibility — edge handling pass
 
 Date: 2026-11-08 · Scope: TTF reader image path only · Parent: 2026-11-08-ttf-image-texture-quality.md (F3) · PR #303
+Status: superseded in part by 2026-11-25-image-pipeline-adr.md
 
 > **Superseded (in part) by the as-built ADR: [2026-11-25-image-pipeline-adr.md](2026-11-25-image-pipeline-adr.md) — the current image pipeline (blue-noise bake, DPID, JPEGDEC, shared bake core).**
 

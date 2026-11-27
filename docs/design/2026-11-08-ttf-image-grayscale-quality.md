@@ -2,7 +2,7 @@
 
 Date: 2026-11-08
 Author: Hermes (orchestrator), design authority: Antoine Aflalo
-Status: Draft for implementation (owner-directed: "fix that in a new worktree with pi", "the quality must be the best possible")
+Status: superseded in part by 2026-11-25-image-pipeline-adr.md
 Supersedes: nothing — amends the quality decisions of `2026-11-07-ttf-image-engine.md` (§5.6, §11).
 
 > **Superseded (in part) by the as-built ADR: [2026-11-25-image-pipeline-adr.md](2026-11-25-image-pipeline-adr.md) — the current image pipeline (blue-noise bake, DPID, JPEGDEC, shared bake core).**

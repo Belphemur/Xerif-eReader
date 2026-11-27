@@ -1,7 +1,7 @@
 # TTF-path image engine — predecode, format parity, quality
 
 Date: 2026-11-07
-Status: Draft for owner review (design-only; no code in this doc)
+Status: superseded in part by 2026-11-25-image-pipeline-adr.md
 
 > **Superseded (in part) by the as-built ADR: [2026-11-25-image-pipeline-adr.md](2026-11-25-image-pipeline-adr.md) — the current image pipeline (blue-noise bake, DPID, JPEGDEC, shared bake core).**
 Supersedes: `2026-11-06-image-predecode.md` (BITMAP-path scope, closed with PR #292)

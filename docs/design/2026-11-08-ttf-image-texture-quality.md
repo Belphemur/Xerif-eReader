@@ -1,6 +1,7 @@
 # TTF image texture quality — flat fields, banding, small text
 
 Date: 2026-11-09 · Scope: TTF reader image path only · Parent: 2026-11-08-ttf-image-contrast-and-fit.md
+Status: superseded in part by 2026-11-25-image-pipeline-adr.md
 
 > **Superseded (in part) by the as-built ADR: [2026-11-25-image-pipeline-adr.md](2026-11-25-image-pipeline-adr.md) — the current image pipeline (blue-noise bake, DPID, JPEGDEC, shared bake core).**
 

@@ -4,6 +4,7 @@ Date: 2026-11-09 · Scope: TTF reader image path only (`CROSSPOINT_TTF_READER`)
 · Amends: 2026-11-08-ttf-image-texture-quality.md (contract 2/3/4), 2026-11-08
 -ttf-image-contrast-and-fit.md (§2 remap constants), 2026-11-09-ttf-image
 -dpid-clahe.md (upscale sampling).
+Status: superseded in part by 2026-11-25-image-pipeline-adr.md
 
 > **Superseded (in part) by the as-built ADR: [2026-11-25-image-pipeline-adr.md](2026-11-25-image-pipeline-adr.md) — the current image pipeline (blue-noise bake, DPID, JPEGDEC, shared bake core).**
 
