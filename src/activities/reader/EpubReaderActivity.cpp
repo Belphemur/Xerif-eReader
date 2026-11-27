@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <cstring>
 #include <functional>
 #include <iterator>
@@ -867,6 +868,8 @@ void EpubReaderActivity::setBookCompleted(bool completed) {
 
 bool EpubReaderActivity::loadBook() {
 #if defined(CROSSPOINT_TTF_READER)
+  ttfSightCacheHashes_.reset();
+  ttfSightCacheSpineCount_ = 0;
   // dram-pref soak follow-up (build 0e652a97): reserve the FIBP worker's
   // one-shot 32 KB DRAM stack HERE, before the EPUB open loads the ZIP index
   // cache — that DRAM unordered_map is entry-count dependent (~115 B/entry,
@@ -971,6 +974,14 @@ bool EpubReaderActivity::loadBook() {
       // (onEnter ran before ttf_ existed on a fresh open).
       freeink::book::fontLoader.applyRenderMode(SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_CRISP);
       ttf_->setDecodeEpub(epub.get());  // GIF/BMP decode extractions (§5.4)
+#if defined(BOARD_HAS_PSRAM)
+      // One readdir for the whole book session; the generation is not known
+      // until the first render, so store the hash from each file name.
+      const int spineCount = epub->getSpineItemsCount();
+      if (spineCount > 0 && spineCount <= 0xFFFF) {
+        inventorySightingCaches(static_cast<uint16_t>(spineCount), ttfCacheDir.c_str());
+      }
+#endif
       if (imagePredecode_ != nullptr && !imagePredecode_->begun()) {
         imagePredecodeBegun_ = imagePredecode_->begin(epub.get(), &ttf_->source(), &ttf_->catalog().zip(),
                                                       ttfCacheDir.c_str(), ttfGeneration);
@@ -5243,6 +5254,78 @@ void EpubReaderActivity::stopImagePredecode() {
   fibpNextSightGen_ = 0;
 }
 
+void EpubReaderActivity::inventorySightingCaches(const uint16_t spineCount, const char* cacheDir) {
+#if defined(CROSSPOINT_TTF_READER) && defined(BOARD_HAS_PSRAM)
+  ttfSightCacheHashes_.reset();
+  ttfSightCacheSpineCount_ = 0;
+  if (cacheDir == nullptr || spineCount == 0) return;
+  if (spineCount > kMaxSightInventorySpines) {
+    LOG_DBG("TTFB", "Sighting inventory skipped: %u spines exceed cap %u", static_cast<unsigned>(spineCount),
+            static_cast<unsigned>(kMaxSightInventorySpines));
+    return;
+  }
+  auto hashes = makeUniqueNoThrow<uint32_t[]>(spineCount);
+  if (!hashes) {
+    LOG_ERR("TTFB", "Sighting inventory alloc failed: %u bytes",
+            static_cast<unsigned>(spineCount) * static_cast<unsigned>(sizeof(uint32_t)));
+    return;
+  }
+  std::fill(hashes.get(), hashes.get() + spineCount, 0u);
+  HalFile directory = Storage.open(cacheDir);
+  if (!directory || !directory.isDirectory()) {
+    LOG_ERR("TTFB", "Cannot open cache directory for sighting: %s", cacheDir);
+    return;
+  }
+  uint16_t found = 0;
+  char name[64];
+  while (HalFile entry = directory.openNextFile()) {
+    if (entry.isDirectory()) continue;
+    const size_t length = entry.getName(name, sizeof(name));
+    if (length == 0 || length >= sizeof(name)) continue;
+    unsigned int parsedSpine = 0;
+    unsigned int parsedHash = 0;
+    if (sscanf(name, "s%u-%x.fibp", &parsedSpine, &parsedHash) != 2 || parsedSpine >= spineCount) continue;
+    // Round-trip through the SDK's name builder rejects near-miss names and
+    // out-of-range hashes instead of trusting a hand-parsed filename.
+    char expected[64];
+    if (!freeink::book::pageCacheName(static_cast<uint16_t>(parsedSpine), parsedHash, expected, sizeof(expected)) ||
+        strcmp(expected, name) != 0) {
+      continue;
+    }
+    hashes[parsedSpine] = parsedHash;
+    ++found;
+  }
+  ttfSightCacheHashes_ = std::move(hashes);
+  ttfSightCacheSpineCount_ = spineCount;
+  LOG_DBG("TTFB", "Sighting cache inventory: spines=%u caches=%u", static_cast<unsigned>(spineCount),
+          static_cast<unsigned>(found));
+#else
+  (void)spineCount;
+  (void)cacheDir;
+#endif
+}
+
+bool EpubReaderActivity::openInventoriedSighting(const uint16_t spine) {
+#if defined(CROSSPOINT_TTF_READER) && defined(BOARD_HAS_PSRAM)
+  if (!ttfSightCacheHashes_ || spine >= ttfSightCacheSpineCount_ || ttfSightCacheHashes_[spine] == 0 ||
+      ttfSightCacheHashes_[spine] != ttfGeneration) {
+    return false;  // pending: no SD open for a cache that was never inventoried
+  }
+  if (ttf_->openPrefetch(spine, ttfGeneration)) return true;
+  // The file was present at book open; a failed open now means it was removed
+  // or has become unreadable. One line, then stop retrying this generation.
+  LOG_ERR("TTFB", "Failed to open inventoried cache s%u gen=%08x", static_cast<unsigned>(spine),
+          static_cast<unsigned>(ttfGeneration));
+  ttfSightCacheHashes_[spine] = 0;
+  ttfNextSightSpine_ = spine;
+  ttfNextSightGen_ = ttfGeneration;
+  ttfNextSightDone_ = true;
+#else
+  (void)spine;
+#endif
+  return false;
+}
+
 // One bounded sighting walk (§5.2): up to kSightPagesPerPaint page records
 // across the current + next spine. Runs from the paint path AND the idle
 // build tick — a fast-turn run never reaches the paint-time walk (the fast
@@ -5276,9 +5359,13 @@ bool EpubReaderActivity::ttfSightingPass() {
         ttfImagesSightedSpine_ = curSpine;
         ttfImagesSightedGen_ = ttfGeneration;
         ttfSightedPageCount_ = pageCount;
-        // The pending phase waits for an arming event — a worker commit or
-        // the book-open inventory — instead of probing SD on every pass.
-        return true;
+        // The pending phase opens SD only when the book-open inventory saw
+        // this spine's cache; otherwise it waits for a worker commit.
+        if (!openInventoriedSighting(nextSpine)) return true;
+        ttfSightCursorNext_ = true;
+        ttfSightCursorPage_ =
+            ttfNextSightSpine_ == nextSpine && ttfNextSightGen_ == ttfGeneration ? ttfNextSightPage_ : 0;
+        continue;
       }
       uint16_t take = pageCount - ttfSightCursorPage_;
       if (take > budget) take = budget;
@@ -5289,9 +5376,9 @@ bool EpubReaderActivity::ttfSightingPass() {
       if (got < take) break;  // failed read: retry that page on a later pass
       continue;
     }
-    // Next-spine phase: only an already-open reader is walked. A reader
-    // dropped mid-walk stays pending until an arming event reopens it.
-    if (!ttf_->prefetchFor(nextSpine)) return true;
+    // Next-spine phase: an inventoried cache may be reopened after a reader
+    // drop; otherwise the pending phase waits for a worker commit.
+    if (!ttf_->prefetchFor(nextSpine) && !openInventoriedSighting(nextSpine)) return true;
     const uint16_t nextCount = static_cast<uint16_t>(ttf_->prefetchPageCount());
     if (ttfSightCursorPage_ >= nextCount) {
       ttfNextSightSpine_ = nextSpine;
@@ -5334,7 +5421,12 @@ void EpubReaderActivity::armNextSighting(const uint16_t spineIndex, const uint32
 // never a reader held across paints (ADR §2.3).
 uint16_t EpubReaderActivity::sightCommittedNextSpine(const uint16_t spineIndex, const uint32_t generation) {
 #if defined(CROSSPOINT_TTF_READER) && defined(BOARD_HAS_PSRAM)
-  if (!ttf_ || !ttf_->openPrefetch(spineIndex, generation)) return 0;
+  if (!ttf_) return 0;
+  if (!ttf_->openPrefetch(spineIndex, generation)) {
+    LOG_ERR("TTFB", "Failed to open committed cache s%u gen=%08x", static_cast<unsigned>(spineIndex),
+            static_cast<unsigned>(generation));
+    return 0;
+  }
   uint16_t first = 0;
   if (ttfNextSightSpine_ == spineIndex && ttfNextSightGen_ == generation) first = ttfNextSightPage_;
   const uint16_t count = static_cast<uint16_t>(ttf_->prefetchPageCount());

@@ -297,6 +297,12 @@ class EpubReaderActivity final : public ReaderActivity {
   // walk over paints (kSightPagesPerPaint page records per pass) so the
   // loop task never pays hundreds of SD blob reads in one paint.
   static constexpr uint16_t kSightPagesPerPaint = 12;
+  // Book-open cache inventory: one hash per spine, capped so the one-shot
+  // array stays bounded (16 KiB at the cap). Oversized books rely on worker
+  // commits for arming instead.
+  static constexpr uint16_t kMaxSightInventorySpines = 4096;
+  std::unique_ptr<uint32_t[]> ttfSightCacheHashes_;
+  uint16_t ttfSightCacheSpineCount_ = 0;
   uint16_t ttfImagesSightedSpine_ = 0xFFFF;
   uint32_t ttfImagesSightedGen_ = 0;
   // Current-spine pages sighted when the walk last completed: a later
@@ -443,6 +449,13 @@ class EpubReaderActivity final : public ReaderActivity {
   // sighted for the current generation. Runs from the paint path and the
   // idle build tick so fast-turn runs keep predecode moving.
   bool ttfSightingPass();
+  // One ficache readdir at book open: remember each page cache's generation
+  // hash by spine so an already-built next spine can be opened without a
+  // speculative probe.
+  void inventorySightingCaches(uint16_t spineCount, const char* cacheDir);
+  // Open a next-spine cache only when the inventory proves it exists. False
+  // means pending; an inventoried file that fails to open is marked done.
+  bool openInventoriedSighting(uint16_t spine);
   // Re-arm the next-spine watermark when a build grows or commits it.
   void armNextSighting(uint16_t spineIndex, uint32_t generation);
   // Open/sight/drop one bounded pass over a committed next-spine cache.
