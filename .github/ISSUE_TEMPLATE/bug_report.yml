@@ -66,5 +66,9 @@ body:
     id: logs
     attributes:
       label: Relevant Log Output/Screenshots
-      description: If applicable, error messages, or log output to help explain your problem. You can drag and drop images here.
+      description: |
+        If applicable, paste error messages or log output, or drag and drop screenshots here. Both capture methods are explained in the [troubleshooting guide](https://xerif.aaflalo.me/docs/troubleshooting#providing-logs-for-a-bug-report):
+
+        - **SD Debug Log:** Settings → System → SD Debug Log on → reproduce → back off → Logs tab **Download**, or copy `.crosspoint/log.txt` via USB Drive.
+        - **Serial:** from a repository clone, run `uv run scripts/debugging_monitor.py` and paste the console output.
       render: shell
