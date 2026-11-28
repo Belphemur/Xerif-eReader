@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.9"
+# dependencies = [
+#   "pyserial>=3.5",
+#   "matplotlib>=3.10.9",
+#   "colorama>=0.4.6",
+# ]
+# ///
 """
 ESP32 Serial Monitor with Memory Graph
 
